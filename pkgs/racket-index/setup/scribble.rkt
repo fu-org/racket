@@ -137,6 +137,7 @@
 
 (define (setup-scribblings
          worker-count       ; number of cores to use to create documentation
+         use-places?        ; use places when available?
          program-name       ; name of program that calls setup-scribblings
          only-dirs          ; limits doc builds
          latex-dest         ; if not #f, generate Latex output
@@ -146,7 +147,8 @@
          tidy?              ; clean up, even beyond `only-dirs'
          avoid-main?        ; avoid main collection, even for `tidy?'
          with-record-error  ; catch & record exceptions
-         setup-printf)
+         setup-printf
+         gc-after-each-sequential?)
   (unless (doc-db-available?)
     (error 'setup "install SQLite to build documentation"))
   (when latex-dest
@@ -180,7 +182,7 @@
                            infos)])
            (and (not (memq #f infos)) infos))))
   (define ((get-docs main-dirs) i rec)
-    (let* ([pre-s (and i (i 'scribblings))]
+    (let* ([pre-s (and i (i 'scribblings (λ () #f)))]
            [s (validate-scribblings-infos pre-s)]
            [dir (directory-record-path rec)])
       (if s
@@ -302,7 +304,7 @@
       ;; If places are not available, then tasks will be run
       ;; in separate OS processes, and we can do without an
       ;; extra lock.
-      (when (place-enabled?)
+      (when use-places?
         (set!-values (lock-ch lock-ch-in) (place-channel))
         (thread (lambda ()
                   (define-values (ch ch-in) (place-channel))
@@ -318,7 +320,7 @@
                   auto-main? auto-user? main-doc-exists?
                   with-record-error setup-printf #f 
                   only-fast? force-out-of-date?
-                  no-lock))
+                  no-lock (if gc-after-each-sequential? gc-point void)))
   (define num-sequential (let loop ([docs docs])
                            (cond
                             [(null? docs) 0]
@@ -343,7 +345,8 @@
                (append
                 (map (make-sequential-get-info #f) 
                      (take docs num-sequential))
-                (parallel-do 
+                (parallel-do
+                 #:use-places? use-places?
                  (min worker-count (length (list-tail docs num-sequential)))
                  (lambda (workerid)
                    (init-lock-ch!)
@@ -358,7 +361,9 @@
                     (printf "~a" errstr)
                     (deserialize (fasl->s-exp r)))
                   (lambda (work errmsg outstr errstr) 
-                    (parallel-do-error-handler with-record-error work errmsg outstr errstr)))
+                    (parallel-do-error-handler with-record-error work errmsg outstr errstr))
+                  (lambda (args)
+                    (apply setup-printf args)))
                  (define-worker (get-doc-info-worker workerid program-name verbosev only-dirs latex-dest 
                                                      auto-main? auto-user? main-doc-exists?
                                                      force-out-of-date? lock-ch)
@@ -367,12 +372,8 @@
                                                 force-out-of-date? lock
                                                 send/report) 
                             doc)
-                     (define (setup-printf subpart formatstr . rest)
-                       (let ([task (if subpart
-                                       (format "~a: " subpart)
-                                       "")])
-                         (send/report
-                          (format "~a: ~a~a\n" program-name task (apply format formatstr rest)))))
+                     (define (setup-printf . args)
+                       (send/report args))
                      (define (with-record-error cc go fail-k)
                        (with-handlers ([exn:fail?
                                         (lambda (exn)
@@ -383,7 +384,7 @@
                                    ((get-doc-info only-dirs latex-dest
                                                   auto-main? auto-user? main-doc-exists?
                                                   with-record-error setup-printf workerid
-                                                  #f force-out-of-date? lock)
+                                                  #f force-out-of-date? lock void)
                                     (deserialize (fasl->s-exp doc))))))
                    
                    (verbose verbosev)
@@ -410,23 +411,22 @@
                (not latex-dest)
                infos)
       (log-setup-info "tidying database")
-      (define files (make-hash))
       (define tidy-docs (if tidy?
                             docs
                             (map info-doc infos)))
-      (define (get-files! main?)
+      (define (get-files main?)
+        (define files (make-hash))
         (for ([doc (in-list tidy-docs)]
               #:when (eq? main? (main-doc? doc)))
           (hash-set! files (sxref-path latex-dest doc "in.sxref") #t)
           (for ([c (in-range (add1 (doc-out-count doc)))])
-            (hash-set! files (sxref-path latex-dest doc (format "out~a.sxref" c)) #t))))
+            (hash-set! files (sxref-path latex-dest doc (format "out~a.sxref" c)) #t)))
+        files)
       (unless avoid-main?
-        (get-files! #t)
-        (doc-db-clean-files main-db files))
+        (doc-db-clean-files main-db (get-files #t)))
       (when (and (file-exists? user-db)
                  (not (equal? main-db user-db)))
-        (get-files! #f)
-        (doc-db-clean-files user-db files))))
+        (doc-db-clean-files user-db (get-files #f)))))
 
   (define (make-loop first? iter)
     (let ([infos (filter-not info-failed? infos)]
@@ -662,9 +662,11 @@
               (for ([i (in-list need-rerun)])
                 (say-rendering i #f)
                 (prep-info! i)
-                (update-info! i (build-again! latex-dest i with-record-error no-lock 
+                (update-info! i (build-again! latex-dest i with-record-error
+                                              no-lock (if gc-after-each-sequential? gc-point void)
                                               main-doc-exists?)))
-              (parallel-do 
+              (parallel-do
+               #:use-places? use-places?
                (min worker-count (length need-rerun))
                (lambda (workerid)
                  (init-lock-ch!)
@@ -704,7 +706,7 @@
                     (s-exp->fasl (serialize (build-again! latex-dest
                                                           (deserialize (fasl->s-exp info))
                                                           with-record-error
-                                                          (lock-via-channel lock-ch)
+                                                          (lock-via-channel lock-ch) void
                                                           main-doc-exists?))))])))))
         ;; If we only build 1, then it reaches it own fixpoint
         ;; even if the info doesn't seem to converge immediately.
@@ -989,7 +991,7 @@
 (define ((get-doc-info only-dirs latex-dest
                        auto-main? auto-user? main-doc-exists?
                        with-record-error setup-printf workerid 
-                       only-fast? force-out-of-date? lock)
+                       only-fast? force-out-of-date? lock gc-point)
          doc)
 
   ;; First, move pre-rendered documentation, if any, into place
@@ -1115,7 +1117,7 @@
                                       ((get-doc-info only-dirs latex-dest
                                                      auto-main? auto-user? main-doc-exists?
                                                      with-record-error setup-printf workerid 
-                                                     #f #f lock)
+                                                     #f #f lock gc-point)
                                        doc))])
            (let ([v-in  (load-sxref info-in-file)])
              (unless (equal? (car v-in) (list vers (doc-flags doc)))
@@ -1404,7 +1406,8 @@
                  searches
                  scis))])]))
 
-(define (build-again! latex-dest info-or-list with-record-error lock
+(define (build-again! latex-dest info-or-list with-record-error
+                      lock gc-point
                       main-doc-exists?)
   ;; If `info-or-list' is a list, then we're in a parallel build, and
   ;; it provides just enough of `info' from the main place to re-build

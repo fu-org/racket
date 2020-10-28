@@ -417,17 +417,19 @@ empty string, or it will be a string matching the following regexp:
 @defproc[(get-pure-port/headers
           [url url?]
           [headers (listof string?) '()]
+          [#:method method (or/c #"GET" #"HEAD" #"DELETE" #"OPTIONS") #"GET"]
           [#:redirections redirections exact-nonnegative-integer? 0]
           [#:status? status? boolean? #f]
           [#:connection connection (or/c #f http-connection?)])
          (values input-port? string?)]{
-  This function is an alternative to calling @racket[get-impure-port] and
-  @racket[purify-port] when needing to follow redirections. It also
+  This function is an alternative to calling @racket[get-impure-port]
+  (or @racket[head-impure-port], @racket[delete-impure-port], or @racket[options-impure-port])
+  and @racket[purify-port] when needing to follow redirections. It also
   supports HTTP/1.1 connections, which are used when the @racket[connection]
   argument is not @racket[#f].
   
-  The @racket[get-pure-port/headers] function performs a GET request
-  on @racket[url], follows up to @racket[redirections] redirections
+  The @racket[get-pure-port/headers] function performs a request specified by
+  @racket[method] (GET by default) on @racket[url], follows up to @racket[redirections] redirections,
   and returns a port containing the data as well as the headers for
   the final connection. If @racket[status?] is true, then the status
   line is included in the result string.
@@ -438,7 +440,8 @@ empty string, or it will be a string matching the following regexp:
   If @racket[connection] is provided, read all data from the result port
   before making a new request with the same @racket[connection]. (Reusing
   a @racket[connection] without reading all data may or may not work.)
-}
+
+@history[#:changed "7.7.0.1" @elem{Added the @racket[#:method] argument.}]}
 
 @deftogether[(
 @defproc[(http-connection? [v any/c]) boolean?]
@@ -501,21 +504,34 @@ connections. Each mapping is a list of three elements:
 
 ]
 
-The initial value of @racket[current-proxy-servers] is configured on demand from environment
-variables. Proxies for each URL scheme are configured from two variables each:
+The initial value of @racket[current-proxy-servers] is configured on
+demand from environment variables. Proxies for each URL scheme are
+configured from the following variables:
 
 @itemize[
- @item{@indexed-envvar{plt_http_proxy} and @indexed-envvar{http_proxy}, configure the HTTP
-   proxy, where the former takes precedence over the latter. HTTP requests will be proxied using an
-   HTTP proxy server connection}
- @item{@indexed-envvar{plt_https_proxy} and @indexed-envvar{https_proxy}, configure the HTTPS
-   proxy, where the former takes precedence over the latter. HTTPS connections are proxied using an
-  HTTP ``CONNECT'' tunnel}
- @item{@indexed-envvar{plt_git_proxy} and @indexed-envvar{git_proxy}, configure the GIT
-   proxy, where the former takes precedence over the latter. GIT connections are proxied using an
-  HTTP ``CONNECT'' tunnel}
+
+ @item{@indexed-envvar{plt_http_proxy},
+@indexed-envvar{PLT_HTTP_PROXY}, @indexed-envvar{http_proxy},
+@indexed-envvar{HTTP_PROXY}, @indexed-envvar{all_proxy},
+and @indexed-envvar{ALL_PROXY}, configure the HTTP proxy, where the former
+takes precedence over the latter. HTTP requests will be proxied using
+an HTTP proxy server connection}
+
+ @item{@indexed-envvar{plt_https_proxy},
+@indexed-envvar{PLT_HTTPS_PROXY}, @indexed-envvar{https_proxy},
+@indexed-envvar{HTTPS_PROXY}, @indexed-envvar{all_proxy},
+@indexed-envvar{ALL_PROXY}, configure the HTTPS proxy, where the
+former takes precedence over the latter. HTTPS connections are proxied
+using an HTTP ``CONNECT'' tunnel}
+
+ @item{@indexed-envvar{plt_git_proxy}, @indexed-envvar{PLT_GIT_PROXY},
+@indexed-envvar{git_proxy}, @indexed-envvar{GIT_PROXY},
+@indexed-envvar{all_proxy}, @indexed-envvar{ALL_PROXY}, configure the
+GIT proxy, where the former takes precedence over the latter. GIT
+connections are proxied using an HTTP ``CONNECT'' tunnel}
+
 ]
- 
+
 Each environment variable contains a single URL of the form
 @litchar{http://}@nonterm{hostname}@litchar{:}@nonterm{portno}.
 If any other components of the URL are provided, a warning will be logged to a @racket[net/url]
@@ -583,14 +599,14 @@ and @racket[host], or @racket[#f] if no proxy is to be used.}
                             [#:method method (or/c bytes? string? symbol?) #"GET"]
                             [#:headers headers (listof (or/c bytes? string?)) empty]
                             [#:data data (or/c false/c bytes? string? data-procedure/c) #f]
-                            [#:content-decode decodes (listof symbol?) '(gzip)])
+                            [#:content-decode decodes (listof symbol?) '(gzip deflate)])
          (values bytes? (listof bytes?) input-port?)]{
 
 Calls @racket[http-sendrecv] using @racket[u] to populate the host, URI, port, and SSL parameters.
 
 This function does not support proxies.
                                                       
-}
+@history[#:changed "7.6.0.9" @elem{Added support for @racket['deflate] decoding.}]}
 
 @defproc[(tcp-or-tunnel-connect [scheme string?]
                                 [host string?]

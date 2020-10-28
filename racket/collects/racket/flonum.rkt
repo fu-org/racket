@@ -8,8 +8,8 @@
 (provide fl+ fl- fl* fl/
          flabs flsqrt flexp fllog
          flsin flcos fltan flasin flacos flatan
-         flfloor flceiling flround fltruncate flexpt
-         flrandom
+         flfloor flceiling flround fltruncate
+         flsingle flexpt flrandom
          fl= fl< fl<= fl> fl>= flmin flmax
          ->fl fl->exact-integer
          flvector? flvector make-flvector 
@@ -28,7 +28,8 @@
   for/flvector
   for*/flvector
   flvector-copy
-  0.0)
+  0.0
+  check-flvector)
 
 (define (flrandom r)
   (if (pseudo-random-generator? r)

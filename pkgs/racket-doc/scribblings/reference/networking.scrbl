@@ -201,7 +201,7 @@ Returns a @tech{synchronizable event} (see @secref["sync"]) that is
 @tech{ready for synchronization} when @racket[tcp-accept] on @racket[listener] would
 not block. The @tech{synchronization result} is a
 list of two items, which correspond to the two results of
-@racket[tcp-accept]. (If the event is not chosen in a @racket[syntax], no connections are
+@racket[tcp-accept]. (If the event is not chosen in a @racket[sync], no connections are
 accepted.) The ports are placed into the management of the custodian
 that is the current custodian (see @secref["custodians"]) at the time that
 @racket[tcp-accept-evt] is called.}
@@ -221,7 +221,7 @@ connections, so @racket[tcp-abandon-port] is equivalent to
 @racket[close-input-port] on input @tech{TCP ports}.}
 
 
-@defproc[(tcp-addresses [tcp-port (or/c tcp-port? tcp-listener?)]
+@defproc[(tcp-addresses [tcp-port (or/c tcp-port? tcp-listener? udp?)]
                         [port-numbers? any/c #f]) 
          (or/c (values string? string?)
                (values string? port-number?
@@ -229,14 +229,14 @@ connections, so @racket[tcp-abandon-port] is equivalent to
 
 Returns two strings when @racket[port-numbers?] is @racket[#f] (the
 default). The first string is the Internet address for the local
-machine a viewed by the given @tech{TCP port}'s connection or for the
-TCP listener. (For most machines, the answer corresponds to the
-current machine's only Internet address, but when a machine serves
-multiple addresses, the result is connection-specific or
-listener-specific.) If a listener is given and it has no specific
+machine as viewed by the given @tech{TCP port}'s connection, for the
+TCP listener, or the UDP socket. (When a machine serves
+multiple addresses, as it usually does if you count the loopback
+device, the result is connection-specific or
+listener-specific.) If a listener or UDP socket is given and it has no specific
 host, the first string result is @racket["0.0.0.0"]. The second string
 is the Internet address for the other end of the connection, or always
-@racket["0.0.0.0"] for a listener.
+@racket["0.0.0.0"] for a listener or unconnected UDP socket.
 
 If @racket[port-numbers?] is true, then four results are returned: a
 string for the local machine's address, an exact integer between
@@ -245,7 +245,8 @@ string for the remote machine's address, and an exact integer between
 @racket[1] and @racket[65535] for the remote machine's port number or
 @racket[0] for a listener.
 
-If the given port has been closed, the @exnraise[exn:fail:network].}
+If the given port, listener, or socket has been closed, the
+@exnraise[exn:fail:network].}
 
 
 @defproc[(tcp-port? [v any/c]) boolean?]{
@@ -256,13 +257,13 @@ port returned by @racket[tcp-accept], @racket[tcp-connect],
 @racket[tcp-connect/enable-break]---@racket[#f] otherwise.}
 
 @defthing[port-number? contract?]{
-Equivalent to @racket[(between/c 1 65535)].
+Equivalent to @racket[(integer-in 1 65535)].
 
 @history[#:added "6.3"]{}
 }
 
 @defthing[listen-port-number? contract?]{
-Equivalent to @racket[(between/c 0 65535)].
+Equivalent to @racket[(integer-in 0 65535)].
 
 @history[#:added "6.3"]{}
 }
@@ -366,7 +367,7 @@ If @racket[udp-socket] is closed, the @exnraise[exn:fail:network].}
                       [bstr bytes?]
                       [start-pos exact-nonnegative-integer? 0]
                       [end-pos exact-nonnegative-integer? (bytes-length bstr)]) 
-         void]{
+         void?]{
 
 Sends @racket[(subbytes bytes start-pos end-pos)] as a datagram from
 the unconnected @racket[udp-socket] to the socket at the remote
@@ -387,7 +388,7 @@ If @racket[udp-socket] is closed or connected, the
                    [bstr bytes?]
                    [start-pos exact-nonnegative-integer? 0]
                    [end-pos exact-nonnegative-integer? (bytes-length bstr)]) 
-         void]{
+         void?]{
 
 Like @racket[udp-send-to], except that @racket[udp-socket] must be
 connected, and the datagram goes to the connection target.  If
@@ -421,7 +422,7 @@ never blocks and returns @racket[#f] or @racket[#t].}
                       [bstr bytes?]
                       [start-pos exact-nonnegative-integer? 0]
                       [end-pos exact-nonnegative-integer? (bytes-length bstr)]) 
-         void]{
+         void?]{
 
 Like @racket[udp-send-to], but breaking is enabled (see
 @secref["breakhandler"]) while trying to send the datagram. If
@@ -434,7 +435,7 @@ is raised, but not both.}
                    [bstr bytes?]
                    [start-pos exact-nonnegative-integer? 0]
                    [end-pos exact-nonnegative-integer? (bytes-length bstr)]) 
-         void]{
+         void?]{
 
 Like @racket[udp-send], except that breaks are enabled like
 @racket[udp-send-to/enable-break].}
@@ -491,6 +492,21 @@ Like @racket[udp-receive!], but breaking is enabled (see
 breaking is disabled when @racket[udp-receive!/enable-break] is
 called, then either a datagram is received or the @racket[exn:break]
 exception is raised, but not both.}
+
+
+@defproc[(udp-set-receive-buffer-size! [udp-socket udp?]
+                                       [size exact-positive-integer?])
+                                       void?]{
+
+Set the receive buffer size (@tt{SO_RCVBUF}) for @racket[udp-socket].
+Using a larger buffer can minimize packet loss that can occur due to
+slow polling of a connection, including during a major garbage
+collection.
+
+If @racket[size] is greater than the maximum allowed by the system,
+the @exnraise[exn:fail:network].
+
+@history[#:added "7.1.0.11"]}
 
 
 @defproc[(udp-close [udp-socket udp?]) void?]{
@@ -601,6 +617,20 @@ string for the remote machine's address, and an exact integer between
 or @racket[0] if the socket is unconnected.
 
 If the given port has been closed, the @exnraise[exn:fail:network].}
+
+
+@deftogether[(
+@defproc[(udp-set-ttl! [udp-socket udp?] [ttl byte?]) void?]
+@defproc[(udp-ttl [udp-socket udp?]) byte?]
+)]{
+
+@margin-note{Time-to-live settings correspond to the
+@as-index{@tt{IP_TTL}} setting of the socket.}
+
+Sets or retrieves the current time-to-live setting of
+@racket[udp-socket].
+
+@history[#:added "7.5.0.5"]}
 
 
 @deftogether[(

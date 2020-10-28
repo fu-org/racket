@@ -309,7 +309,7 @@ static int record_at_exit(Scheme_At_Exit_Callback_Proc p) XFORM_SKIP_PROC
 }
 
 #define NO_TLS_INDEX_FOR_WIN_TLS 1
-#include "../racket/win_tls.inc"
+#include "../bc/win_tls.inc"
 
 static unsigned WINAPI evalLoop(void *args) XFORM_SKIP_PROC {
   register_win_tls();
@@ -570,6 +570,16 @@ void * operator new(size_t n)
 }
 
 void operator delete(void * p)
+{
+  free(p);
+}
+
+void operator delete(void * p, unsigned long long)
+{
+  free(p);
+}
+
+void operator delete(void * p, unsigned int)
 {
   free(p);
 }

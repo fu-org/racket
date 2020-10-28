@@ -142,6 +142,10 @@ The @exec{raco test} command accepts several flags:
  @item{@Flag{e} or @DFlag{check-stderr}
        --- Count any stderr output as a test failure.}
 
+ @item{@DFlag{deps}
+       --- If considering arguments as packages, also check package
+       dependencies.}
+
  @item{@DPFlag{ignore-stderr} @nonterm{pattern}
        --- Don't count stderr output as a test failure if it matches
        @nonterm{pattern}.  This flag can be used multiple times, and
@@ -163,11 +167,32 @@ The @exec{raco test} command accepts several flags:
        successes and failures, the table reports test and failure
        counts based on the log.}
 
+ @item{@DPFlag{arg} @nonterm{argument}
+       --- Adds @nonterm{argument} to the list of arguments to the invoked test module,
+       so that the invoked module sees @nonterm{argument} in its
+       @racket[current-command-line-arguments]. These arguments are
+       combined with any arguments specified in @filepath{info.rkt}
+       by @racket[test-command-line-arguments].}
+
+ @item{@DPFlag{args} @nonterm{arguments}
+        --- The same as @DPFlag{arg}, but @nonterm{arguments} is treated
+        as a whitespace-delimited list of arguments to add. To specify
+        multiple arguments using this flag within a typical shell,
+        @nonterm{arguments} must be
+        enclosed in quotation marks.}
+
+ @item{@DFlag{output} or @Flag{o} @nonterm{file}
+       --- Save all stdout and stderr output into @nonterm{file}.
+       The target @nonterm{file} will be overwritten if it exists already.
+ }
 ]
 
 @history[#:changed "1.1" @elem{Added @DFlag{heartbeat}.}
          #:changed "1.4" @elem{Changed recognition of module suffixes to use @racket[get-module-suffixes],
-                               which implies recognizing @filepath{.ss} and @filepath{.rkt}.}]
+                               which implies recognizing @filepath{.ss} and @filepath{.rkt}.}
+         #:changed "1.5" @elem{Added @DPFlag{ignore-stderr}.}
+         #:changed "1.6" @elem{Added @DPFlag{arg} and @DPFlag{args}.}
+         #:changed "1.8" @elem{Added @DFlag{output} and @Flag{o}.}]
 
 @section[#:tag "test-config"]{Test Configuration by Submodule}
 
@@ -190,7 +215,7 @@ identifiers:
  @item{@racket[lock-name] --- a string that names a lock file that is
        used to serialize tests (i.e., tests that have the same lock
        name do not run concurrently). The lock file's location is
-       determined by the @envvar{PLTLOCKDIR} enviornment varible or
+       determined by the @envvar{PLTLOCKDIR} environment variable or
        defaults to @racket[(find-system-path 'temp-dir)]. The maximum
        time to wait on the lock file is determined by the
        @envvar{PLTLOCKTIME} environment variable or defaults to 4

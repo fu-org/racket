@@ -1,9 +1,11 @@
 #lang scribble/doc
-@(require "mz.rkt" scribble/scheme
+@(require "mz.rkt"
+          scribble/scheme
           (for-syntax racket/base)
           (for-label racket/generator
                      racket/generic
-                     compatibility/mlist))
+                     compatibility/mlist
+                     syntax/stx))
 
 @(define (info-on-seq where what)
    @margin-note{See @secref[where] for information on using @|what| as
@@ -173,13 +175,18 @@ each element in the sequence.
   @racket[step] is non-negative, or less or equal to @racket[end] if
   @racket[step] is negative.  @speed[in-range "number"]
 
-  
+
   @examples[#:label "Example: gaussian sum" #:eval sequence-evaluator
     (for/sum ([x (in-range 10)]) x)]
 
-  
+
   @examples[#:label "Example: sum of even numbers" #:eval sequence-evaluator
     (for/sum ([x (in-range 0 100 2)]) x)]
+
+  When given zero as @racket[step], @racket[in-range] returns an infinite
+  sequence. It may also return infinite sequences when @racket[step] is a very
+  small number, and either @racket[step] or the sequence elements are
+  floating-point numbers.
 }
 
 
@@ -252,12 +259,12 @@ each element in the sequence.
 
   If @racket[stop] is not in [-1, @racket[(vector-length vec)]],
   then the @exnraise[exn:fail:contract].
-  
+
   If @racket[start] is less than
   @racket[stop] and @racket[step] is negative, then the
-  @exnraise[exn:fail:contract:mismatch].  Similarly, if @racket[start]
+  @exnraise[exn:fail:contract].  Similarly, if @racket[start]
   is more than @racket[stop] and @racket[step] is positive, then the
-  @exnraise[exn:fail:contract:mismatch].
+  @exnraise[exn:fail:contract].
 
   @speed[in-vector "vector"]
 
@@ -344,8 +351,19 @@ each element in the sequence.
   that the default mode is @racket['any], whereas the default mode of
   @racket[read-bytes-line] is @racket['linefeed].}
 
-@defproc[(in-hash [hash hash?]) sequence?]{
-  Returns a sequence equivalent to @racket[hash].
+@defproc*[([(in-hash [hash hash?]) sequence?]
+           [(in-hash [hash hash?] [bad-index-v any/c]) sequence?])]{
+  Returns a sequence equivalent to @racket[hash], except when @racket[bad-index-v]
+  is supplied.
+
+  If @racket[bad-index-v] is supplied, then @racket[bad-index-v] is
+  returned as both the key and the value in the case that the
+  @racket[hash] is modified concurrently so that iteration does not have a
+  @tech{valid hash index}. Providing @racket[bad-index-v] is particularly
+  useful when iterating through a hash table with weakly held keys, since
+  entries can be removed asynchronously (i.e., after @racket[in-hash] has
+  committed to another iteration, but before it can access the entry for the
+  next iteration).
 
   @examples[
     (define table (hash 'a 1 'b 2))
@@ -353,82 +371,144 @@ each element in the sequence.
       (printf "key: ~a value: ~a\n" key value))]
 
   @info-on-seq["hashtables" "hash tables"]
-}
 
-@defproc[(in-hash-keys [hash hash?]) sequence?]{
-  Returns a sequence whose elements are the keys of @racket[hash].
+  @history[#:changed "7.0.0.10" @elem{Added the optional @racket[bad-index-v] argument.}]}
+
+@defproc*[([(in-hash-keys [hash hash?]) sequence?]
+           [(in-hash-keys [hash hash?] [bad-index-v any/c]) sequence?])]{
+  Returns a sequence whose elements are the keys of @racket[hash], using
+  @racket[bad-index-v] in the same way as @racket[in-hash].
 
   @examples[
     (define table (hash 'a 1 'b 2))
     (for ([key (in-hash-keys table)])
       (printf "key: ~a\n" key))]
-}
 
-@defproc[(in-hash-values [hash hash?]) sequence?]{
-  Returns a sequence whose elements are the values of @racket[hash].
+  @history[#:changed "7.0.0.10" @elem{Added the optional @racket[bad-index-v] argument.}]}
+
+@defproc*[([(in-hash-values [hash hash?]) sequence?]
+           [(in-hash-values [hash hash?] [bad-index-v any/c]) sequence?])]{
+  Returns a sequence whose elements are the values of @racket[hash], using
+  @racket[bad-index-v] in the same way as @racket[in-hash].
 
   @examples[
     (define table (hash 'a 1 'b 2))
     (for ([value (in-hash-values table)])
       (printf "value: ~a\n" value))]
-}
 
-@defproc[(in-hash-pairs [hash hash?]) sequence?]{
+  @history[#:changed "7.0.0.10" @elem{Added the optional @racket[bad-index-v] argument.}]}
+
+@defproc*[([(in-hash-pairs [hash hash?]) sequence?]
+           [(in-hash-pairs [hash hash?] [bad-index-v any/c]) sequence?])]{
   Returns a sequence whose elements are pairs, each containing a key
   and its value from @racket[hash] (as opposed to using @racket[hash]
   directly as a sequence to get the key and value as separate values
   for each element).
 
+  The @racket[bad-index-v] argument, if supplied, is used in the same
+  way as by @racket[in-hash]. When an invalid index is encountered,
+  the pair in the sequence with have @racket[bad-index-v] as both its
+  @racket[car] and @racket[cdr].
+
   @examples[
     (define table (hash 'a 1 'b 2))
     (for ([key+value (in-hash-pairs table)])
       (printf "key and value: ~a\n" key+value))]
-}
+
+  @history[#:changed "7.0.0.10" @elem{Added the optional @racket[bad-index-v] argument.}]}
 
 @deftogether[(
-@defproc[(in-mutable-hash 
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]) 
+@defproc[(in-mutable-hash
+          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-mutable-hash
+          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))] [bad-index-v any/c])
 	  sequence?]
 @defproc[(in-mutable-hash-keys
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]) 
+          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-mutable-hash-keys
+          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))] [bad-index-v any/c])
 	  sequence?]
 @defproc[(in-mutable-hash-values
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]) 
+          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-mutable-hash-values
+          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))] [bad-index-v any/c])
 	  sequence?]
 @defproc[(in-mutable-hash-pairs
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]) 
+          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))])
 	  sequence?]
-@defproc[(in-immutable-hash 
+@defproc[#:link-target? #f
+         (in-mutable-hash-pairs
+          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))] [bad-index-v any/c])
+	  sequence?]
+@defproc[(in-immutable-hash
           [hash (and/c hash? immutable?)])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-immutable-hash
+          [hash (and/c hash? immutable?)] [bad-index-v any/c])
 	  sequence?]
 @defproc[(in-immutable-hash-keys
           [hash (and/c hash? immutable?)])
 	  sequence?]
+@defproc[#:link-target? #f
+         (in-immutable-hash-keys
+          [hash (and/c hash? immutable?)] [bad-index-v any/c])
+	  sequence?]
 @defproc[(in-immutable-hash-values
           [hash (and/c hash? immutable?)])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-immutable-hash-values
+          [hash (and/c hash? immutable?)] [bad-index-v any/c])
 	  sequence?]
 @defproc[(in-immutable-hash-pairs
           [hash (and/c hash? immutable?)])
 	  sequence?]
-@defproc[(in-weak-hash 
-          [hash (and/c hash? hash-weak?)]) 
+@defproc[#:link-target? #f
+         (in-immutable-hash-pairs
+          [hash (and/c hash? immutable?)] [bad-index-v any/c])
+	  sequence?]
+@defproc[(in-weak-hash
+          [hash (and/c hash? hash-weak?)])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-weak-hash
+          [hash (and/c hash? hash-weak?)] [bad-index-v any/c])
 	  sequence?]
 @defproc[(in-weak-hash-keys
-          [hash (and/c hash? hash-weak?)]) 
+          [hash (and/c hash? hash-weak?)])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-weak-hash-keys
+          [hash (and/c hash? hash-weak?)] [bad-index-v any/c])
 	  sequence?]
 @defproc[(in-weak-hash-values
-          [hash (and/c hash? hash-weak?)]) 
+          [hash (and/c hash? hash-weak?)])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-weak-hash-keys
+          [hash (and/c hash? hash-weak?)] [bad-index-v any/c])
 	  sequence?]
 @defproc[(in-weak-hash-pairs
-          [hash (and/c hash? hash-weak?)]) 
+          [hash (and/c hash? hash-weak?)])
+	  sequence?]
+@defproc[#:link-target? #f
+         (in-weak-hash-pairs
+          [hash (and/c hash? hash-weak?)] [bad-index-v any/c])
 	  sequence?]
 )]{
    Sequence constructors for specific kinds of hash tables.
-   
-   These may be more performant than the analogous @racket[in-hash] 
-   forms. However, they may consume more space to help with iteration.
-   
-   @history[#:added "6.4.0.6"]
+   These may perform better than the analogous @racket[in-hash]
+   forms.
+
+   @history[#:added "6.4.0.6"
+            #:changed "7.0.0.10" @elem{Added the optional @racket[bad-index-v] argument.}]
 }
 
 
@@ -454,47 +534,28 @@ each element in the sequence.
   @racket[path<?], and the content of a subdirectory is reported
   before subsequent paths within the directory.
 
-@examples[
-    (code:comment @#,t{Given a directory tree:})
-    (code:comment @#,t{})
-    (code:comment @#,t{ /example})
-    (code:comment @#,t{ ├── a})
-    (code:comment @#,t{ │   ├── alpha})
-    (code:comment @#,t{ │   └── apple})
-    (code:comment @#,t{ ├── b})
-    (code:comment @#,t{ │   └── beta})
-    (code:comment @#,t{ └── c})
-    (code:comment @#,t{})
-    (eval:alts
-      (parameterize ([current-directory "/example"])
-        (for ([p (in-directory)])
-          (printf "~a\n" p)))
-      (for ([p (in-list '("a"
-                          "a/alpha"
-                          "a/apple"
-                          "b"
-                          "b/beta"
-                          "c"))])
-        (printf "~a\n" p)))
-    (eval:alts
-      (for ([p (in-directory "/example")])
-        (printf "~a\n" p))
-      (for ([p (in-list '("/example/a"
-                          "/example/a/alpha"
-                          "/example/a/apple"
-                          "/example/b"
-                          "/example/b/beta"
-                          "/example/c"))])
-        (printf "~a\n" p)))
-    (eval:alts
-      (let ([f (lambda (path) (regexp-match? #rx"/example/b.*" path))])
-        (for ([p (in-directory "/example" f)])
-          (printf "~a\n" p)))
-      (for ([p (in-list '("/example/a"
-                          "/example/b"
-                          "/example/b/beta"
-                          "/example/c"))])
-        (printf "~a\n" p)))]
+  @examples[
+    (eval:alts (current-directory (collection-path "info"))
+               (void))
+    (eval:alts (for/list ([f (in-directory)])
+                  f)
+               (map string->path '("compiled"
+                                   "compiled/main_rkt.dep"
+                                   "compiled/main_rkt.zo"
+                                   "main.rkt")))
+    (eval:alts (for/list ([f (in-directory "compiled")])
+                 f)
+               (map string->path '("main_rkt.dep"
+                                   "main_rkt.zo")))
+    (eval:alts (for/list ([f (in-directory "compiled")])
+                 f)
+               (map string->path '("compiled/main_rkt.dep"
+                                   "compiled/main_rkt.zo")))
+    (eval:alts (for/list ([f (in-directory #f (lambda (p)
+                                                (not (regexp-match? #rx"compiled" p))))])
+                  f)
+               (map string->path '("main.rkt" "compiled")))
+  ]
 
 @history[#:changed "6.0.0.1" @elem{Added @racket[use-dir?] argument.}
          #:changed "6.6.0.4" @elem{Added guarantee of sorted results.}]}
@@ -623,7 +684,7 @@ each element in the sequence.
   @itemize[
     @item{The first result is a @racket[_pos->element] procedure that
       takes the current position and returns the value(s) for the
-      current element.}      
+      current element.}
     @item{The optional second result is an @racket[_early-next-pos]
       procedure that is described further below. Alternatively, the
       optional second result can be @racket[#f], which is equivalent
@@ -661,7 +722,7 @@ each element in the sequence.
   sequence where the position must be incremented to avoid keeping a
   value reachable while a loop processes the sequence value, so
   @racket[_early-next-pos] is applied just after
-  @racket[_pos->element].}
+  @racket[_pos->element].
 
   Each of the procedures listed above is called only once per
   position.  Among the last three procedures, as soon as one of the
@@ -926,7 +987,7 @@ If @racket[min-count] is a number, the stream is required to have at least that 
 @defproc[(in-syntax [stx syntax?]) sequence?]{
   Produces a sequence whose elements are the successive subparts of
   @racket[stx].
-  Equivalent to @racket[(syntax->list lst)].
+  Equivalent to @racket[(stx->list lst)].
   @speed[in-syntax "syntax"]
 
 @examples[#:eval sequence-evaluator
@@ -995,8 +1056,8 @@ stream, but plain lists can be used as streams, and functions such as
   @racket[empty-stream].
 }
 
-@defform[(stream* expr ...)]{
-  A shorthand for nested @racket[stream-cons]es, but the final @racket[expr]
+@defform[(stream* expr ... rest-expr)]{
+  A shorthand for nested @racket[stream-cons]es, but the @racket[rest-expr]
   must be a stream, and it is used as the rest of the stream instead of
   @racket[empty-stream]. Similar to @racket[list*] but for streams.
 
@@ -1042,6 +1103,11 @@ stream, but plain lists can be used as streams, and functions such as
   In case extracting elements from @racket[s] involves a side effect,
   they will not be extracted until the first element is extracted from
   the resulting stream.
+}
+
+@defproc[(stream-take [s stream?] [i exact-nonnegative-integer?])
+         stream?]{
+  Returns a stream of the first @racket[i] elements of @racket[s].
 }
 
 @defproc[(stream-append [s stream?] ...)
@@ -1127,6 +1193,8 @@ stream, but plain lists can be used as streams, and functions such as
   allows @racket[for/stream] and @racket[for*/stream] to iterate over infinite
   sequences, unlike their finite counterparts.
 
+  Please note that these forms do not support returning @tech{multiple values}.
+
   @examples[#:eval sequence-evaluator
     (for/stream ([i '(1 2 3)]) (* i i))
     (stream->list (for/stream ([i '(1 2 3)]) (* i i)))
@@ -1160,7 +1228,7 @@ stream, but plain lists can be used as streams, and functions such as
        (define (stream-first stream)
          (first (list-stream-v stream)))
        (define (stream-rest stream)
-         (rest (list-stream-v stream)))])
+         (list-stream (rest (list-stream-v stream))))])
 
     (define l1 (list-stream '(1 2)))
     (stream? l1)
@@ -1169,10 +1237,11 @@ stream, but plain lists can be used as streams, and functions such as
 }
 
 @defthing[prop:stream struct-type-property?]{
-  A deprecated structure type property used to define custom
-  extensions to the stream API. Use @racket[gen:stream] instead.
-  Accepts a vector of three procedures taking the same arguments as
-  the methods in @racket[gen:stream].
+  A structure type property used to define custom
+  extensions to the stream API. Using the @racket[prop:stream] property
+  is discouraged; use the @racket[gen:stream] @tech{generic interface}
+  instead. Accepts a vector of three procedures taking the same arguments
+  as the methods in @racket[gen:stream].
 }
 
 @defproc[(stream/c [c contract?]) contract?]{
@@ -1183,10 +1252,9 @@ If the @racket[c] argument is a flat contract or a chaperone contract, then the
 result will be a chaperone contract. Otherwise, the result will be an
 impersonator contract.
 
-When an @racket[stream/c] contract is applied to an asynchronous channel,
-the result is not @racket[eq?] to the input. The result will be either a
-@tech{chaperone} or @tech{impersonator} of the input depending on the type of
-contract.
+When an @racket[stream/c] contract is applied to a stream, the result is not
+@racket[eq?] to the input. The result will be either a @tech{chaperone} or
+@tech{impersonator} of the input depending on the type of contract.
 
 Contracts on streams are evaluated lazily by necessity (since streams may be
 infinite). Contract violations will not be raised until the value in violation
@@ -1299,7 +1367,7 @@ values from the generator.
     (welcome)]}
 
 @defform/subs[(in-generator maybe-arity body ...+)
-              ([maybe-arity code:blank 
+              ([maybe-arity code:blank
                             (code:line #:arity arity-k)])]{
   Produces a @tech{sequence} that encapsulates the @tech{generator}
   formed by @racket[(generator () body ...+)]. The values produced by
@@ -1322,7 +1390,7 @@ values from the generator.
   values for each element, its arity should be declared with an
   @racket[#:arity arity-k] clause; the @racket[arity-k] must be a
   literal, exact, non-negative integer.
-  
+
   @examples[#:eval generator-eval
     (eval:error
      (let ([g (in-generator

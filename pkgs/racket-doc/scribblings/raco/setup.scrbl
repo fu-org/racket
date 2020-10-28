@@ -130,9 +130,11 @@ flags:
   addition to specified collections.}
 
  @item{@DFlag{tidy} --- remove metadata cache information and
-  documentation for non-existent collections or documentation (to
-  clean up after removal), even when setup actions are otherwise
-  confined to specified collections.}
+  documentation for non-existent collections or documentation to
+  clean up after removal, even when setup actions are otherwise
+  confined to specified collections. Although tidying is not confined
+  to specified collections, it can be constrained with @DFlag{avoid-main}
+  or @DFlag{no-user}.}
 
 ]}
 @item{Constraining to specific tasks:
@@ -141,9 +143,12 @@ flags:
  @item{@DFlag{clean} or @Flag{c} --- delete existing @filepath{.zo}
    files, thus ensuring a clean build from the source files. The exact
    set of deleted files can be controlled by @filepath{info.rkt}; see
-   @elemref["clean"]{@racket[clean]} for more information.}
+   @elemref["clean"]{@racket[clean]} for more information. Unless
+   @DFlag{no-info-domain} or @Flag{d} is also specified, the @filepath{info.rkt}
+   cache is cleared. Unless @DFlag{no-docs} or @Flag{D} is also
+   specified, the documentation-index database is reset.}
 
- @item{@DFlag{fast-clean} or @Flag{c} --- like @DFlag{clean}, but
+ @item{@DFlag{fast-clean} --- like @DFlag{clean}, but
    without forcing a bootstrap of @exec{raco setup} from source (which
    means that @DFlag{fast-clean} cannot clean corruption that affects
    @exec{raco setup} itself).}
@@ -155,6 +160,12 @@ flags:
    the assumption that they are already up-to-date (unless the
    @envvar{PLT_COMPILED_FILE_CHECK} environment variable is set to
    @litchar{exists}, in which case timestamps are ignored).}
+
+ @item{@DFlag{recompile-only} --- disallow recompilation of modules
+  from source, imposing the constraint that each @filepath{.zo} file
+  is up-to-date, needs only a timestamp adjustment, or can be
+  recompiled from an existing @filepath{.zo} in machine-independent
+  format (when compiling to a machine-dependent format).}
 
  @item{@DFlag{no-launcher} or @Flag{x} --- refrain from creating
    executables or installing @tt{man} pages (as specified in
@@ -240,6 +251,12 @@ flags:
    uses @racket[(processor-count)] jobs, which typically uses
    all of the machine's processing cores.}
 
+ @item{@DFlag{places} --- use Racket places for parallel jobs; this
+   mode is the default if Racket places run in parallel.}
+
+ @item{@DFlag{processes} --- use separate processes for parallel jobs;
+   this mode is the default if Racket places cannot run in parallel.}
+
  @item{@DFlag{verbose} or @Flag{v} --- more verbose output about
    @exec{raco setup} actions.}
 
@@ -262,6 +279,19 @@ flags:
  @item{@DFlag{fail-fast} --- attempt to break as soon as any error is
   discovered.}
 
+ @item{@DFlag{error-out} @nonterm{file} --- handle survivable errors
+  by writing @nonterm{file} and exiting as successful, which
+  facilitates chaining multiple @exec{raco setup} invocations in
+  combination with @DFlag{error-in}. If there are no errors and
+  @nonterm{file} already exists, it is deleted.}
+
+ @item{@DFlag{error-in} @nonterm{file} --- treat the existence of
+  @nonterm{file} as a ``errors were reported by a previous process''
+  error. Typically, @nonterm{file} is created by previous @exec{raco
+  setup} run using @DFlag{error-out}. A file for @DFlag{error-in} is
+  detected before creating a file via @DFlag{error-out}, so the same
+  file can be used to chain a sequence of @exec{raco setup} steps.}
+
  @item{@DFlag{pause} or @Flag{p} --- pause for user input if any
   errors are reported (so that a user has time to inspect output that
   might otherwise disappear when the @exec{raco setup} process ends).}
@@ -281,6 +311,28 @@ flags:
   location.}
 
 ]}
+@item{Bootstrapping:
+@itemize[
+
+ @item{@DFlag{boot} @nonterm{module-file} @nonterm{build-dir} --- For
+       use by directly running @racketmodname[setup] instead of
+       through @exec{raco setup}, loads @nonterm{module-file} in the
+       same way that @exec{raco setup} normally loads itself,
+       auto-detecting the need to start from sources and rebuild the
+       compiled files---even for the compilation manager itself. The
+       @nonterm{build-dir} path is installed as the only path in
+       @racket[current-compiled-file-roots], so all compiled files
+       go there.}
+
+ @item{@DFlag{chain} @nonterm{module-file} @nonterm{build-dir} ---
+       Like @DFlag{boot}, but adds @nonterm{build-dir} to the start of
+       @racket[current-compiled-file-roots] instead of replacing the
+       current value, which means that libraries already built in the
+       normal location (including the compilation manager itself) will
+       be used instead of rebuilt. This mode makes sense for
+       cross-compilation.}
+
+]}
 
 ]
 
@@ -298,12 +350,43 @@ as @exec{raco make}. Specifically, if @envvar{PLT_COMPILED_FILE_CHECK}
 is set to @litchar{exists}, then @exec{raco make} does not attempt to
 update a compiled file's timestamp if the file is not recompiled.
 
+Some additional environment variables are useful for performance
+debugging:
+
+@itemlist[
+
+ @item{@indexed-envvar{PLT_SETUP_DMS_ARGS} triggers a call to
+       @racket[dump-memory-stats] after each collection is compiled,
+       where the environment variable's value is parsed with
+       @racket[read] to obtain a list of arguments to
+       @racket[dump-memory-stats].}
+
+ @item{@indexed-envvar{PLT_SETUP_LIMIT_CACHE} (set to anything) avoids
+       caching compiled-file information across different collections,
+       which is useful to reduce noise when looking for memory leaks.}
+
+ @item{@indexed-envvar{PLT_SETUP_NO_FORCE_GC} (set to anything)
+       suppresses a call to @racket[collect-garbage] that is issued by
+       default for non-parallel builds after each collection is
+       compiled and after each document is run or rendered.}
+
+ @item{@indexed-envvar{PLT_SETUP_SHOW_TIMESTAMPS} (set to anything)
+       appends the current process time after @litchar[" @ "] for each
+       status message printed by @exec{raco setup}.}
+
+]
+
 @history[#:changed "6.1" @elem{Added the @DFlag{pkgs},
                                @DFlag{check-pkg-deps}, and
                                @DFlag{fail-fast} flags.}
          #:changed "6.1.1" @elem{Added the @DFlag{force-user-docs} flag.}
          #:changed "6.1.1.6" @elem{Added the @DFlag{only-foreign-libs} flag.}
-         #:changed "6.6.0.3" @elem{Added support for @envvar{PLT_COMPILED_FILE_CHECK}.}]
+         #:changed "6.6.0.3" @elem{Added support for @envvar{PLT_COMPILED_FILE_CHECK}.}
+         #:changed "7.0.0.19" @elem{Added @DFlag{places} and  @DFlag{processes}.}
+         #:changed "7.2.0.7" @elem{Added @DFlag{error-in} and  @DFlag{error-out}.}
+         #:changed "7.2.0.8" @elem{Added @DFlag{recompile-only}.}
+         #:changed "7.9.0.3" @elem{Added @envvar{PLT_SETUP_NO_FORCE_GC} and
+                                   @envvar{PLT_SETUP_SHOW_TIMESTAMPS}.}]
 
 @; ------------------------------------------------------------------------
 
@@ -887,6 +970,7 @@ normal dependency counts as a build-time dependency, too).
 
 @defproc[(setup [#:file file (or/c #f path-string?) #f]
                 [#:collections collections (or/c #f (listof (listof path-string?))) #f]
+                [#:pkgs pkgs (or/c #f (listof string?)) #f]
                 [#:planet-specs planet-specs (or/c #f 
                                                    (listof (list/c string?
                                                                    string?
@@ -898,8 +982,12 @@ normal dependency counts as a build-time dependency, too).
                 [#:make-docs? make-docs? any/c #t]
                 [#:make-doc-index? make-doc-index? any/c #f]
                 [#:force-user-docs? force-user-docs? any/c #f]
+                [#:check-pkg-deps? check-pkg-deps? any/c #f]
+                [#:fix-pkg-deps? fix-pkg-deps? any/c #f]
+                [#:unused-pkg-deps? unused-pkg-deps? any/c #f]
                 [#:clean? clean? any/c #f]
                 [#:tidy? tidy? any/c #f]
+                [#:recompile-only? recompile-only? any/c #f]
                 [#:jobs jobs exact-nonnegative-integer? #f]
                 [#:fail-fast? fail-fast? any/c #f]
                 [#:get-target-dir get-target-dir (or/c #f (-> path-string?)) #f])
@@ -912,10 +1000,16 @@ Runs @exec{raco setup} with various options:
        a @filepath{.plt} archive.}
 
  @item{@racket[collections] --- if not @racket[#f], constrains setup to
-       the named collections, along with @racket[planet-specs], if any}
+       the named collections (along with @racket[pkgs] and
+       @racket[planet-specs], if any)}
+
+ @item{@racket[pkgs] --- if not @racket[#f], constrains setup to the
+       named packages (along with @racket[collections] and
+       @racket[planet-specs], if any)}
 
  @item{@racket[planet-spec] --- if not @racket[#f], constrains setup to
-       the named @|PLaneT| packages, along with @racket[collections], if any}
+       the named @|PLaneT| packages (along with @racket[collections] and
+       @racket[pkgs], if any)}
 
  @item{@racket[make-user?] --- if @racket[#f], disables any
        user-specific setup actions}
@@ -934,11 +1028,27 @@ Runs @exec{raco setup} with various options:
        documentation, creates a user-specific documentation entry point
        even if it has the same content as the installation}
 
+ @item{@racket[check-pkg-deps?] --- if true, enables
+       package-dependency checking even when @racket[collections],
+       @racket[pkgs], or @racket[planet-specs] is non-@racket[#f].}
+
+ @item{@racket[fix-pkg-deps?] --- if true, implies
+       @racket[check-pkg-deps?] and attempts to automatically correct
+       discovered package-dependency problems}
+ 
+ @item{@racket[unused-pkg-deps?] --- if true, implies
+       @racket[check-pkg-deps?] and also reports dependencies that
+       appear to be unused}
+
  @item{@racket[clean?] --- if true, enables cleaning mode instead of setup mode}
 
  @item{@racket[tidy?] --- if true, enables global tidying of
        documentation and metadata indexes even when @racket[collections]
        or @racket[planet-specs] is non-@racket[#f]}
+
+ @item{@racket[recompile-only?] --- if true, disallows compilation
+       from source, allowing only timestamp adjustments and recompilation
+       from machine-independent form}
 
  @item{@racket[jobs] --- if not @racket[#f], determines the maximum number of parallel
        tasks used for setup}
@@ -958,7 +1068,11 @@ Instead of using @envvar{PLT_COMPILED_FILE_CHECK}, @racket[setup] is
 sensitive to the @racket[use-compiled-file-check] parameter.
 
 @history[#:changed "6.1" @elem{Added the @racket[fail-fast?] argument.}
-         #:changed "6.1.1" @elem{Added the @racket[force-user-docs?] argument.}]}
+         #:changed "6.1.1" @elem{Added the @racket[force-user-docs?] argument.}
+         #:changed "7.2.0.7" @elem{Added the @racket[check-pkg-deps?],
+                                   @racket[fix-pkg-deps?] , and @racket[unused-pkg-deps?]
+                                   arguments.}
+         #:changed "7.2.0.8" @elem{Added the @racket[recompile-only?] argument.}]}
 
 
 
@@ -1028,7 +1142,14 @@ form.}
     The prefix used when printing status messages.
     @defaults[@racket["raco setup"]]
   }
-  
+
+@defparam[setup-compiled-file-paths paths (or/c #f (listof (and/c path? relative-path?)))]{
+ If not @racket[#f], supplies a value like the one for @racket[use-compiled-file-paths]
+ to control operations such as cleaning, where @racket[use-compiled-file-paths]
+ may have been set to @racket[null] to avoid loading bytecode.
+
+ @history[#:added "1.7"]}
+
 @defboolparam[verbose on?]{
   If on, prints messages from @exec{make} to @envvar{stderr}.
   @defaults[@racket[#f]]}
@@ -1162,6 +1283,19 @@ form.}
 
 }
 
+@; ----------------------------------------
+
+@subsection{Setup Start Module}
+
+@defmodule[setup]{The @racketmodname[setup] library implements
+@exec{raco setup}, including the part that bootstraps @exec{raco setup}
+if its own implementation needs to be compiled.}
+
+When running @racketmodname[setup] via @exec{racket}, supply the
+@exec{@Flag{N} raco} to ensure that command-line arguments are parsed
+the same way as for @exec{raco setup}, as opposed to a legacy
+command-line mode.
+
 @; ------------------------------------------------------------------------
 
 @section[#:tag ".plt-archives"]{API for Installing @filepath{.plt} Archives}
@@ -1237,6 +1371,13 @@ function for installing a single @filepath{.plt} file.
   Many of these paths can be configured through the
   @tech{configuration directory} (see @secref["config-file"]).}
 
+In cross-platform build mode (see @secref["cross-system"]), the
+functions provided by @racketmodname[setup/dirs] generally report
+target-system paths, instead of current-system paths. The exceptions are
+@racket[get-lib-search-dirs] and @racket[find-dll-dir], which report
+current-system paths while @racket[get-cross-lib-search-dirs] and
+@racket[find-cross-dll-dir] report target-system paths.
+
 @(define-syntax-rule (see-config id)
    @elem{See also @racket['id] in @secref["config-file"].})
 
@@ -1272,10 +1413,11 @@ function for installing a single @filepath{.plt} file.
   A @racket[#f] result indicates that no configuration directory
   is available.}
 
-@defproc[(find-links-file) path?]{
+@defproc[(find-links-file) (or/c path? #f)]{
   Returns a path to the installation's @tech[#:doc
   reference-doc]{collection links file}.  The file indicated by the
-  returned path may or may not exist.
+  returned path may or may not exist. A @racket[#f] result indicates
+  that no links file is available.
 
   @see-config[links-file]}
 
@@ -1284,7 +1426,7 @@ function for installing a single @filepath{.plt} file.
   links file}.  The file indicated by the returned path may or may not
   exist.}
 
-@defproc[(get-links-search-files) path?]{
+@defproc[(get-links-search-files) (listof path?)]{
   Returns a list of paths to installation @tech[#:doc
   reference-doc]{collection links files} to search in
   order. (Normally, the result includes the result of
@@ -1294,10 +1436,11 @@ function for installing a single @filepath{.plt} file.
 
   @see-config[links-search-files]}
 
-@defproc[(find-pkgs-dir) path?]{
+@defproc[(find-pkgs-dir) (or/c path? #f)]{
   Returns a path to the directory containing packages with
   installation scope; the directory indicated by the returned path may
-  or may not exist.
+  or may not exist. A @racket[#f] result indicates that no package-installation
+  directory is available.
 
   @see-config[pkgs-dir]}
 
@@ -1347,26 +1490,55 @@ function for installing a single @filepath{.plt} file.
   indicated by the returned path may or may not exist.}
 
 @defproc[(get-lib-search-dirs) (listof path?)]{
-  Returns a list of paths to search for foreign libraries. Unless it is
-  configured otherwise, the result includes any non-@racket[#f] result of
-  @racket[(find-lib-dir)]
-  and @racket[(find-user-lib-dir)]---but the latter is included only if the
-  value of the @racket[use-user-specific-search-paths] parameter
-  is @racket[#t].
+  Returns a list of paths to search for foreign libraries.
+
+  Unless it is configured otherwise, and except in cross-platform
+  build mode, the result includes any non-@racket[#f] result of
+  @racket[(find-lib-dir)] and @racket[(find-user-lib-dir)]---but the
+  latter is included only if the value of the
+  @racket[use-user-specific-search-paths] parameter is @racket[#t].
+
+  In cross-platform build mode (see @secref["cross-system"]),
+  @racket[get-lib-search-dirs] reports a result suitable for the
+  current system, instead of the target system. See also
+  @racket[get-cross-lib-search-dirs].
 
   @see-config[lib-search-dirs]
 
   @history[#:changed "6.1.1.4" @elem{Dropped @racket[(find-dll-dir)]
                                      from the set of paths to
                                      explicitly include in the
-                                     default.}]}
+                                     default.}
+           #:changed "6.9.0.1" @elem{Changed behavior in cross-platform build mode.}]}
+
+@defproc[(get-cross-lib-search-dirs) (listof path?)]{
+  Like @racket[get-lib-search-dirs], but in cross-platform build mode,
+  reports directories for the target system (including any
+  non-@racket[#f] result of @racket[(find-lib-dir)], etc.)
+  instead of the current system.
+
+  @history[#:added "6.9.0.1"]}
 
 @defproc[(find-dll-dir) (or/c path? #f)]{
   Returns a path to the directory that contains DLLs for use with the
   current executable (e.g., @filepath{libracket.dll} on Windows).
   The result is @racket[#f] if no such directory is available, or if no
   specific directory is available (i.e., other than the platform's normal
-  search path).}
+  search path).
+
+  In cross-platform build mode (see @secref["cross-system"]),
+  @racket[find-dll-dir] reports a result suitable for the current
+  system, instead of the target system. See also
+  @racket[find-cross-dll-dir].
+
+  @history[#:changed "6.9.0.1" @elem{Changed behavior in cross-platform build mode.}]}
+
+@defproc[(find-cross-dll-dir) (or/c path? #f)]{
+  Like @racket[find-dll-dir], but in cross-platform build mode,
+  reports a directory for the target system
+  instead of the current system.
+
+  @history[#:added "6.9.0.1"]}
 
 @defproc[(find-share-dir) (or/c path? #f)]{ Returns a path to the
   installation's @filepath{share} directory, which contains installed
@@ -1958,19 +2130,20 @@ run in cross-installation mode.
 For example, if an in-place Racket installation for a different
 platform resides at @nonterm{cross-dir}, then
 
-@commandline{racket -G @nonterm{cross-dir}/etc -X @nonterm{cross-dir}/collects -l- raco pkg}
+@commandline{racket -C -G @nonterm{cross-dir}/etc -X @nonterm{cross-dir}/collects -l- raco pkg}
 
 runs @exec{raco pkg} using the current platform's @exec{racket}
 executable, but using the collections and other configuration
 information of @nonterm{cross-dir}, as well as modifying the packages
 of @nonterm{cross-dir}. That can work as long as no platform-specific
 libraries need to run to perform the requested @exec{raco pkg} action
-(e.g., when installing built packages).
+(e.g., when installing built packages), or as long as the current
+platform's installation already includes those libraries.
 
 
 @history[#:added "6.3"]
 
-@defproc[(cross-system-type [mode (or/c 'os 'word 'gc 'link 'machine
+@defproc[(cross-system-type [mode (or/c 'os 'word 'gc 'vm 'link 'machine
                                         'so-suffix 'so-mode 'fs-change)
                             'os])
          (or/c symbol? string? bytes? exact-positive-integer? vector?)]{
@@ -1978,10 +2151,12 @@ libraries need to run to perform the requested @exec{raco pkg} action
 Like @racket[system-type], but for the target platform instead of the
 current platform in cross-installation mode. When not in
 cross-installation mode, the results are the same as for
-@racket[system-type].}
+@racket[system-type].
+
+See also @racket['cross] mode for @racket[system-type].}
 
 
-@defproc[(cross-system-library-subpath [mode (or/c 'cgc '3m #f)
+@defproc[(cross-system-library-subpath [mode (or/c 'cgc '3m 'cs #f)
                                              (system-type 'gc)])
          path-for-some-system?]{
 
@@ -2010,11 +2185,10 @@ Returns @racket[#t] if cross-installation mode has been detected,
 @defproc[(load-collections-xref [on-load (-> any/c) (lambda () (void))])
          xref?]{
 
-Like @racket[load-xref], but automatically find all cross-reference files for
-manuals that have been installed with @exec{raco setup}.
-
-A cached copy of cross-reference information can be used, in which
-case @racket[on-load] is @emph{not} called.}
+Either creates and caches or returns a cached cross-reference record
+created with @racket[make-collections-xref]. The @racket[on-load]
+function is called only when a previously cached record is not
+returned.}
 
 
 @defproc[(make-collections-xref [#:no-user? no-user? any/c #f]
@@ -2024,7 +2198,9 @@ case @racket[on-load] is @emph{not} called.}
                                 [#:register-shutdown! register-shutdown! ((-> any) . -> . any) void])
          xref?]{
 
-Like @racket[load-collections-xref], but takes advantage of a
+Like @racket[load-xref], but automatically finds all cross-reference
+files for manuals that have been installed with @exec{raco setup}.
+The resulting cross-reference record takes advantage of a
 cross-reference database @racket[db-path], when support is available,
 to delay the loading of cross-reference details until needed.
 
@@ -2083,13 +2259,16 @@ installation or in a user-specific location, respectively, if
 
 @history[#:added "1.1"]
 
-@defproc[(materialize-user-docs [on-setup ((-> boolean?) -> any) (lambda (setup) (setup))])
+@defproc[(materialize-user-docs [on-setup ((-> boolean?) -> any) (lambda (setup) (setup))]
+                                [#:skip-user-doc-check? skip-user-doc-check? any/c #f])
          void?]{
 
 Checks whether a user-specific documentation entry point already
 exists in @racket[(find-user-doc-dir)], and if not, runs @exec{raco
 setup} in a mode that will create the entry point (to have the same
-content as the installation's documentation entry point.)
+content as the installation's documentation entry point.) If
+@racket[skip-user-doc-check?] is not @racket[#f], then skips the
+check for the user-specific documentation entry point.
 
 The run of @exec{raco setup} is packaged in a thunk that is provided to
 @racket[on-setup], which can adjust the current output and error ports
@@ -2097,4 +2276,6 @@ as appropriate and check the thunk's result for success.
 
 The @racket[on-setup] argument is not called if the documentation entry
 point already exists in @racket[(find-user-doc-dir)].
+
+@history[#:changed "1.1" @list{Added the @racket[skip-user-doc-check?] argument.}]
 }

@@ -212,63 +212,27 @@
      (#%require '#%unsafe)
      (display unsafe-car)))
 
-(require compiler/zo-structs
-         compiler/zo-marshal)
-
-(define unsafe-synth-zo
-  (let ([bstr
-         (zo-marshal
-          (compilation-top
-           10
-           #hash()
-           (prefix 0
-                   (list 'dummy)
-                   null
-                   'insp0)
-           (mod 'unsafe
-                'unsafe
-                (module-path-index-join #f #f)
-                (prefix 0
-                        (list (module-variable (module-path-index-join ''#%unsafe #f)
-                                               'unsafe-car
-                                               -1
-                                               0
-                                               #f))
-                        null
-                        'insp0)
-                null
-                null
-                null ; body
-                null
-                null
-                0
-                (toplevel 0 0 #f #f)
-                #f
-                #f
-                #hash()
-                null
-                null
-                null)))])
-    (parameterize ([read-accept-compiled #t])
-      (read (open-input-bytes bstr)))))
+(require (only-in racket/unsafe/ops unsafe-car)
+         compiler/zo-structs
+         compiler/zo-marshal
+         (only-in '#%linklet primitive->compiled-position))
 
 ;; - - - - - - - - - - - - - - - - - - - -
 
 (define (xeval e)
   (eval
    (if (bytes? e)
-       (parameterize ([read-accept-compiled #t]
-                      ;; The read-time inspector is supposed to
-                      ;; be irrelevant; only the declaration-time
-                      ;; inspector should matter
-                      [current-code-inspector (make-inspector)])
+       (parameterize ([read-accept-compiled #t])
          (read (open-input-bytes e)))
        e)))
 
 (define (mp-try-all zero one two/no-protect two/protect 
                     three/nabbed three/pnabbed three/snabbed three/nfnabbed three/nfpnabbed three/nfsnabbed 
                     three/normal
-                    get-one-inspector get-three-inspector fail-pnab? fail-prot? fail-three? np-ok? fail-three-comp?)
+                    get-one-inspector get-three-inspector fail-pnab? fail-prot? fail-three? np-ok? fail-three-comp?
+                    #:via-2-ok? [via-2-ok? #f]
+                    #:unprot-ok? [unprot-ok? #f]
+                    #:early-ok? [early-ok? #f])
   (let ([try
          (lambda (two three v fail-three?)
            (let ([ns (make-base-namespace)]
@@ -291,17 +255,17 @@
              (test #t regexp-match?
                    (if (byte-regexp? v) v (byte-regexp (string->bytes/utf-8 (format "~a\n" v))))
                    (get-output-bytes p))))])
-    (try two/no-protect three/nabbed (if fail-prot? #rx#"unexported .* unexp" #rx#"one .5.") fail-three?)
-    (try two/no-protect three/nfnabbed (if (and fail-prot? (not np-ok?)) #rx#"unexported .* unexp" #rx#"two .5.") fail-three?)
-    (try two/no-protect three/pnabbed (if fail-pnab? #rx#"protected .* prot" #rx#"zero .8.") fail-three?)
-    (try two/no-protect three/nfpnabbed (if (and fail-pnab? (not np-ok?)) #rx#"protected .* prot" #rx#"two .8.") (or fail-three? fail-three-comp?))
-    (try two/no-protect three/snabbed (if (and fail-prot? np-ok?) #rx#"unexported .* stx" #rx#"one .13.") fail-three?)
+    (try two/no-protect three/nabbed (if (and fail-prot? (not early-ok?)) #rx#"unexported" #rx#"one .5.") fail-three?)
+    (try two/no-protect three/nfnabbed (if (and fail-prot? (not np-ok?) (not unprot-ok?)) #rx#"unexported .* unexp" #rx#"two .5.") fail-three?)
+    (try two/no-protect three/pnabbed (if (and fail-pnab? (not early-ok?)) #rx#"protected" #rx#"zero .8.") fail-three?)
+    (try two/no-protect three/nfpnabbed (if (and fail-pnab? (not np-ok?) (not unprot-ok?)) #rx#"protected .* prot" #rx#"two .8.") (or fail-three? fail-three-comp?))
+    (try two/no-protect three/snabbed (if (and fail-prot? (not np-ok?) (not via-2-ok?) (not early-ok?)) #rx#"unexported .* stx" #rx#"one .13.") fail-three?)
     (try two/no-protect three/nfsnabbed #rx#"two .13." fail-three?)
     (try two/no-protect three/normal #rx#"two .10." fail-three?)
-    (try two/protect three/nabbed (if fail-prot? #rx#"unexported .* unexp" #rx#"one .5.") fail-three?)
-    (try two/protect three/pnabbed (if fail-pnab? #rx#"protected .* prot" #rx#"zero .8.") fail-three?)
-    (try two/protect three/snabbed (if (and fail-prot? np-ok?) #rx#"unexported .* stx" #rx#"one .13.") fail-three?)
-    (try two/protect three/normal  (if fail-prot? #rx#"protected .* normal" #rx#"two .10.") fail-three?)))
+    (try two/protect three/nabbed (if fail-prot? #rx#"unexported" #rx#"one .5.") fail-three?)
+    (try two/protect three/pnabbed (if fail-pnab? #rx#"protected" #rx#"zero .8.") fail-three?)
+    (try two/protect three/snabbed (if (and fail-prot? (not np-ok?) (not via-2-ok?)) #rx#"unexported .* stx" #rx#"one .13.") fail-three?)
+    (try two/protect three/normal  (if fail-prot? #rx#"protected" #rx#"two .10.") fail-three?)))
 
 (define (unsafe-try unsafe get-inspector unsafe-fail? unsafe-ref-fail? read-fail?)
   (let ([ns (make-base-namespace)]
@@ -398,36 +362,13 @@
             three/nabbed-c three/pnabbed-c three/snabbed-c three/nfnabbed-c three/nfpnabbed-c three/nfsnabbed-c 
             three/normal-c
             current-code-inspector make-inspector #f #f #f #f #f)
-(unsafe-try unsafe-c make-inspector #f #f #t)
-
-;; zo and source; changing inspector affects access in various ways-----------------
-
-(displayln "zo and source:")
-(mp-try-all zero-zo one-zo two/no-protect-zo two/protect-zo 
-            three/nabbed-zo three/pnabbed-zo three/snabbed-zo three/nfnabbed-zo three/nfpnabbed-zo three/nfsnabbed-zo 
-            three/normal-zo
-            make-inspector current-code-inspector #t #f #f #f #t)
-(unsafe-try unsafe-zo make-inspector #f #f #t)
-(unsafe-try unsafe-synth-zo make-inspector #f #t #f)
-
-(displayln "zo and source, second:")
-(mp-try-all zero one two/no-protect two/protect 
-            three/nabbed three/pnabbed three/snabbed-zo three/nfnabbed three/nfpnabbed three/nfsnabbed-zo 
-            three/normal
-            make-inspector current-code-inspector #t #f #t #f #t)
-(unsafe-try unsafe make-inspector #t #t #f)
-
-(displayln "zo and source, third:")
-(mp-try-all zero-zo one-zo two/no-protect-zo two/protect-zo 
-            three/nabbed-zo three/pnabbed-zo three/snabbed-zo three/nfnabbed-zo three/nfpnabbed-zo three/nfsnabbed-zo 
-            three/normal-zo
-            current-code-inspector make-inspector #t #t #f #f #f)
+(unsafe-try unsafe-c make-inspector #f #f #f)
 
 (displayln "just source, weaken inspector:")
 (mp-try-all zero one two/no-protect two/protect 
             three/nabbed three/pnabbed three/snabbed three/nfnabbed three/nfpnabbed three/nfsnabbed 
             three/normal
-            current-code-inspector make-inspector #t #t #t #t #f)
+            current-code-inspector make-inspector #t #t #t #f #f #:unprot-ok? #t #:early-ok? #t)
 
 ;; ----------------------------------------
 
@@ -447,6 +388,74 @@
               (require (for-syntax racket/base) 'm)
               (begin-for-syntax unsafe-s16vector-ref)))
      exn:fail:syntax?)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(parameterize ([current-namespace (make-base-namespace)]
+               [current-code-inspector (make-inspector)])
+  (eval
+   ;; This compilation is intended to inline a call to `gen-for-each`,
+   ;; and the test is meant to ensure that the reference is allowed
+   (compile '(lambda (f) (for-each f '(1 2 3 4 5))))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(parameterize ([current-namespace (make-base-namespace)])
+  (define strong (current-code-inspector))
+  (define weak (make-inspector (current-code-inspector)))
+
+  (eval '(module A racket/base ;; A is controlled by strong, not by weak
+           (require (for-syntax racket/base))
+           (define s1 #'secret-val)
+           (define secret-val 'secret)
+           (define-syntax (A-identity stx)
+             (syntax-case stx ()
+               [(_ id) #`(quote-syntax #,(datum->syntax #'id 'secret-val))]))
+           (provide s1 A-identity)))
+
+  (eval '(require 'A))
+
+  (define s1 (eval 's1))
+
+  (define (get-id s)
+    (syntax-case s () [(_ id) #'id]))
+
+  (define s2 (get-id (expand `(A-identity ,s1))))
+  (define s2-weak1 (parameterize ([current-code-inspector weak])
+                     ;; Ends up with no inspector, since we're not
+                     ;; in a macro expansion:
+                     (datum->syntax s1 'secret-val)))
+  (define s2-weak2 (parameterize ([current-code-inspector weak])
+                     ;; Ends up with weak inspector, since no inspector
+                     ;; on `s2-weak1 turns into a weak inspector:
+                     (get-id (expand `(A-identity ,s2-weak1)))))
+
+  (define s3-weak
+    (parameterize ((current-code-inspector strong))
+      ;; Doesn't get strong inspector back:
+      (datum->syntax s2-weak1 'secret-val)))
+
+  (parameterize ([current-code-inspector weak])
+    (test 'secret eval s1)
+    (test 'secret eval s2)
+    (err/rt-test (eval s2-weak1) exn:fail:syntax?)
+    (err/rt-test (eval s2-weak2) exn:fail:syntax?)
+    (err/rt-test (eval s3-weak) exn:fail:syntax?))
+
+  (parameterize ([current-code-inspector strong])
+    (test 'secret eval s1)
+    (test 'secret eval s2)
+    (test 'secret eval s2-weak1)
+    (err/rt-test (eval s2-weak2) exn:fail:syntax?)
+    (test 'secret eval s3-weak))
+
+  (parameterize ([current-code-inspector weak])
+    (let ([s4-weak
+           ;; Try to get `struct` to synthesize a `secret-val`
+           ;; that has the `racket/base` inspector:
+           (syntax-case (expand (datum->syntax s1 '(struct secret (val)))) ()
+             [(_ a b (_ (_ _ _ c) . _) . _) #'c])])
+      (err/rt-test (eval s4-weak) exn:fail:syntax?))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

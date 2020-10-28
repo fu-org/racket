@@ -163,12 +163,13 @@ Explicitly converts a specific kind of @tech{hash set} to a sequence for
 use with @racket[for] forms.
 
 As with @racket[in-list] and some other sequence constructors,
-@racket[in-immutable-set] is more performant when it appears directly in a
+@racket[in-immutable-set] performs better when it appears directly in a
 @racket[for] clause.
 
 These sequence constructors are compatible with
 @secref["Custom_Hash_Sets" #:doc '(lib "scribblings/reference/reference.scrbl")].
 
+@history[#:added "6.4.0.7"]
 }
 
 @section{Set Predicates and Contracts}
@@ -649,14 +650,14 @@ Supported for any @racket[st] and @racket[st2] that both @supp{support}
 
 @defproc[(subset? [st generic-set?] [st2 generic-set?]) boolean?]{
 
-Returns @racket[#t] if @racket[st2] contains every member of @racket[st];
+@index["set-subset?"]{Returns} @racket[#t] if @racket[st2] contains every member of @racket[st];
 returns @racket[#f] otherwise.
 
-If @racket[st0] is a list, each @racket[st] must also be a list.  This
+If @racket[st] is a list, then @racket[st2] must also be a list.  This
 operation runs on lists in time proportional to the size of @racket[st] times
 the size of @racket[st2].
 
-If @racket[st0] is a @tech{hash set}, each @racket[st] must also be a
+If @racket[st] is a @tech{hash set}, then @racket[st2] must also be a
 @tech{hash set} that uses the same comparison function (@racket[equal?],
 @racket[eqv?], or @racket[eq?]).  The mutability and key strength of the hash
 sets may differ.  This operation runs on hash sets in time proportional to the
@@ -677,11 +678,11 @@ Supported for any @racket[st] that @supp{supports} @racket[set->stream].
 Returns @racket[#t] if @racket[st2] contains every member of @racket[st] and at
 least one additional element; returns @racket[#f] otherwise.
 
-If @racket[st0] is a list, each @racket[st] must also be a list.  This
+If @racket[st] is a list, then @racket[st2] must also be a list.  This
 operation runs on lists in time proportional to the size of @racket[st] times
 the size of @racket[st2].
 
-If @racket[st0] is a @tech{hash set}, each @racket[st] must also be a
+If @racket[st] is a @tech{hash set}, then @racket[st2] must also be a
 @tech{hash set} that uses the same comparison function (@racket[equal?],
 @racket[eqv?], or @racket[eq?]).  The mutability and key strength of the hash
 sets may differ.  This operation runs on hash sets in time proportional to the
@@ -739,7 +740,7 @@ Supported for any @racket[st] that @supp{supports} @racket[set->stream].
 
 }
 
-@defproc[(impersonate-hash-set [st (or/c mutable-set? weak-set?)]
+@defproc[(impersonate-hash-set [st (or/c set-mutable? set-weak?)]
                                [inject-proc (or/c #f (-> set? any/c any/c))]
                                [add-proc (or/c #f (-> set? any/c any/c))]
                                [shrink-proc (or/c #f (-> set? any/c any/c))]
@@ -748,7 +749,7 @@ Supported for any @racket[st] that @supp{supports} @racket[set->stream].
                                [equal-key-proc (or/c #f (-> set? any/c any/c)) #f]
                                [prop impersonator-property?]
                                [prop-val any/c] ... ...)
-         (and/c (or/c mutable-set? weak-set?) impersonator?)]{
+         (and/c (or/c set-mutable? set-weak?) impersonator?)]{
  Impersonates @racket[st], redirecting various set operations via the given procedures.
 
  The @racket[inject-proc] procedure
@@ -792,7 +793,7 @@ Supported for any @racket[st] that @supp{supports} @racket[set->stream].
  override impersonator property values of @racket[st].
 }
 
-@defproc[(chaperone-hash-set [st (or/c set? mutable-set? weak-set?)]
+@defproc[(chaperone-hash-set [st (or/c set? set-mutable? set-weak?)]
                              [inject-proc (or/c #f (-> set? any/c any/c))]
                              [add-proc (or/c #f (-> set? any/c any/c))]
                              [shrink-proc (or/c #f (-> set? any/c any/c))]
@@ -801,7 +802,7 @@ Supported for any @racket[st] that @supp{supports} @racket[set->stream].
                              [equal-key-proc (or/c #f (-> set? any/c any/c)) #f]
                              [prop impersonator-property?]
                              [prop-val any/c] ... ...)
-         (and/c (or/c set? mutable-set? weak-set?) chaperone?)]{
+         (and/c (or/c set? set-mutable? set-weak?) chaperone?)]{
  Chaperones @racket[st]. Like @racket[impersonate-hash-set] but with
  the constraints that the results of the @racket[inject-proc],
  @racket[add-proc], @racket[shrink-proc], @racket[extract-proc], and
@@ -932,15 +933,15 @@ Produces seven values:
 
 @itemize[
 @item{a predicate recognizing all instances of the new set type,}
-@item{a predicate recognizing immutable instances,}
-@item{a predicate recognizing mutable instances,}
 @item{a predicate recognizing weak instances,}
-@item{a constructor for immutable instances,}
+@item{a predicate recognizing mutable instances,}
+@item{a predicate recognizing immutable instances,}
+@item{a constructor for weak instances,}
 @item{a constructor for mutable instances, and}
-@item{a constructor for weak instances.}
+@item{a constructor for immutable instances.}
 ]
 
-See @racket[define-custom-hash-types] for an example.
+See @racket[define-custom-set-types] for an example.
 
 }
 

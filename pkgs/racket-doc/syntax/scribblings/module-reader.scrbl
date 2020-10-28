@@ -159,7 +159,7 @@ identifiers used by the @racket[reader-option]s.
        is produced, including calls to the @racket[read] and
        @racket[read-syntax] functions and to any @racket[#:wrapper1]
        and @racket[#:wrapper2] functions. The
-       @racket[#:module-wrapper1]-specified function must accept a
+       @racket[#:module-wrapper]-specified function must accept a
        thunk, and it can optionally accept a boolean that indicates
        whether it is used in @racket[read] (@racket[#f]) or
        @racket[read-syntax] (@racket[#t]) mode.
@@ -361,7 +361,7 @@ concisely:
 ]
 
 For such cases, however, the alternative reader constructor
-@racket[make-meta-reader] implements a might tightly controlled
+@racket[make-meta-reader] implements a more tightly controlled
 reading of the module language.
 
 @history[#:changed "6.3" @elem{Added the @racket[#:module-reader] option.}]}
@@ -417,6 +417,8 @@ succeeds, then the loaded module's @racketidfont{read},
 @racketidfont{read-syntax}, or @racketidfont{get-info} export is
 passed to @racket[convert-read], @racket[convert-read-syntax], or
 @racket[convert-get-info], respectively.
+See @secref["parse-reader" #:doc ref-doc] for information on
+the protocol of @racketidfont{read} and @racketidfont{read-syntax}.
 
 @margin-note{The @racketmodname[at-exp] language supplies
   @racket[convert-read] and @racket[convert-read-syntax] to add

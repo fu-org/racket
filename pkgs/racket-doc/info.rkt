@@ -6,7 +6,7 @@
                ["base" #:version "6.5.0.2"]
                "net-lib"
                "sandbox-lib"
-               ["scribble-lib" #:version "1.14"]
+               ["scribble-lib" #:version "1.34"]
                "racket-index"))
 (define build-deps '("rackunit-doc"
                      "compatibility"
@@ -35,8 +35,12 @@
                      "planet-doc"
                      "mzscheme-doc"
                      "compiler-lib"
-                     "drracket"))
+                     "drracket"
+                     "math-doc"
+                     "math-lib"))
 
 (define pkg-desc "Base Racket documentation")
 
 (define pkg-authors '(eli jay matthias mflatt robby ryanc samth))
+
+(define version "1.1")

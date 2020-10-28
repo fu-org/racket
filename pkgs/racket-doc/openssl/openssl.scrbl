@@ -2,12 +2,18 @@
 @(require scribble/manual
           racket/list
           (for-label openssl
-                     racket
+                     (except-in racket sha1-bytes)
                      openssl/sha1
                      openssl/md5
                      openssl/libcrypto
                      openssl/libssl
                      (only-in ffi/unsafe ffi-lib ffi-lib?)))
+
+@(define-syntax-rule (define-racket/base sha1-bytes-id)
+   (begin
+     (require (for-label (only-in racket/base sha1-bytes)))
+     (define sha1-bytes-id @racket[sha1-bytes])))
+@(define-racket/base racket:sha1-bytes)
 
 @title{OpenSSL: Secure Communication}
 
@@ -155,13 +161,24 @@ essentially equivalent to the following:
 The context is cached, so different calls to
 @racket[ssl-secure-client-context] return the same context unless
 @racket[(ssl-default-verify-sources)] has changed.
+
+Note that @racket[(ssl-secure-client-context)] returns a sealed
+context, so it is not possible to add a private key and certificate
+chain to it. If client credentials are required, use
+@racket[ssl-make-client-context] instead.
 }
 
 
 @defproc[(ssl-make-client-context
           [protocol (or/c 'secure 'auto
                           'sslv2-or-v3 'sslv2 'sslv3 'tls 'tls11 'tls12)
-                    'auto])
+                    'auto]
+          [#:private-key private-key
+                         (or/c (list/c 'pem path-string?)
+                               (list/c 'der path-string?)
+                               #f)
+                         #f]
+          [#:certificate-chain certificate-chain (or/c path-string? #f) #f])
          ssl-client-context?]{
 
 Creates a context to be supplied to @racket[ssl-connect]. The context
@@ -202,11 +219,19 @@ details. See also
 @racket[supported-client-protocols] and
 @racket[supported-server-protocols].
 
+If @racket[private-key] and @racket[certificate-chain] are provided,
+they are loaded into the context using @racket[ssl-load-private-key!]
+and @racket[ssl-load-certificate-chain!], respectively. Client
+credentials are rarely used with HTTPS, but they are occasionally used
+in other kind of servers.
+
 @history[
 #:changed "6.1" @elem{Added @racket['tls11] and @racket['tls12].}
 #:changed "6.1.1.3" @elem{Default to new @racket['auto] and disabled SSL
                           2.0 and 3.0 by default.}
 #:changed "6.3.0.12" @elem{Added @racket['secure].}
+#:changed "7.3.0.10" @elem{Added @racket[#:private-key] and @racket[#:certificate-chain]
+arguments.}
 ]}
 
 
@@ -240,7 +265,7 @@ current platform for client connections.
 @section{TCP-like Server Procedures}
 
 @defproc[(ssl-listen
-	  [port-no (integer-in 1 65535)]
+	  [port-no listen-port-number?]
 	  [queue-k exact-nonnegative-integer? 5]
 	  [reuse? any/c #f]
 	  [hostname-or-#f (or/c string? #f) #f]
@@ -303,7 +328,8 @@ Analogous to @racket[tcp-abandon-port].}
 
 @defproc[(ssl-addresses [p (or/c ssl-port? ssl-listener?)]
                         [port-numbers? any/c #f])
-         void?]{
+         (or/c (values string? string?)
+               (values string? port-number? string? listen-port-number?))]{
 
 Analogous to @racket[tcp-addresses].}
 
@@ -319,14 +345,28 @@ Returns @racket[#t] of @racket[v] is an SSL port produced by
 @defproc[(ssl-make-server-context
           [protocol (or/c 'secure 'auto
                           'sslv2-or-v3 'sslv2 'sslv3 'tls 'tls11 'tls12)
-                    'auto])
+                    'auto]
+          [#:private-key private-key
+                         (or/c (list/c 'pem path-string?)
+                               (list/c 'der path-string?)
+                               #f)
+                         #f]
+          [#:certificate-chain certificate-chain (or/c path-string? #f) #f])
          ssl-server-context?]{
 
 Like @racket[ssl-make-client-context], but creates a server context.
 For a server context, the @racket['secure] protocol is the same as
 @racket['auto].
 
-@history[#:changed "6.3.0.12" @elem{Added @racket['secure].}]}
+If @racket[private-key] and @racket[certificate-chain] are provided,
+they are loaded into the context using @racket[ssl-load-private-key!]
+and @racket[ssl-load-certificate-chain!], respectively.
+
+@history[
+#:changed "6.3.0.12" @elem{Added @racket['secure].}
+#:changed "7.3.0.10" @elem{Added @racket[#:private-key] and @racket[#:certificate-chain]
+arguments.}
+]}
 
 
 @defproc[(ssl-server-context? [v any/c]) boolean?]{
@@ -359,7 +399,7 @@ current platform for server connections.
 @defproc[(ports->ssl-ports
            [input-port input-port?]
 	   [output-port output-port?]
-           [#:mode mode symbol? 'accept]
+           [#:mode mode (or/c 'connect 'accept) 'accept]
 	   [#:context context
                       (or/c ssl-client-context? ssl-server-context?)
                       ((if (eq? mode 'accept)
@@ -612,7 +652,7 @@ collection for testing purposes where the peer identifies itself using
 @deftogether[[
 @defproc[(ssl-server-context-enable-dhe!
            [context ssl-server-context?]
-           [dh-param-path path-string? ssl-dh4096-param-path])
+           [dh-param (or/c path-string? bytes?) ssl-dh4096-param-bytes])
          void?]
 @defproc[(ssl-server-context-enable-ecdhe!
            [context ssl-server-context?]
@@ -625,8 +665,9 @@ Enables cipher suites that provide
 forward secrecy} via ephemeral Diffie-Hellman (DHE) or ephemeral
 elliptic-curve Diffie-Hellman (ECDHE) key exchange, respectively.
 
-For DHE, the @racket[dh-param-path] must be a path to a PEM file
-containing DH parameters.
+For DHE, the @racket[dh-param] must be a path to a @filepath{.pem}
+file containing DH parameters or the content of such a file as a byte
+string.
 
 For ECDHE, the @racket[curve-name] must be one of the following
 symbols naming a standard elliptic curve:
@@ -637,12 +678,16 @@ symbols naming a standard elliptic curve:
          secp160k1 secp160r1 secp160r2 secp192k1 secp224k1 secp224r1 secp256k1
          secp384r1 secp521r1 prime192v prime256v))
   ", ").
-}
 
-@defthing[ssl-dh4096-param-path path?]{
+@history[#:changed "7.7.0.4" @elem{Allow a byte string as the @racket[dh-param]
+                                   argument to @racket[ssl-server-context-enable-dhe!].}]}
 
-Path for 4096-bit Diffie-Hellman parameters.
-}
+@defthing[ssl-dh4096-param-bytes bytes?]{
+
+Byte string describing 4096-bit Diffie-Hellman parameters in @filepath{.pem} format.
+
+@history[#:changed "7.7.0.4" @elem{Added as a replacement for
+                                   @racketidfont{ssl-dh4096-param-path}.}]}
 
 @defproc[(ssl-set-server-name-identification-callback!
            [context ssl-server-context?]
@@ -789,6 +834,26 @@ If @racket[ssl-peer-verified?] would return @racket[#t] for
 the certificate presented by the SSL port's peer, otherwise the result
 is @racket[#f].}
 
+@defproc[(ssl-channel-binding [p ssl-port?]
+                              [type (or/c 'tls-unique 'tls-server-end-point)])
+         bytes?]{
+
+Returns channel binding information for the TLS connection of
+@racket[p]. An authentication protocol run over TLS can incorporate
+information identifying the TLS connection (@racket['tls-unique]) or
+server certificate (@racket['tls-server-end-point]) into the
+authentication process, thus preventing the authentication steps from
+being replayed on another channel. Channel binding is described in
+general in @hyperlink["https://tools.ietf.org/html/rfc5056"]{RFC 5056};
+channel binding for TLS is described in
+@hyperlink["https://tools.ietf.org/html/rfc5929"]{RFC 5929}.
+
+If the channel binding cannot be retrieved (for example, if the
+connection is closed), an exception is raised.
+
+@history[#:added "7.7.0.9"]}
+
+
 @; ----------------------------------------------------------------------
 
 @section{SHA-1 Hashing}
@@ -812,7 +877,10 @@ The @racket[sha1] function composes @racket[bytes->hex-string] with
 
 Returns a 20-byte byte string that represents the SHA-1 hash of the
 content from @racket[in], consuming all of the input from @racket[in]
-until an end-of-file.}
+until an end-of-file.
+
+The @racket:sha1-bytes function from @racketmodname[racket/base]
+computes the same result and is only slightly slower.}
 
 @defproc[(bytes->hex-string [bstr bytes?]) string?]{
 

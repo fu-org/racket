@@ -8,12 +8,24 @@
 	     [(insp1) (make-inspector)]
 	     [(insp2) (make-inspector)])
   (arity-test make-struct-type-property 1 4)
+  (arity-test struct-type-property-accessor-procedure? 1 1)
+  (arity-test struct-type-property-predicate-procedure? 1 2)
   (test 3 primitive-result-arity make-struct-type-property)
   (arity-test p? 1 1)
   (arity-test p-ref 1 2)
   (arity-test struct-type-property? 1 1)
   (test #t struct-type-property? prop:p)
   (test #f struct-type-property? 5)
+  (test #t struct-type-property-accessor-procedure? p-ref)
+  (test #t struct-type-property-accessor-procedure? p2-ref)
+  (test #f struct-type-property-predicate-procedure? p-ref)
+  (test #f struct-type-property-predicate-procedure? p? prop:p2)
+  (test #t struct-type-property-predicate-procedure? p?)
+  (test #t struct-type-property-predicate-procedure? p? #f)
+  (test #t struct-type-property-predicate-procedure? p? prop:p)
+  (err/rt-test (struct-type-property-predicate-procedure? p? 'oops))
+  (err/rt-test (struct-type-property-predicate-procedure? 7 'oops))
+  (err/rt-test (struct-type-property-predicate-procedure? 7 0))
   (let-values ([(type make pred sel set) (make-struct-type 'a #f 2 1 'un (list (cons prop:p 87)) (make-inspector insp1))]
 	       [(typex makex predx selx setx) (make-struct-type 'ax #f 0 5 #f null (make-inspector insp2))])
     (arity-test make-struct-type 4 11)
@@ -57,6 +69,13 @@
       (test #f struct-mutator-procedure? sel1)
       (test #f struct-accessor-procedure? set1)
       (err/rt-test (make-struct-field-accessor sel 3) exn:application:mismatch?)
+      (test 'make-a object-name (struct-type-make-constructor type))
+      (let ([new-ctor (struct-type-make-constructor type 'some-other-name)])
+        (test 'some-other-name object-name new-ctor)
+        (test #t struct-constructor-procedure? new-ctor))
+      (let ([new-pred (struct-type-make-predicate type)])
+        (test #t struct-predicate-procedure? new-pred)
+        (test #f struct-constructor-procedure? new-pred))
       (let ([an-a (make 'one 'two)]
 	    [an-ax (makex)])
         (test #f procedure-struct-type? type)
@@ -647,6 +666,11 @@
 (test #f inspector-superior? (make-inspector) (make-inspector))
 (test #t inspector-superior? (current-inspector) (make-inspector (make-inspector (make-inspector))))
 
+(test #t inspector? (make-sibling-inspector))
+(test #f inspector-superior? (current-inspector) (make-sibling-inspector))
+(test #f inspector-superior? (make-sibling-inspector) (current-inspector))
+(test #t inspector-superior? (current-inspector) (make-sibling-inspector (make-inspector)))
+
 ;; ------------------------------------------------------------
 ;; Property accessor errors
 
@@ -752,6 +776,23 @@
   (test 100 a-x (make-c 100 200 300 400)))
 
 ;; ------------------------------------------------------------
+;; struct->vector on non `struct?`
+
+(test #f struct? void)
+(test #f struct? (procedure-rename void 'still-void))
+(test #f struct? (procedure-reduce-arity void 1))
+(test #f struct? (cons 1 2))
+(test #f struct? (box 1))
+(test #f struct? (vector 1 2 3))
+
+(test '#(struct:procedure ...) struct->vector void)
+(test '#(struct:procedure ...) struct->vector (procedure-rename void 'still-void))
+(test '#(struct:procedure ...) struct->vector (procedure-reduce-arity void 1))
+(test '#(struct:pair ...) struct->vector (cons 1 2))
+(test '#(struct:box ...) struct->vector (box 1))
+(test '#(struct:vector ...) struct->vector (vector 1 2 3))
+
+;; ------------------------------------------------------------
 ;; Prefab
 
 (let ([v1 #s(v one)]
@@ -841,6 +882,8 @@
   (define-values (s:tuple make-tuple tuple? tuple-ref tuple-set!)
     (make-struct-type 'tuple #f 1 0 #f
 		      (list (cons prop:custom-write tuple-print))))
+
+  (test "#<struct-type:tuple>" values (format "~s" s:tuple)) ; shouldn't trigger custom write
   
   (define (with-output-string thunk)
     (let ([p (open-output-string)])
@@ -1079,6 +1122,30 @@
   
   (syntax-test #'(struct-copy t (t 1 2 3) [a #:parent p 11])))
 
+(module test-struct-rename racket/base
+  (provide (rename-out [point point2d]))
+  (struct point (x y) #:transparent))
+
+(let ()
+  (local-require 'test-struct-rename)
+  (test (point2d 3 2) 'struct-copy1 (struct-copy point2d (point2d 1 2) [x 3])))
+
+(module test-struct-parent racket/base
+  (provide a)
+  (struct a (b-c) #:transparent))
+
+(let ()
+  (local-require 'test-struct-parent)
+  (struct a-b a (c) #:transparent)
+
+  (test (a-b 10 2) 'struct-copy1 (struct-copy a-b (a-b 1 2) [b-c #:parent a 10]))
+  (test (a-b 1 10) 'struct-copy2 (struct-copy a-b (a-b 1 2) [c 10])))
+
+(let ()
+  (local-require 'test-struct-parent)
+  (struct a-b a (d) #:transparent)
+  (syntax-test #'(struct-copy a-b (a-b 1 2) [c 10])))
+
 (test #t prefab-key? 'apple)
 (test #f prefab-key? '#(apple))
 (test #t prefab-key? '(apple 4))
@@ -1105,7 +1172,7 @@
   (define thing.id! (make-struct-field-mutator thing-set! 0))
 
   (test #t struct-mutator-procedure? thing.id!)
-  (err/rt-test (thing.id!  'new-val))
+  (err/rt-test (thing.id! (make-thing 1) 'new-val))
   
   (let ([f #f])
     ;; defeat inlining to ensure that thunk is JITted:
@@ -1175,6 +1242,244 @@
 (test #t ghost? (ghost 'red 'blinky))
 (test 'blinky ghost-name (struct-copy GHOST (ghost 'red 'blinky)))
 (syntax-test #'GHOST)
+
+(syntax-test #'(struct ghost (color name) #:extra-name GHOST #:omit-define-syntaxes)
+             "cannot be combined")
+
+;; ----------------------------------------
+;; Check `#:authentic`:
+
+(let ()
+  (struct posn (x y) #:authentic)
+  (test 1 posn-x (posn 1 2))
+  (err/rt-test (chaperone-struct (posn 1 2) posn-x (lambda (p x) x)))
+
+  ;; Subtype must be consistent:
+  (err/rt-test (let ()
+                 (struct posn3D posn (z))
+                 'ok)))
+
+(let ()
+  (struct posn (x y))
+
+  ;; Subtype must be consistent:
+  (err/rt-test (let ()
+                 (struct posn3D posn (z)
+                   #:authentic)
+                 'ok)))
+
+;; ----------------------------------------
+;; Check that constructing a prefab type via its key before via
+;; `make-struct-type` gets the mutability of auto fields right.
+
+(let ([s (string->symbol (format "s~a" (current-milliseconds)))])
+  (define v (read (open-input-string (format "#s((~a (2 #f)) 1 2)" s))))
+  (define-values (struct: make- ? -ref -set!)
+    (make-struct-type s #f 0 2 #f null 'prefab))
+  (-set! v 0 'ok)
+  (test 'ok -ref v 0))
+
+(let ([s (string->symbol (format "s~a" (current-milliseconds)))])
+  (define v (read (open-input-string (format "#s((~a (2 #f)) 'x 'y 'z 1 2)" s))))
+  (define-values (struct: make- ? -ref -set!)
+    (make-struct-type s #f 3 2 #f null 'prefab #f '(0 1 2)))
+  (-set! v 3 'ok)
+  (test 'ok -ref v 3))
+
+;; ----------------------------------------
+;; Check that prefab auto fields count as mutable
+
+(let ()
+  (struct flag ([x #:auto #:mutable]) #:prefab)
+  (define f (flag))
+  (set-flag-x! f 'ok)
+  (test 'ok flag-x f)
+
+  (err/rt-test (set-flag-x! 'no 'way) exn:fail:contract? #rx"^set-flag-x!:")
+
+  (define f2 (read (open-input-string "#s((flag (1 #f)) #f)")))
+  (test #f flag-x f2)
+  (set-flag-x! f2 'ok)
+  (test 'ok flag-x f2)
+
+  (struct flag-3d flag (y [z #:auto #:mutable]) #:prefab)
+  (define f3 (flag-3d 'y))
+  (set-flag-x! f3 'three)
+  (test 'three flag-x f3)
+  (set-flag-3d-z! f3 'zee)
+  (test 'zee flag-3d-z f3))
+
+;; ----------------------------------------
+;; Make sure that a JIT-inlined predicate doesn't
+;; fail improperly on chaperones and struct types
+
+(let ()
+  (define-values (prop:a a? a-ref) (make-struct-type-property 'a))
+  (define (mk-prop)
+    (define-values (prop:b b? b-ref) (make-struct-type-property 'b))
+    prop:b)
+
+  (struct posn (x y)
+    #:property prop:a 'yes)
+  (struct posn2 posn ()
+    #:property (mk-prop) 0
+    #:property (mk-prop) 1
+    #:property (mk-prop) 2
+    #:property (mk-prop) 3
+    #:property (mk-prop) 4
+    #:property (mk-prop) 5)
+
+  (define (f p)
+    (and (a? p)
+         (a-ref p 'no)))
+  (define (g p get-no)
+    (a-ref p get-no))
+  (set! f f)
+  (set! g g)
+  
+  (test 'yes f (posn 1 2))
+  (test 'yes f (posn2 1 2))
+  (test 'yes f (chaperone-struct (posn 1 2) posn-x (lambda (p x) x)))
+  (test 'yes f struct:posn)
+  (test #f f struct:arity-at-least)
+  (test #f f 5)
+  (test 'nope g 5 (lambda () 'nope))
+  (test 'nope g struct:arity-at-least (lambda () 'nope)))
+
+;; ----------------------------------------
+;; Make sure an indirect struct constructor reports
+;; the right arity when there are more than 6 fields
+
+(let ()
+  (struct b (case-sensitive 
+             printing-style 
+             fraction-style
+             show-sharing
+             insert-newlines
+             annotations))
+  (struct a (x y) #:super struct:b)
+  (test 8 procedure-arity a))
+
+;; ----------------------------------------
+;; Make sure all checking and good error messages are in place for
+;; position-based accessors and mutators:
+
+(let ()
+  (define-values (struct:s make-s s? s-ref s-set!)
+    (make-struct-type 's #f 3 0 #f null (current-inspector) #f '(0 1 2)))
+
+  (define s (make-s 1 2 3))
+
+  (test 1 s-ref s 0)
+  (test 2 s-ref s 1)
+  (test 3 s-ref s 2)
+
+  (err/rt-test (s-ref 's 0) exn:fail:contract? #rx"^s-ref:.*  expected: s[?]")
+  (err/rt-test (s-ref s -1) exn:fail:contract? #rx"^s-ref:.*  expected: exact-nonnegative-integer[?]")
+  (err/rt-test (s-ref s 'no) exn:fail:contract? #rx"^s-ref:.*  expected: exact-nonnegative-integer[?]")
+  (err/rt-test (s-ref s 3) exn:fail:contract? #rx"s-ref: index too large")
+  (err/rt-test (s-ref s (expt 2 100)) exn:fail:contract? #rx"s-ref: index too large")
+
+  (err/rt-test (s-set! 's 0 'v) exn:fail:contract? #rx"^s-set!:.*  expected: s[?]")
+  (err/rt-test (s-set! s -1 'v) exn:fail:contract? #rx"^s-set!:.*  expected: exact-nonnegative-integer[?]")
+  (err/rt-test (s-set! s 'no 'v) exn:fail:contract? #rx"^s-set!:.*  expected: exact-nonnegative-integer[?]")
+  (err/rt-test (s-set! s 3 'v) exn:fail:contract? #rx"s-set!: index too large")
+  (err/rt-test (s-set! s (expt 2 100) 'v) exn:fail:contract? #rx"s-set!: index too large")
+  (err/rt-test (s-set! s 0 'v) exn:fail:contract? #rx"s-set!: cannot modify value of immutable field")
+  (err/rt-test (s-set! s 1 'v) exn:fail:contract? #rx"s-set!: cannot modify value of immutable field")
+  (err/rt-test (s-set! s 2 'v) exn:fail:contract? #rx"s-set!: cannot modify value of immutable field"))
+
+(let ()
+  (define-values (struct:s make-s s? s-ref s-set!)
+    (make-struct-type 's #f 3 0 #f null (current-inspector) #f '()))
+
+  (define s (make-s 1 2 3))
+
+  (test (void) s-set! s 0 10)
+  (test (void) s-set! s 1 20)
+  (test (void) s-set! s 2 30)
+  (test 10 s-ref s 0)
+  (test 20 s-ref s 1)
+  (test 30 s-ref s 2)
+
+  (err/rt-test (s-set! 's 0 'v) exn:fail:contract? #rx"^s-set!:.*  expected: s[?]")
+  (err/rt-test (s-set! s -1 'v) exn:fail:contract? #rx"^s-set!:.*  expected: exact-nonnegative-integer[?]")
+  (err/rt-test (s-set! s 'no 'v) exn:fail:contract? #rx"^s-set!:.*  expected: exact-nonnegative-integer[?]")
+  (err/rt-test (s-set! s 3 'v) exn:fail:contract? #rx"s-set!: index too large")
+  (err/rt-test (s-set! s (expt 2 100) 'v) exn:fail:contract? #rx"s-set!: index too large"))
+
+;; ----------------------------------------
+;; Make sure that non-typical `make-struct-type` patterns are
+;; not transformed incorrectly by the compiler
+
+(test '(1 2) 'not-acc/ref
+      (let-values ([(struct:s make-s s? a b)
+                    (let-values ([(struct:s make s? -ref -set!) (make-struct-type 's #f 3 0 #f)])
+                      (values struct:s
+                              make
+                              s?
+                              1
+                              2))])
+        (list a b)))
+
+(define-syntax (try-failing-extra stx)
+  (syntax-case stx ()
+    [(_ expr rx)
+     (with-syntax ([expr (syntax-local-introduce #'expr)])
+       #'(err/rt-test (let-values ([(struct:s make-s s? bad)
+                                    (let-values ([(struct:s make s? -ref -set!) (make-struct-type 's #f 3 0 #f)])
+                                      (values struct:s
+                                              make
+                                              s?
+                                              expr))])
+                        bad-ref)
+                      exn:fail:contract?
+                      rx))]))
+
+(try-failing-extra (make-struct-field-accessor -ref 3 'name)
+                   #rx"index too large")
+(try-failing-extra (make-struct-field-mutator -set! 3 'name)
+                   #rx"index too large")
+
+(try-failing-extra (make-struct-field-accessor -ref -1 'name)
+                   #rx"make-struct-field-accessor: contract violation")
+(try-failing-extra (make-struct-field-mutator -set! -1 'name)
+                   #rx"make-struct-field-mutator: contract violation")
+
+(try-failing-extra (make-struct-field-accessor -set! 0 'name)
+                   #rx"make-struct-field-accessor: contract violation")
+(try-failing-extra (make-struct-field-mutator -ref 0 'name)
+                   #rx"make-struct-field-mutator: contract violation")
+
+;; ----------------------------------------
+
+(test #t struct-type-property-accessor-procedure? custom-write-accessor)
+(test #t struct-type-property-accessor-procedure? custom-print-quotable-accessor)
+
+;; ----------------------------------------
+
+(let ()
+  (define-values (s cns pred ref set) (make-struct-type 'thing #f 1 1 #f))
+  (test 'make-thing object-name cns)
+  (test 'thing? object-name pred)
+  (test 'thing-ref object-name ref)
+  (test 'thing-set! object-name set))
+
+;; ----------------------------------------
+
+(let ()
+  (struct foo (x))
+  (struct bar foo (y z))
+  (define-syntax (get-bar-field-names stx)
+    #`'#,(struct-field-info-list (syntax-local-value #'bar)))
+  (define (get-bar-field-names*) (get-bar-field-names))
+  (test '(z y) get-bar-field-names*))
+
+;; ----------------------------------------
+
+(let ()
+  (struct exn:foo exn () #:constructor-name make-exn:foo)
+  (test "foo" exn-message (make-exn:foo "foo" (current-continuation-marks))))
 
 ;; ----------------------------------------
 

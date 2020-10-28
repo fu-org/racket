@@ -53,8 +53,8 @@ necessarily produce an @tech{interned} value at the receiving
 @;------------------------------------------------------------------------
 @section[#:tag "default-readtable-dispatch"]{Delimiters and Dispatch}
 
-Along with @racketlink[char-whitespace?]{whitespace}, the following
-characters are @defterm{delimiters}:
+Along with @racketlink[char-whitespace?]{whitespace} and a BOM
+character, the following characters are @defterm{delimiters}:
 
 @t{
   @hspace[2] @ilitchar{(} @ilitchar{)} @ilitchar{[} @ilitchar{]}
@@ -86,8 +86,9 @@ characters play special roles:
 
 ]
 
-More precisely, after skipping whitespace, the reader dispatches based
-on the next character or characters in the input stream as follows:
+More precisely, after skipping whitespace and @racket[#\uFEFF] BOM
+characters, the reader dispatches based on the next character or
+characters in the input stream as follows:
 
 @dispatch-table[
 
@@ -113,13 +114,13 @@ on the next character or characters in the input stream as follows:
   @dispatch[@litchar{#[}]{starts a @tech{vector}; see @secref["parse-vector"]}
   @dispatch[@litchar["#{"]]{starts a @tech{vector}; see @secref["parse-vector"]}
 
-  @dispatch[@litchar{#fl(}]{starts a @tech{flvector}; see @secref["parse-vector"]}
-  @dispatch[@litchar{#fl[}]{starts a @tech{flvector}; see @secref["parse-vector"]}
-  @dispatch[@litchar["#fl{"]]{starts a @tech{flvector}; see @secref["parse-vector"]}
+  @dispatch[@ci0litchar{#fl(}]{starts a @tech{flvector}; see @secref["parse-vector"]}
+  @dispatch[@ci0litchar{#fl[}]{starts a @tech{flvector}; see @secref["parse-vector"]}
+  @dispatch[@ci0litchar["#fl{"]]{starts a @tech{flvector}; see @secref["parse-vector"]}
 
-  @dispatch[@litchar{#fx(}]{starts a @tech{fxvector}; see @secref["parse-vector"]}
-  @dispatch[@litchar{#fx[}]{starts a @tech{fxvector}; see @secref["parse-vector"]}
-  @dispatch[@litchar["#fx{"]]{starts a @tech{fxvector}; see @secref["parse-vector"]}
+  @dispatch[@ci0litchar{#fx(}]{starts a @tech{fxvector}; see @secref["parse-vector"]}
+  @dispatch[@ci0litchar{#fx[}]{starts a @tech{fxvector}; see @secref["parse-vector"]}
+  @dispatch[@ci0litchar["#fx{"]]{starts a @tech{fxvector}; see @secref["parse-vector"]}
 
   @dispatch[@litchar{#s(}]{starts a @tech{structure} literal; see @secref["parse-structure"]}
   @dispatch[@litchar{#s[}]{starts a @tech{structure} literal; see @secref["parse-structure"]}
@@ -170,9 +171,17 @@ on the next character or characters in the input stream as follows:
   @dispatch[@elem{@litchar{#fl}@kleeneplus{@nonterm{digit@sub{10}}}@litchar{[}}]{starts a flvector; see @secref["parse-vector"]}
   @dispatch[@elem{@litchar{#fl}@kleeneplus{@nonterm{digit@sub{10}}}@litchar["{"]}]{starts a flvector; see @secref["parse-vector"]}
 
+  @dispatch[@elem{@litchar{#Fl}@kleeneplus{@nonterm{digit@sub{10}}}@litchar{(}}]{starts a flvector; see @secref["parse-vector"]}
+  @dispatch[@elem{@litchar{#Fl}@kleeneplus{@nonterm{digit@sub{10}}}@litchar{[}}]{starts a flvector; see @secref["parse-vector"]}
+  @dispatch[@elem{@litchar{#Fl}@kleeneplus{@nonterm{digit@sub{10}}}@litchar["{"]}]{starts a flvector; see @secref["parse-vector"]}
+
   @dispatch[@elem{@litchar{#fx}@kleeneplus{@nonterm{digit@sub{10}}}@litchar{(}}]{starts a fxvector; see @secref["parse-vector"]}
   @dispatch[@elem{@litchar{#fx}@kleeneplus{@nonterm{digit@sub{10}}}@litchar{[}}]{starts a fxvector; see @secref["parse-vector"]}
   @dispatch[@elem{@litchar{#fx}@kleeneplus{@nonterm{digit@sub{10}}}@litchar["{"]}]{starts a fxvector; see @secref["parse-vector"]}
+
+  @dispatch[@elem{@litchar{#Fx}@kleeneplus{@nonterm{digit@sub{10}}}@litchar{(}}]{starts a fxvector; see @secref["parse-vector"]}
+  @dispatch[@elem{@litchar{#Fx}@kleeneplus{@nonterm{digit@sub{10}}}@litchar{[}}]{starts a fxvector; see @secref["parse-vector"]}
+  @dispatch[@elem{@litchar{#Fx}@kleeneplus{@nonterm{digit@sub{10}}}@litchar["{"]}]{starts a fxvector; see @secref["parse-vector"]}
 
   @dispatch[@graph-defn[]]{binds a graph tag; see @secref["parse-graph"]}
   @dispatch[@graph-ref[]]{uses a graph tag; see @secref["parse-graph"]}
@@ -180,6 +189,11 @@ on the next character or characters in the input stream as follows:
   @dispatch[@italic{otherwise}]{starts a @tech{symbol}; see @secref["parse-symbol"]}
 
 ]
+
+@history[#:changed "7.8.0.9" @elem{Changed treatment of the BOM
+                                   character so that it is treated
+                                   like whitespace in the same places
+                                   that comments are allowed.}]
 
 
 @section[#:tag "parse-symbol"]{Reading Symbols}
@@ -258,18 +272,29 @@ reverse order: @litchar{#b}, @litchar{#o}, @litchar{#d}, or
 @litchar{#x} followed by @litchar{#e} or @litchar{#i}.
 
 An @nunterm{exponent-mark} in an inexact number serves both to specify
-an exponent and to specify a numerical precision. If single-precision
-IEEE floating point is supported (see @secref["numbers"]), the marks
-@litchar{f} and @litchar{s} specify single-precision. Otherwise, or
-with any other mark, double-precision IEEE floating point is used.
-In addition, single- and double-precision specials are distinct;
-specials with the @litchar{.0} suffix, like @racket[-nan.0] are
-double-precision, whereas specials with the @litchar{.f} suffix are
-single-precision.
+an exponent and to specify a numerical precision. If
+@tech{single-flonums} are supported (see @secref["numbers"]) and the
+@racket[read-single-flonum] @tech{parameter} is set to @racket[#t],
+the marks @litchar{f} and @litchar{s} specify single-flonums. If
+@racket[read-single-flonum] is set to @racket[#f], or with any other
+mark, a double-precision @tech{flonum} is produced. If single-flonums
+are not supported and @racket[read-single-flonum] is set to
+@racket[#t], then the @exnraise[exn:fail:unsupported] when a single-flonum
+would otherwise be produced. Special infinity and not-a-number flonums
+and single-flonums are distinct; specials with the @litchar{.0}
+suffix, like @racket[+nan.0], are double-precision flonums, while
+specials with the @litchar{.f} suffix, like @racketvalfont{+nan.0}, 
+are single-flonums if enabled though @racket[read-single-flonum].
 
 A @litchar{#} in an @nunterm{inexact} number is the same as
 @litchar{0}, but @litchar{#} can be used to suggest
 that the digit's actual value is unknown.
+
+All letters in a number representation are parsed case-insensitively,
+independent of the @racket[read-case-sensitive] parameter. For
+example, @litchar{#I#D+InF.F+3I} is parsed the same as
+@litchar{#i#d+inf.f+3i}. In the grammar below, each literal lowercase
+letter stands for both itself and its uppercase form.
 
 @BNF[(list @nunterm{number} @BNF-alt[@nunterm{exact}
                                      @nunterm{inexact}])
@@ -423,11 +448,11 @@ being parsed, then the @exnraise[exn:fail:read].
 If the @racket[read-square-bracket-as-paren] and
 @racket[read-square-bracket-with-tag] @tech{parameter}s are set to
 @racket[#f], then when the reader encounters @litchar{[} and
-@litchar{]}, the @exnraise{exn:fail:read}. Similarly, if the
+@litchar{]}, the @exnraise[exn:fail:read]. Similarly, if the
 @racket[read-curly-brace-as-paren] and
 @racket[read-curly-brace-with-tag] @tech{parameter}s are set to
 @racket[#f], then when the reader encounters @litchar["{"] and
-@litchar["}"], the @exnraise{exn:fail:read}.
+@litchar["}"], the @exnraise[exn:fail:read].
 
 If the @racket[read-accept-dot] @tech{parameter} is set to
 @racket[#f], then a delimited @litchar{.} triggers an
@@ -752,15 +777,15 @@ one of the following forms:
 
 @itemize[
 
- @item{ @litchar{#\nul} or @litchar{#\null}: NUL (ASCII 0)@nonalpha[]}
- @item{ @litchar{#\backspace}: backspace  (ASCII 8)@nonalpha[]}
- @item{ @litchar{#\tab}: tab (ASCII 9)@nonalpha[]}
- @item{ @litchar{#\newline} or @litchar{#\linefeed}: linefeed (ASCII 10)@nonalpha[]}
- @item{ @litchar{#\vtab}: vertical tab (ASCII 11)@nonalpha[]}
- @item{ @litchar{#\page}: page break (ASCII 12)@nonalpha[]}
- @item{ @litchar{#\return}: carriage return (ASCII 13)@nonalpha[]}
- @item{ @litchar{#\space}: space (ASCII 32)@nonalpha[]}
- @item{ @litchar{#\rubout}: delete (ASCII 127)@nonalpha[]}
+ @item{ @as-index{@litchar{#\nul}} or @as-index{@litchar{#\null}}: NUL (ASCII 0)@nonalpha[]}
+ @item{ @as-index{@litchar{#\backspace}}: backspace  (ASCII 8)@nonalpha[]}
+ @item{ @as-index{@litchar{#\tab}}: tab (ASCII 9)@nonalpha[]}
+ @item{ @as-index{@litchar{#\newline}} or @as-index{@litchar{#\linefeed}}: linefeed (ASCII 10)@nonalpha[]}
+ @item{ @as-index{@litchar{#\vtab}}: vertical tab (ASCII 11)@nonalpha[]}
+ @item{ @as-index{@litchar{#\page}}: page break (ASCII 12)@nonalpha[]}
+ @item{ @as-index{@litchar{#\return}}: carriage return (ASCII 13)@nonalpha[]}
+ @item{ @as-index{@litchar{#\space}}: space (ASCII 32)@nonalpha[]}
+ @item{ @as-index{@litchar{#\rubout}}: delete (ASCII 127)@nonalpha[]}
 
  @item{@litchar{#\}@kleenerange[3 3]{@nonterm{digit@sub{8}}}:
        Unicode for the octal number specified by three octal digits---as in string escapes (see
@@ -784,7 +809,8 @@ one of the following forms:
 
  @item{@litchar{#\}@nonterm{c}: the character @nonterm{c}, as long
        as @litchar{#\}@nonterm{c} and the characters following it
-       do not match any of the previous cases, and as long as the
+       do not match any of the previous cases, and as long as
+       @nonterm{c} or the
        character after @nonterm{c} is not
        @racketlink[char-alphabetic?]{alphabetic}.}
 
@@ -836,7 +862,8 @@ as constructed by @racket[pregexp], @litchar{#rx#} as constructed by
 
 A @graph-defn[] tags the following datum for reference via
 @graph-ref[], which allows the reader to produce a datum that
-has graph structure.
+has graph structure. Neither form is allowed in
+@racket[read-syntax] mode.
 
 For a specific @graph-tag[] in a single read result, each @graph-ref[]
 reference is replaced by the datum read for the corresponding
@@ -941,22 +968,23 @@ If the @racket[read-accept-reader] or @racket[read-accept-lang]
 @tech{parameter} is set to @racket[#f], then if the reader encounters
 @litchar{#lang} or equivalent @litchar{#!}, the @exnraise[exn:fail:read].
 
-@section[#:tag "parse-cdot"]{Reading with C-style infix dot notation}
+@section[#:tag "parse-cdot"]{Reading with C-style Infix-Dot Notation}
 
 When the @racket[read-cdot] @tech{parameter} is set to @racket[#t],
 then a variety of changes occur in the reader.
 
 First, symbols can no longer include the character @litchar{.}, unless
-the entire symbol is quoted with @litchar{|}.
+the @litchar{.} is quoted with @litchar{|} or @litchar{\}.
 
 Second, numbers can no longer include the character @litchar{.},
-unless the number is prefixed with @litchar{#e} or @litchar{#i}, or an
+unless the number is prefixed with @litchar{#e}, @litchar{#i},
+@litchar{#b}, @litchar{#o}, @litchar{#d}, @litchar{#x}, or an
 equivalent prefix as discussed in @secref["parse-number"]. If these
 numbers are followed by a @litchar{.} intended to be read as a C-style
-infix dot, then there must be separating whitespace.
+infix dot, then a delimiter must precede the @litchar{.}.
 
 Finally, after reading any datum @racket[_x], the reader will seek
-through whitespace and look for zero or more sequences of a
+through whitespace, BOM characters, and comments and look for zero or more sequences of a
 @litchar{.} followed by another datum @racket[_y]. It will then group
 @racket[_x] and @racket[_y] together in a @racket[#%dot] form so that
 @racket[_x.y] reads equal to @racket[(#%dot _x _y)].

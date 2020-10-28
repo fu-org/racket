@@ -12,8 +12,6 @@
                      get-key
                      (struct-out Row)))
 
-(define orig-stx (make-parameter #f))
-
 (define-struct Pat () #:transparent)
 ;; v is an identifier
 (define-struct (Var Pat) (v)
@@ -190,7 +188,7 @@
    (foldr (λ (pat vars) (append (bound-vars (parse-id pat)) vars)) '() pats)
    bound-identifier=?))
 
-(define current-renaming (make-parameter (make-free-identifier-mapping)))
+(define current-renaming (make-parameter (make-free-identifier-mapping) #f 'current-renaming))
 
 (define (copy-mapping ht)
   (define new-ht (make-free-identifier-mapping))

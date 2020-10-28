@@ -99,7 +99,7 @@
                "(define (id x) x)"
                "(define (plus1 x) x)"
                "(define (loop) (loop))"
-               "(define (memory x) (make-vector x))"))
+               "(define (memory x) (vector-length (make-vector x)))"))
    (set-eval-limits ev 0.5 5)
    --eval--
    x => 1
@@ -332,12 +332,15 @@
    (let* ([tmp       (make-temporary-file "sandboxtest~a" 'directory)]
           [strpath   (lambda xs (path->string (apply build-path xs)))]
           [racketlib (strpath (path-only (collection-file-path "main.rkt" "racket")))]
+          [compiled (if (null? (use-compiled-file-paths))
+                        "compiled"
+                        (car (use-compiled-file-paths)))]
           [list-lib  (strpath racketlib "list.rkt")]
-          [list-zo   (strpath racketlib "compiled" "list_rkt.zo")]
+          [list-zo   (strpath racketlib compiled "list_rkt.zo")]
           [test-lib  (strpath tmp "sandbox-test.rkt")]
-          [test-zo   (strpath tmp "compiled" "sandbox-test_rkt.zo")]
+          [test-zo   (strpath tmp compiled "sandbox-test_rkt.zo")]
           [test2-lib (strpath tmp "sandbox-test2.rkt")]
-          [test2-zo  (strpath tmp "compiled" "sandbox-test2_rkt.zo")]
+          [test2-zo  (strpath tmp compiled "sandbox-test2_rkt.zo")]
           [test3-file "sandbox-test3.rkt"]
           [test3-lib  (strpath tmp test3-file)]
           [make-module-evaluator/rel (lambda (mod
@@ -442,7 +445,7 @@
         ;; (directory-list tmp) =err> "file access denied"
         --top--
         ;; explicitly allow access to tmp, and write access to a single file
-        (make-directory (build-path tmp "compiled"))
+        (make-directory* (build-path tmp compiled))
         (parameterize ([sandbox-path-permissions
                         `((read ,tmp) (write ,test-zo)
                           ,@(sandbox-path-permissions))])
@@ -459,11 +462,8 @@
         (copy-file ,test-zo ,list-zo) =err> "access denied"
         ;; timestamp .zo file (needed under Windows):
         (file-or-directory-modify-seconds ,test-zo (current-seconds))
-        ;; loading test gets 'list module declaration via ".zo":
-        (load/use-compiled ,test-lib) => (void)
-        ;; but the module declaration can't execute due to the inspector:
-        (require 'list) =err> "access disallowed by code inspector"
-        #t =err> "access disallowed by code inspector" ; flushes delayed compile-time failure
+        ;; loading 'test gets 'list module declaration via ".zo"
+        (load/use-compiled ,test-lib) =err> "cannot use unsafe linklet loaded with non-original code inspector"
         (delete-file ,test-zo) => (void)
         (delete-file ,test-lib) =err> "`delete' access denied"
         --top--
@@ -478,11 +478,9 @@
           (when (file-exists? to) (delete-file to))
           (copy-file from to))
         (cp ,list-lib ,test-lib)  (cp ,list-zo ,test-zo)
-        (cp ,list-lib ,test2-lib) (cp ,list-zo   ,test2-zo)
+        (cp ,list-lib ,test2-lib) (cp ,list-zo ,test2-zo)
         ;; bytecode from test-lib is bad, even when we can read/write to it
-        (load/use-compiled ,test-zo)
-        (require 'list) =err> "access disallowed by code inspector"
-        #t =err> "access disallowed by code inspector" ; flushes delayed compile-time failure
+        (load/use-compiled ,test-zo) =err> "cannot use unsafe linklet loaded with non-original code inspector"
         ;; bytecode from test2-lib is explicitly allowed
         (load/use-compiled ,test2-lib)
         (require 'list) => (void))
@@ -530,8 +528,10 @@
    --top--
    (parameterize ([sandbox-output 'bytes]
                   [sandbox-error-output current-output-port]
-                  [sandbox-memory-limit 2]
-                  [sandbox-eval-limits '(2.5 1)])
+                  [sandbox-memory-limit 4]
+                  [sandbox-eval-limits (case (system-type 'vm)
+                                         [(chez-scheme) '(2.5 4)]
+                                         [else '(2.5 1)])])
      (make-base-evaluator!))
    ;; GCing is needed to allow these to happen (note: the memory limit is very
    ;; tight here, this test usually fails if the sandbox library is not
@@ -577,7 +577,7 @@
    --top--
    (when (custodian-memory-accounting-available?)
      (t --top--
-        (parameterize ([sandbox-eval-limits '(10 5)]
+        (parameterize ([sandbox-eval-limits '(100 5)]
                        [sandbox-memory-limit 100])
           (make-base-evaluator!))
         --eval--
@@ -671,7 +671,7 @@
   (define r1 (try 'racket/base))
   (define r2 (try '(begin)))
   (test #t regexp-match?
-        #rx"access disallowed by code inspector to protected variable"
+        #rx"access disallowed by code inspector to protected"
         r1)
   (test #t equal? r1 r2))
 

@@ -78,10 +78,22 @@ directory}:
        "pkg/scribblings/pkg.scrbl")]{package scope}. It defaults to
        @filepath{pkgs} in the main shared-file directory.}
 
- @item{@indexed-racket['pkgs-search-dirs] --- like
-       @racket['lib-search-dirs], but for packages in @exec{installation}
-       @tech[#:doc '(lib "pkg/scribblings/pkg.scrbl")]{package
-       scope}.}
+ @item{@indexed-racket['pkgs-search-dirs] --- similar to
+       @racket['lib-search-dirs], but for packages in roughly
+       @exec{installation} @tech[#:doc '(lib
+       "pkg/scribblings/pkg.scrbl")]{package scope}. More precisely, a
+       @racket[#f] value in the list is replaced with the directory
+       specified by @racket['pkgs-dir], and that point in the search
+       list corresponds to @exec{installation} scope. Paths before or
+       after a @racket[#f] value in the list can be selected as a
+       scopes to start searches at that path's point in the list.
+       Directories listed in @racket['pkgs-search-dirs] typically oblige
+       a corresponding entry in @racket['links-search-files], where
+       the corresponding entry is @filepath{links.rktd} within the
+       directory.
+
+       @history[#:changed "7.0.0.19" @elem{Adapt the package-search path in
+                                           a general way for a directory scope.}]}
 
  @item{@indexed-racket['bin-dir] --- a path, string, or byte string for the
        installation's directory containing executables. It defaults to a
@@ -149,8 +161,8 @@ directory}:
  @item{@indexed-racket['download-cache-dir] --- a path string used as
        the location for storing downloaded package archives. When not
        specified, packages are cached in a @filepath{download-cache}
-       directory in the user's add-on directory as reported by
-       @racket[(find-system-path 'addon-dir)].}
+       directory in the user's cache directory as reported by
+       @racket[(find-system-path 'cache-dir)].}
 
  @item{@indexed-racket['download-cache-max-files] and
        @indexed-racket['download-cache-max-bytes] --- real numbers that
@@ -177,8 +189,13 @@ directory}:
 
  @item{@indexed-racket['3m-suffix] --- analogous to @racket['cgc-suffix], but
        for 3m. A @racket[#f] value means that if the @exec{racket}
-       binary identifies itself as CGC, then the suffix is
-       @racket["3m"], otherwise it is @racket[""].}
+       binary identifies itself as 3m, then the suffix is
+       @racket[""], otherwise it is @racket["BC"].}
+
+ @item{@indexed-racket['cs-suffix] --- analogous to @racket['cgc-suffix], but
+       for CS. A @racket[#f] value means that if the @exec{racket}
+       binary identifies itself as CS, then the suffix is
+       @racket[""], otherwise it is @racket["CS"].}
 
  @item{@indexed-racket['config-tethered-console-bin-dir] and
        @indexed-racket['config-tethered-gui-bin-dir] --- a path for a

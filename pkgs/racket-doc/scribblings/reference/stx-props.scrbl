@@ -37,7 +37,7 @@ before the merge, the identifier that triggered the macro expansion
 property so far.  The @racket['origin] property thus records (in
 reverse order) the sequence of macro expansions that produced an
 expanded expression. Usually, the @racket['origin] value is a
-list of identifiers. However, a transformer might return
+list of identifiers, but a transformer might return
 syntax that has already been expanded, in which case an
 @racket['origin] list can contain other lists after a merge. The
 @racket[syntax-track-origin] procedure implements this tracking.
@@ -81,6 +81,11 @@ Racket adds properties to expanded syntax (often using
  expansion. Therefore, the @racket[struct] transformer adds the
  identifier to the expansion result as a
  @indexed-racket['disappeared-use] property.}
+
+ @item{When a @tech{rename transformer} is used to replace a
+ @racket[set!] target, @racket[syntax-track-origin] is used on the
+ target identifier (the same as when the identifier is used as an
+ expression).}
 
  @item{When a reference to an unexported or protected identifier from
  a module is discovered, the @indexed-racket['protected] property is
@@ -155,6 +160,16 @@ Any other value for a preserved property triggers an exception at an
 attempt to marshal the owning syntax object to bytecode form.
 
 @history[#:changed "6.4.0.14" @elem{Added the @racket[preserved?] argument.}]}
+
+
+@defproc[(syntax-property-remove [stx syntax?]
+                                 [key any/c])
+         syntax?]{
+
+Returns a syntax object like @racket[stx], but without a property (if
+any) for @racket[key].
+
+@history[#:added "6.90.0.20"]}
 
 
 @defproc[(syntax-property-preserved? [stx syntax?] [key (and/c symbol? symbol-interned?)])

@@ -1,5 +1,5 @@
 #lang scribble/manual
-@(require (for-label racket/base racket/generic))
+@(require (for-label racket/base racket/generic racket/contract/base))
 
 @title[#:tag "struct-generics"]{Generic Interfaces}
 
@@ -144,10 +144,7 @@ Raised for @techlink{generic methods} that do not support the given
 
 }
 
-@defform[(define/generic local-id method-id)
-         #:contracts
-         ([local-id identifier?]
-          [method-id identifier?])]{
+@defform[(define/generic local-id method-id)]{
 
 When used inside the method definitions associated with the
 @racket[#:methods] keyword, binds @racket[local-id] to the generic for
@@ -260,7 +257,7 @@ of the corresponding @racket[method-id]s, and replaces the method
 implementation with the result.
 
 A @racket[props-expr] can provide properties to attach to the
-impersonator. The result of @racket[props-expr] bust be an list with
+impersonator. The result of @racket[props-expr] must be a list with
 an even number of elements, where the first element of the list is an
 impersonator property, the second element is its value, and so on.
 

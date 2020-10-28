@@ -26,7 +26,7 @@
               (system "whoami")]
              ['windows
               (system "echo %username%")]
-             [else (pkg-error "not supported")])))))
+             [_ (pkg-error "not supported")])))))
 
   (define ====
     (make-string (string-length name) #\=))
@@ -62,20 +62,51 @@
     (make-directory name)
     (parameterize ([current-directory name])
 
-      ;; LICENSE.txt
-      (with-output-to-file "LICENSE.txt"
+      ;; LICENSE files
+      (displayln "Generating LICENSE-APACHE and LICENSE-MIT files. You are free to change the license.")
+      (with-output-to-file "LICENSE-MIT"
         (lambda () (expand/display #<<EOS
-<<name>>
+<<name>> 
+
+MIT License
+
 Copyright (c) <<year>> <<user>>
 
-This package is distributed under the GNU Lesser General Public
-License (LGPL).  This means that you can link <<name>> into proprietary
-applications, provided you follow the rules stated in the LGPL.  You
-can also modify this package; if you distribute a modified version,
-you must distribute it under the terms of the LGPL, which in
-particular means that you must release the source code for the
-modified software.  See http://www.gnu.org/copyleft/lesser.html
-for more information.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+EOS
+)))
+      (with-output-to-file "LICENSE-APACHE"
+        (lambda () (expand/display #<<EOS
+Copyright <<year>> <<user>>
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
 
 EOS
 )))
@@ -98,17 +129,13 @@ EOS
         (lambda () (expand/display #<<EOS
 language: c
 
-# Based from: https://github.com/greghendershott/travis-racket
-
-# Optional: Remove to use Travis CI's older infrastructure.
-sudo: false
+# Based on: https://github.com/greghendershott/travis-racket
 
 env:
   global:
     # Supply a global RACKET_DIR environment variable. This is where
     # Racket will be installed. A good idea is to use ~/racket because
-    # that doesn't require sudo to install and is therefore compatible
-    # with Travis CI's newer container infrastructure.
+    # that doesn't require sudo to install.
     - RACKET_DIR=~/racket
   matrix:
     # Supply at least one RACKET_VERSION environment variable. This is
@@ -118,16 +145,10 @@ env:
     # Supply more than one RACKET_VERSION (as in the example below) to
     # create a Travis-CI build matrix to test against multiple Racket
     # versions.
-    - RACKET_VERSION=6.0
-    - RACKET_VERSION=6.1
-    - RACKET_VERSION=6.1.1
-    - RACKET_VERSION=6.2
-    - RACKET_VERSION=6.3
-    - RACKET_VERSION=6.4
-    - RACKET_VERSION=6.5
-    - RACKET_VERSION=6.6
-    - RACKET_VERSION=6.7
-    - RACKET_VERSION=6.8
+    - RACKET_VERSION=6.12
+    - RACKET_VERSION=7.0
+    - RACKET_VERSION=7.1
+    - RACKET_VERSION=7.2
     - RACKET_VERSION=HEAD
 
 matrix:
@@ -141,7 +162,7 @@ before_install:
 - export PATH="${RACKET_DIR}/bin:${PATH}" #install-racket.sh can't set for us
 
 install:
- - raco pkg install --deps search-auto
+ - raco pkg install --auto --name <<name>>
 
 before_script:
 
@@ -153,7 +174,7 @@ script:
 
 after_success:
  - raco setup --check-pkg-deps --pkgs <<name>>
- - raco pkg install --deps search-auto cover cover-coveralls
+ - raco pkg install --auto cover cover-coveralls
  - raco cover -b -f coveralls -d $TRAVIS_BUILD_DIR/coverage .
 
 EOS
@@ -163,9 +184,8 @@ EOS
         (lambda () (expand/display #<<EOS
 #lang info
 (define collection "<<name>>")
-(define deps '("base"
-               "rackunit-lib"))
-(define build-deps '("scribble-lib" "racket-doc"))
+(define deps '("base"))
+(define build-deps '("scribble-lib" "racket-doc" "rackunit-lib"))
 (define scribblings '(("scribblings/<<name>>.scrbl" ())))
 (define pkg-desc "Description Here")
 (define version "0.0")
@@ -202,9 +222,8 @@ EOS
 ;; To view documentation:
 ;;   $ raco docs <<name>>
 ;;
-;; For your convenience, we have included a LICENSE.txt file, which links to
-;; the GNU Lesser General Public License.
-;; If you would prefer to use a different license, replace LICENSE.txt with the
+;; For your convenience, we have included LICENSE-MIT and LICENSE-APACHE files.
+;; If you would prefer to use a different license, replace those files with the
 ;; desired license.
 ;;
 ;; Some users like to add a `private/` directory, place auxiliary files there,
@@ -215,13 +234,29 @@ EOS
 
 ;; Code here
 
+
+
 (module+ test
-  ;; Tests to be run with raco test
-  )
+  ;; Any code in this `test` submodule runs when this file is run using DrRacket
+  ;; or with `raco test`. The code here does not run when this file is
+  ;; required by another module.
+
+  (check-equal? (+ 2 2) 4))
 
 (module+ main
-  ;; Main entry point, executed when run with the `racket` executable or DrRacket.
-  )
+  ;; (Optional) main submodule. Put code here if you need it to be executed when
+  ;; this file is run using DrRacket or the `racket` executable.  The code here
+  ;; does not run when this file is required by another module. Documentation:
+  ;; http://docs.racket-lang.org/guide/Module_Syntax.html#%28part._main-and-test%29
+
+  (require racket/cmdline)
+  (define who (box "world"))
+  (command-line
+    #:program "my-program"
+    #:once-each
+    [("-n" "--name") name "Who to say hello to" (set-box! who name)]
+    #:args ()
+    (printf "hello ~a~n" (unbox who))))
 
 EOS
 )))

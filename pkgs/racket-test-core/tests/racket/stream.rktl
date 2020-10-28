@@ -3,7 +3,8 @@
 
 (Section 'stream)
 
-(require racket/stream)
+(require racket/stream
+         "for-util.rkt")
 
 ;; >>> Many basic stream tests are in "sequence.rktl" <<<
 
@@ -35,10 +36,14 @@
 (test 4 stream-ref one-to-four 3)
 (test 2 'stream (stream-length (stream 1 (/ 0))))
 (test 'a 'stream (stream-first (stream 'a (/ 0))))
+(test 1 'stream* (stream-first (stream* (stream 1))))
 (test 2 'stream* (stream-length (stream* 1 (stream (/ 0)))))
 (test 'a 'stream* (stream-first (stream* 'a (stream (/ 0)))))
 (test 4 'stream* (stream-length (stream* 'a 'b 'c (stream (/ 0)))))
 (test 'c 'stream* (stream-first (stream-rest (stream-rest (stream* 'a 'b 'c (stream (/ 0)))))))
+(err/rt-test (stream* 2) exn:fail:contract? "stream*")
+(test #true 'stream* (stream? (stream* 1 0)))
+(err/rt-test (stream-length (stream* 1 2)) exn:fail:contract? "stream*")
 
 ;; make sure stream operations work on lists
 (test #t stream-empty? '())
@@ -47,6 +52,7 @@
 (test 3 stream-length '(1 2 3))
 (test 1 stream-ref '(1 2 3) 0)
 (test '(2 3) stream-tail '(1 2 3) 1)
+(test '(1 2) stream->list (stream-take '(1 2 3) 2))
 (test '(1 2 3 4 5) stream->list (stream-append '(1 2 3) '(4 5)))
 (test '(1 2 3) stream->list (stream-map values '(1 2 3)))
 (test #f stream-andmap even? '(1 2 3))
@@ -61,5 +67,71 @@
 (test 6 'for*/stream (stream-ref (for*/stream ([x '(1 2 3)] [y '(1 2 3)]) (* x y)) 7))
 (test 1 'for/stream (stream-first (for*/stream ([x '(1 0)]) (/ x))))
 (test 625 'for/stream (stream-ref (for/stream ([x (in-naturals)]) (* x x)) 25))
+
+;; for/stream should be lazy https://github.com/racket/racket/issues/2812
+(test #true stream? (for/stream ((x '(0)) #:when (/ x x)) (void)))
+(test #true stream? (for*/stream ((x '(0)) #:when (/ x x)) (void)))
+
+(test '(0 1 2 3 4 5) stream->list (for/stream ([i (in-naturals)] #:break (> i 5)) i))
+(test '(0 1 2 3 4 5) stream->list (for/stream ([i (in-naturals)]) #:break (> i 5) i))
+(test '(0 1 2 3 4 5) stream->list (for/stream ([i (in-naturals)])
+                                    (define ii (sqr i)) #:break (> ii 30) i))
+(test-sequence [(1 2 3)] (for/list ([x (in-stream (stream 1 2 3))]) x))
+(err/rt-test (for/list ([x (in-stream)]) x))
+(err/rt-test (in-stream))
+
+;; stream-take works on infinite streams with lazy-delayed errors later
+(test '(1 4/3 4/2 4/1) stream->list
+      (stream-take (let loop ([i 4])
+                     (stream-cons (/ 4 i) (loop (sub1 i))))
+                   4))
+;; stream-take preserves laziness, doesn't evaluate elements too early
+(define (guarded-second s)
+  (if (stream-ref s 0) (stream-ref s 1) #f))
+(define (div a b)
+  (stream (not (zero? b)) (/ a b)))
+(test #f guarded-second (stream-take (div 1 0) 2))
+(test 3/4 guarded-second (stream-take (div 3 4) 2))
+(err/rt-test (stream->list (stream-take (stream 1 2) 3)) exn:fail:contract? "stream-take")
+
+;; preserves multivalued-ness of stream
+(test '(1 2)
+      call-with-values
+      (λ ()
+        (stream-first
+         (stream-take
+          (sequence->stream
+           (in-parallel '(1 3) '(2 4))) 2)))
+      list)
+
+(test '(1 2)
+      call-with-values
+      (λ ()
+        (stream-first
+         (stream-map
+          values
+          (sequence->stream
+           (in-parallel '(1 3) '(2 4))))))
+      list)
+
+(test '(1 2)
+      call-with-values
+      (λ ()
+        (stream-first
+         (stream-add-between
+          (sequence->stream
+           (in-parallel '(1 3) '(2 4)))
+          #f)))
+      list)
+
+(test '(1 2)
+      call-with-values
+      (λ ()
+        (stream-first
+         (stream-filter
+          (λ _ #t)
+          (sequence->stream
+           (in-parallel '(1 3) '(2 4))))))
+      list)
 
 (report-errs)

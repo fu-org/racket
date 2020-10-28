@@ -29,8 +29,8 @@ for information on command-line arguments and flags.
                                                                                          (apply printf args)
                                                                                          (flush-output))]
                        [#:initial-error initial-error (or #f (-> any)) #f]
-                       [#:tmp-dir given-tmp-dir (or/c #f path-string?) #f]
-                       [#:clean-tmp-dir? clean-tmp-dir? any/c (not given-tmp-dir)]
+                       [#:tmp-dir tmp-dir (or/c #f path-string?) #f]
+                       [#:clean-tmp-dir? clean-tmp-dir? any/c (not tmp-dir)]
                        [#:verify-server? verify-server? any/c #t]
                        [#:port port (or/c #f (integer-in 1 65535)) (case transport
                                                                      [(git) 9418]
@@ -47,7 +47,8 @@ to download the repository whose name on the server is
 @racket[repository] (normally ending in @filepath{.git}).  The tree
 within the repository that is identified by @racket[ref] (which can be
 a branch, tag, commit ID, or tree ID) is extracted to
-@racket[dest-dir], and the result id an ID corresponding to @racket[ref].
+@racket[dest-dir], and it returns a string containing a commit ID corresponding 
+to @racket[ref].
 
 If @racket[transport] is @racket['git], then the server is contacted
 using Git's native transport. If @racket[transport] is
@@ -75,7 +76,7 @@ tag. Furthermore, the default @racket[depth] argument allows
 @racket[git-checkout] to obtain only the latest commit and its
 objects, instead of the entire history of the branch or commit.  If
 @racket[ref] is any other commit ID or tree ID, then the entire
-repository is downloaded, including all branches.
+repository may have to be downloaded, including all branches.
 
 Status information is reported via @racket[status-printf]. The same
 information is always logged with the name @racket['git-checkout] at

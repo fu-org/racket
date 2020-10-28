@@ -10,8 +10,10 @@
          xml/plist
          setup/dirs
          setup/variant
+         setup/collects
          file/ico
          racket/private/so-search
+         racket/private/share-search
          setup/cross-system
          "private/winsubsys.rkt"
          "private/macfw.rkt"
@@ -22,8 +24,8 @@
          "private/collects-path.rkt"
          "private/configdir.rkt"
          "private/write-perm.rkt"
+	 "private/win-dll-list.rkt"
          "find-exe.rkt")
-
 
 (provide/contract [make-embedding-executable
                    (->* (path-string?
@@ -60,7 +62,7 @@
                          #:cmdline (listof string?)
                          #:gracket? any/c
                          #:mred? any/c
-                         #:variant (or/c '3m 'cgc)
+                         #:variant (or/c '3m 'cgc 'cs)
                          #:aux (listof (cons/c symbol? any/c))
                          #:collects-path (or/c #f
                                                path-string?
@@ -271,12 +273,13 @@
           #:exists 'truncate
           (lambda (port)
             (write-plist new-plist port)))))
-    (call-with-output-file (build-path dest 
-                                       "Contents" 
-                                       "PkgInfo")
-      #:exists 'truncate
-      (lambda (port)
-        (fprintf port "APPL~a" creator)))
+    (let* ([pkginfo-path (build-path dest "Contents" "PkgInfo")]
+           [old-perms (ensure-writable pkginfo-path)])
+      (call-with-output-file pkginfo-path
+        #:exists 'truncate
+        (lambda (port)
+          (fprintf port "APPL~a" creator)))
+      (done-writable pkginfo-path old-perms))
     (when resource-files
       (for-each (lambda (p)
                   (let-values ([(base name dir?) (split-path p)])
@@ -317,12 +320,12 @@
 ;; Represent modules with lists starting with the filename, so we
 ;; can use assoc:
 (define (make-mod normal-file-path normal-module-path 
-                  code name prefix full-name relative-mappings-box 
+                  code name full-name relative-mappings-box 
                   runtime-paths runtime-module-syms
                   actual-file-path
                   use-source?)
   (list normal-file-path normal-module-path code
-        name prefix full-name relative-mappings-box
+        name full-name relative-mappings-box
         runtime-paths runtime-module-syms 
         actual-file-path
         use-source?))
@@ -331,16 +334,40 @@
 (define (mod-mod-path m) (cadr m))
 (define (mod-code m) (caddr m))
 (define (mod-name m) (list-ref m 3))
-(define (mod-prefix m) (list-ref m 4))
-(define (mod-full-name m) (list-ref m 5))
-(define (mod-mappings m) (unbox (list-ref m 6)))
-(define (mod-runtime-paths m) (list-ref m 7))
-(define (mod-runtime-module-syms m) (list-ref m 8))
-(define (mod-actual-file m) (list-ref m 9))
-(define (mod-use-source? m) (list-ref m 10))
+(define (mod-full-name m) (list-ref m 4))
+(define (mod-mappings m) (unbox (list-ref m 5)))
+(define (mod-runtime-paths m) (list-ref m 6))
+(define (mod-runtime-module-syms m) (list-ref m 7))
+(define (mod-actual-file m) (list-ref m 8))
+(define (mod-use-source? m) (list-ref m 9))
 
-(define (generate-prefix)
-  (format "#%embedded:~a:" (gensym)))
+(define (file-mod-name-base path)
+  (define-values (base name dir?) (split-path path))
+  (path->string (path-replace-extension name #"")))
+
+(struct file-mod-name-state (path->relative-cache used wrt-path))
+(define (make-generate-file-mod-name-state wrt-path)
+  (file-mod-name-state (make-hash) (make-hasheq) wrt-path))
+
+(define (generate-file-mod-name gen-state path)
+  (define mp (path->module-path path
+                                #:cache (file-mod-name-state-path->relative-cache gen-state)))
+  (define str
+    (cond
+      [(and mp (pair? mp) (eq? (car mp) 'lib) (null? (cddr mp)))
+       (cadr mp)]
+      [else
+       (define rel (find-relative-path (file-mod-name-state-wrt-path gen-state) path))
+       (path->string rel)]))
+  (define sym (string->symbol (regexp-replace #rx"[.](?:ss|rkt)$" str "")))
+  (define used (file-mod-name-state-used gen-state))
+  (let loop ([sym sym])
+    (cond
+      [(hash-ref used sym #f)
+       (loop (string->symbol (format "~a>" sym)))]
+      [else
+       (hash-set! used sym #t)
+       (format "#%embedded:~a:" sym)])))
 
 (define (normalize filename)
   (if (pair? filename)
@@ -404,7 +431,10 @@
                   (extract-last (unix-style-split s)))])
     (let ([p (build-path collects-dest
                          (apply build-path dir)
-                         "compiled"
+                         (let ([l (use-compiled-file-paths)])
+                           (if (pair? l)
+                               (car l)
+                               "compiled"))
                          (path-add-extension file #".zo"))])
       (let-values ([(base name dir?) (split-path p)])
         (make-directory* base)
@@ -417,8 +447,8 @@
 (define-struct extension (path))
 
 ;; Loads module code, using .zo if there, compiling from .scm if not
-(define (get-code filename module-path ready-code use-submods codes prefixes verbose? collects-dest on-extension 
-                  compiler expand-namespace src-filter get-extra-imports working)
+(define (get-code filename module-path ready-code use-submods codes file-mod-names verbose? collects-dest on-extension 
+                  compiler expand-namespace src-filter get-extra-imports working gen-state)
   ;; filename can have the form `(submod ,filename ,sym ...)
   (let* ([a (assoc filename (unbox codes))]
          ;; If we didn't fine `filename` as-is, check now for
@@ -468,14 +498,19 @@
              [just-filename (strip-submod filename)]
              [root-module-path (strip-submod module-path)]
              [actual-filename just-filename] ; `set!'ed below to adjust file extension
-             [name (let-values ([(base name dir?) (split-path just-filename)])
-                     (path->string (path-replace-extension name #"")))]
-             [prefix (let ([a (assoc just-filename prefixes)])
-                       (if a
-                           (cdr a)
-                           (generate-prefix)))]
+             [name (file-mod-name-base just-filename)]
+             [file-mod-name (let ([a
+                                   ;; Try path with a submodule, first, then fall back to
+                                   ;; just the path part if there was a `submod` wrapper:
+                                   (or (assoc filename file-mod-names)
+                                       (and (pair? filename)
+                                            (assoc just-filename file-mod-names)))])
+                              (if a
+                                  (cdr a)
+                                  (generate-file-mod-name gen-state just-filename)))]
              [full-name (string->symbol
-                         (format "~a~a~a" prefix name
+                         (format "~a~a"
+                                 file-mod-name
                                  (if (null? submod-path)
                                      ""
                                      submod-path)))])
@@ -483,7 +518,10 @@
         (let ([code (or ready-code
                         (get-module-code just-filename
                                          #:submodule-path submod-path
-                                         "compiled"
+                                         (let ([l (use-compiled-file-paths)])
+                                           (if (pair? l)
+                                               (car l)
+                                               "compiled"))
                                          compiler
                                          (if on-extension
                                              (lambda (f l?)
@@ -511,7 +549,7 @@
               (eprintf " using extension: ~s\n" (extension-path code)))
             (set-box! codes
                       (cons (make-mod filename module-path code 
-                                      name prefix full-name
+                                      name full-name
                                       (box null) null null
                                       actual-filename
                                       #f)
@@ -536,28 +574,32 @@
                             ;; check for run-time paths by visiting the module in an
                             ;; expand-time namespace:
                             (parameterize ([current-namespace expand-namespace])
-                              (define no-submodule-code
-                                ;; Strip away submodules to avoid re-declaring them:
-                                (module-compiled-submodules 
-                                 (module-compiled-submodules code #f null)
-                                 #t
-                                 null))
-                              (eval no-submodule-code)
                               (let ([module-path
                                      (if (path? module-path)
                                          (path->complete-path module-path)
                                          module-path)])
+                                (unless (module-declared? module-path)
+                                  (parameterize ([current-module-declare-name
+                                                  (module-path-index-resolve (module-path-index-join
+                                                                              module-path
+                                                                              #f))])
+                                    (eval code)))
                                 (define e (expand `(,#'module m racket/kernel
                                                      (#%require (only ,module-path)
                                                                 racket/runtime-path)
                                                      (runtime-paths ,module-path))))
                                 (syntax-case e (quote)
                                   [(_ m mz (#%mb req (quote (spec ...))))
-                                   (syntax->datum #'(spec ...))]
+                                   (for/list ([p (in-list (syntax->datum #'(spec ...)))])
+                                     ;; Strip variable reference from 'module specs, because
+                                     ;; we don't need them and they retain the namespace:
+                                     (if (and (pair? p) (eq? 'module (car p)))
+                                         (list 'module (cadr p))
+                                         p))]
                                   [_else (error 'create-empbedding-executable
                                                 "expansion mismatch when getting external paths: ~e"
                                                 (syntax->datum e))]))))]
-                       
+
                        [extra-runtime-paths (filter
                                              values
                                              (map (lambda (p)
@@ -569,8 +611,7 @@
                                          code
                                          (module-compiled-name code (last (module-compiled-name code))))]
                        [extract-submods (lambda (l)
-                                          (if (or (null? use-submods)
-                                                  use-source?)
+                                          (if use-source?
                                               null
                                               (for/list ([m (in-list l)]
                                                          #:when (or (member (last (module-compiled-name m)) use-submods)
@@ -604,14 +645,15 @@
                     (define (get-one-code sub-filename sub-path ready-code)
                       (get-code sub-filename sub-path ready-code null
                                 codes
-                                prefixes
+                                file-mod-names
                                 verbose?
                                 collects-dest
                                 on-extension
                                 compiler
                                 expand-namespace
                                 src-filter get-extra-imports
-                                working))
+                                working
+                                gen-state))
                     (define (get-one-submodule-code m)
                       (define name (cadr (module-compiled-name m)))
                       (define mp `(submod "." ,name))
@@ -620,7 +662,9 @@
                                     (if (is-lib-path? module-path)
                                         ;; Preserve `lib`-ness of module reference:
                                         (collapse-module-path-index
-                                         (module-path-index-join mp module-path))
+                                         (module-path-index-join
+                                          mp
+                                          (module-path-index-join module-path #f)))
                                         ;; Ok to collapse based on filename:
                                         (collapse-module-path-index mpi filename))
                                     m))
@@ -646,7 +690,7 @@
                           ;; Record module as copied
                           (set-box! codes
                                     (cons (make-mod filename module-path #f
-                                                    #f #f #f
+                                                    #f #f
                                                     (box null) null null
                                                     actual-filename
                                                     use-source?)
@@ -696,7 +740,7 @@
                           ;; Record the module
                           (set-box! codes
                                     (cons (make-mod filename module-path code 
-                                                    name prefix full-name
+                                                    name full-name
                                                     mappings-box
                                                     runtime-paths
                                                     ;; extract runtime-path module symbols:
@@ -722,7 +766,7 @@
            [else
             (set-box! codes
                       (cons (make-mod filename module-path code 
-                                      name #f #f
+                                      name #f
                                       null null null
                                       actual-filename
                                       use-source?)
@@ -1116,7 +1160,8 @@
                                 early-literal-expressions config? literal-files literal-expressions 
                                 collects-dest
                                 on-extension program-name compiler expand-namespace 
-                                src-filter get-extra-imports on-decls-done)
+                                src-filter get-extra-imports on-decls-done
+				embedded-dlls-box)
   (let* ([program-name-bytes (if program-name
                                  (path->bytes program-name)
                                  #"?")]
@@ -1131,12 +1176,17 @@
          [collapse-one (lambda (mp)
                          (collapse-module-path mp (build-path (current-directory) "dummy.rkt")))]
          [collapsed-mps (map collapse-one module-paths)]
-         [prefix-mapping (map (lambda (f m)
-                                (cons f (let ([p (car m)])
+         [gen-state (make-generate-file-mod-name-state (or (and (pair? files)
+                                                                (let-values ([(base name dir) (split-path (car files))])
+                                                                  base))
+                                                           (current-directory)))]
+         [file-mod-names (map (lambda (f m)
+                                (cons f (let ([p (car m)]
+                                              [f (strip-submod f)])
                                           (cond
-                                            [(symbol? p) (symbol->string p)]
-                                            [(eq? p #t) (generate-prefix)]
-                                            [(not p) ""]
+                                            [(symbol? p) (format "~a~a" p (file-mod-name-base f))]
+                                            [(eq? p #t) (generate-file-mod-name gen-state f)]
+                                            [(not p) (file-mod-name-base f)]
                                             [else (error
                                                    'write-module-bundle
                                                    "bad prefix: ~e"
@@ -1147,10 +1197,10 @@
          ;; loading imports, so the list in the right order.
          [codes (box null)]
          [get-code-at (lambda (f mp submods)
-                        (get-code f mp #f submods codes prefix-mapping verbose? collects-dest
+                        (get-code f mp #f submods codes file-mod-names verbose? collects-dest
                                   on-extension compiler expand-namespace
                                   src-filter get-extra-imports
-                                  (make-hash)))]
+                                  (make-hash) gen-state))]
          [__
           ;; Load all code:
           (for-each get-code-at files collapsed-mps use-submoduless)]
@@ -1248,7 +1298,16 @@
                                                                          p)))
                                                            (let ([p (cond
                                                                      [(bytes? p) (bytes->path p)]
-                                                                     [(so-spec? p) (so-find p)]
+                                                                     [(so-spec? p)
+								      (define path (so-find p))
+								      (cond
+									[(and path embedded-dlls-box)
+									 (set-box! embedded-dlls-box (cons path (unbox embedded-dlls-box)))
+									 ;; Don't record the path in the executable since we'll
+									 ;; record the whole DLL in the executable
+									 #f]
+									[else path])]
+                                                                     [(share-spec? p) (share-find p)]
                                                                      [(and (list? p)
                                                                            (eq? 'lib (car p)))
                                                                       (let ([p (if (null? (cddr p))
@@ -1356,7 +1415,8 @@
                           #f ; program-name 
                           compiler expand-namespace 
                           src-filter get-extra-imports
-                          void))
+                          void
+			  #f)) ; don't accumulate embedded DLLs
 
 
 ;; The old interface:
@@ -1477,7 +1537,8 @@
                               (raise x))])
         (define old-perms (ensure-writable dest-exe))
         (when (and (eq? 'macosx (cross-system-type))
-                   (not unix-starter?))
+                   (not unix-starter?)
+                   (get-current-framework-path (mac-dest->executable dest mred?) "Racket"))
           (let ([m (or (assq 'framework-root aux)
                        (and relative? '(framework-root . #f)))])
             (if m
@@ -1501,20 +1562,28 @@
                                             "/")
                                            dest
                                            mred?))))))
+	(define embed-dlls? (and (eq? 'windows (cross-system-type))
+				 (let ([m (assq 'embed-dlls? aux)])
+				   (and m (cdr m)))))
+	(define embedded-dlls-box (and embed-dlls? (box null)))
         (when (eq? 'windows (cross-system-type))
-          (let ([m (or (assq 'dll-dir aux)
-                       (and relative? '(dll-dir . #f)))])
-            (if m
-                (if (cdr m)
-                    (update-dll-dir dest (cdr m))
-                    ;; adjust relative path, since exe directory can change:
-		    (update-dll-dir dest (find-relative-path* dest (find-dll-dir))))
-                ;; Check whether we need an absolute path to DLLs:
-                (let ([dir (get-current-dll-dir dest)])
-                  (when (relative-path? dir)
-                    (let-values ([(orig-dir name dir?) (split-path 
-                                                        (path->complete-path orig-exe))])
-                      (update-dll-dir dest (build-path orig-dir dir))))))))
+	  (cond
+	    [embed-dlls?
+	     (update-dll-dir dest #t)]
+	    [else
+	     (let ([m (or (assq 'dll-dir aux)
+			  (and relative? '(dll-dir . #f)))])
+	       (if m
+		   (if (cdr m)
+		       (update-dll-dir dest (cdr m))
+		       ;; adjust relative path, since exe directory can change:
+		       (update-dll-dir dest (find-relative-path* dest (find-cross-dll-dir))))
+		   ;; Check whether we need an absolute path to DLLs:
+		   (let ([dir (get-current-dll-dir dest)])
+		     (when (relative-path? dir)
+		       (let-values ([(orig-dir name dir?) (split-path 
+							   (path->complete-path orig-exe))])
+			 (update-dll-dir dest (build-path orig-dir dir)))))))]))
         (define (adjust-config-dir)
           (let ([m (or (assq 'config-dir aux)
                        (and relative? '(config-dir . #f)))]
@@ -1567,7 +1636,8 @@
                                          expand-namespace
                                          src-filter
                                          get-extra-imports
-                                         (lambda (outp) (set! pos (file-position outp))))
+                                         (lambda (outp) (set! pos (file-position outp)))
+					 embedded-dlls-box)
                  pos)]
 		  [make-full-cmdline
 		   (lambda (start decl-end end)
@@ -1599,7 +1669,7 @@
 				  (list (if relative?
 					    (relativize exe dest-exe values)
 					    exe)
-					(let ([dir (find-dll-dir)])
+					(let ([dir (find-cross-dll-dir)])
 					  (if dir
 					      (if relative?
 						  (relativize dir dest-exe values)
@@ -1638,7 +1708,24 @@
                                                           1
                                                           1033 ; U.S. English
                                                           bstr))
-                          (update-resources dest-exe pe new-rsrcs)
+                          (define new+dll-rsrcs
+			    (if embed-dlls?
+				(resource-set new-rsrcs
+					      ;; Racket's "user-defined" type for embedded DLLs:
+					      258
+					      1
+					      1033 ; U.S. English
+					      (pack-embedded-dlls
+					       (append
+						(get-racket-dlls
+						 (list
+						  (case (cross-system-type 'gc)
+						    [(3m) (if mred? 'gracket3m 'racket3m)]
+						    [(cgc) (if mred? 'gracketcgc 'racketcgc)]
+						    [(cs) (if mred? 'gracketcs 'racketcs)])))
+						(unbox embedded-dlls-box))))
+				new-rsrcs))
+			  (update-resources dest-exe pe new+dll-rsrcs)
                           (values 0 decl-len init-len (+ init-len cmdline-len))]
                          [(and (eq? (cross-system-type) 'macosx)
                                (not unix-starter?))
@@ -1720,7 +1807,8 @@
                                    (lambda () (find-cmdline 
                                                "configuration"
                                                #"cOnFiG:")))]
-                         [typepos (and (or mred? (eq? variant '3m))
+                         [typepos (and (or mred? (or (eq? variant '3m)
+                                                     (eq? variant 'cs)))
                                        (with-input-from-file dest-exe 
                                          (lambda () (find-cmdline 
                                                      "exeuctable type"
@@ -1743,6 +1831,9 @@
                             (when (eq? variant '3m)
                               (file-position out (+ typepos 15))
                               (write-bytes #"3" out))
+                            (when (eq? variant 'cs)
+                              (file-position out (+ typepos 15))
+                              (write-bytes #"s" out))
                             (flush-output out))
                           (file-position out (+ numpos 7))
                           (write-bytes #"!" out)
@@ -1824,3 +1915,36 @@
 (define (find-relative-path* wrt-exe p)
   (define-values (wrt base name) (split-path (path->complete-path wrt-exe)))
   (find-relative-path (simplify-path wrt) (simplify-path p)))
+
+;; To embed DLLs in the executable as resource ID 258:
+(define (pack-embedded-dlls name-or-paths)
+  (define bstrs (for/list ([p (in-list name-or-paths)])
+		  (file->bytes (if (string? p)
+				   (search-dll p)
+				   p))))
+  (define names (for/list ([p (in-list name-or-paths)])
+		  (if (string? p)
+		      p
+		      (let-values ([(base name dir) (split-path p)])
+			(path-element->string name)))))
+  (define start-pos (+ 4 ; count
+		       ;; name array:
+		       (for/sum ([p (in-list names)])
+			 (+ 2 (bytes-length (string->bytes/utf-8 p))))
+		       ;; starting-position array:
+		       (* 4 (add1 (length names)))))
+  (define-values (rev-offsets total)
+    (for/fold ([rev-offsets null] [total start-pos]) ([bstr (in-list bstrs)])
+      (values (cons total rev-offsets)
+	      (+ total (bytes-length bstr)))))
+  (apply
+   bytes-append
+   (integer->integer-bytes (length names) 4 #t #f)
+   (append
+    (for/list ([p (in-list names)])
+      (define bstr (string->bytes/utf-8 p))
+      (bytes-append (integer->integer-bytes (bytes-length bstr) 2 #t #f) bstr))
+    (for/list ([offset (in-list (reverse rev-offsets))])
+      (integer->integer-bytes offset 4 #t #f))
+    (list (integer->integer-bytes total 4 #t #f))
+    bstrs)))

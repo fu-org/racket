@@ -15,7 +15,9 @@
   env-item-ctc
   
   predicate-generator-table
-  exact-nonnegative-integer-gen)
+  exact-nonnegative-integer-gen
+
+  all-zeros)
 
  
 ;; generate 
@@ -63,6 +65,17 @@
   (/ (integer-gen fuel)
      (exact-positive-integer-gen fuel)))
 
+(define (string-gen fuel)
+  (define len
+    (rand-choice [1/10 0]
+                 [1/10 1]
+                 [else (rand-range 2 260)]))
+  (define strl (build-list len (λ (x) (gen-char fuel))))
+  (apply string strl))
+
+(define (symbol-gen fuel)
+  (string->symbol (string-gen fuel)))
+
 (define predicate-generator-table 
   (hash
    ;; generate integer? 
@@ -71,6 +84,9 @@
    
    exact-integer?
    exact-integer-gen
+
+   symbol?
+   symbol-gen
    
    natural?
    exact-nonnegative-integer-gen
@@ -118,12 +134,7 @@
    gen-char
    
    string?
-   (λ (fuel)
-     (let* ([len (rand-choice [1/10 0]
-                              [1/10 1]
-                              [else (rand-range 2 260)])]
-            [strl (build-list len (λ (x) (gen-char fuel)))])
-       (apply string strl)))
+   string-gen
    
    
    byte?
@@ -158,4 +169,10 @@
     [else (cons (string->symbol (string-append "x-" (number->string st-num)))
                 (gen-arg-names (+ st-num 1) (- size 1)))]))
 
-
+(define all-zeros
+  (if (single-flonum-available?)
+      (list 0
+            -0.0 0.0 (real->single-flonum 0.0) (real->single-flonum -0.0)
+            0.0+0.0i (make-rectangular (real->single-flonum 0.0) (real->single-flonum 0.0))
+            0+0.0i 0.0+0i)
+      '(0 -0.0 0.0 0.0+0.0i 0+0.0i 0.0+0i)))

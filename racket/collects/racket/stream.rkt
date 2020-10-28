@@ -4,12 +4,14 @@
          racket/generic
          racket/contract/base
          racket/contract/combinator
+         racket/function
          racket/generator
          (rename-in "private/for.rkt"
                     [stream-ref stream-get-generics])
          "private/sequence.rkt"
          (only-in "private/stream-cons.rkt"
-                  stream-cons)
+                  stream-cons
+                  stream-lazy)
          "private/generic-methods.rkt"
          (for-syntax racket/base))
 
@@ -33,6 +35,7 @@
          stream-length
          stream-ref
          stream-tail
+         stream-take
          stream-append
          stream-map
          stream-andmap
@@ -69,10 +72,15 @@
 
 (define-syntax stream*
   (syntax-rules ()
-    [(_ hd tl)
-     (stream-cons hd tl)]
+    [(_ tl)
+     (assert-stream? 'stream* tl)]
     [(_ hd tl ...)
      (stream-cons hd (stream* tl ...))]))
+
+(define (assert-stream? who st)
+  (if (stream? st)
+    st
+    (raise-argument-error who "stream?" st)))
 
 (define (stream->list s)
   (for/list ([v (in-stream s)]) v))
@@ -115,6 +123,25 @@
      [else
       (loop (sub1 n) (stream-rest s))])))
 
+
+
+(define (stream-take st i)
+  (unless (stream? st) (raise-argument-error 'stream-take "stream?" st))
+  (unless (exact-nonnegative-integer? i)
+    (raise-argument-error 'stream-take "exact-nonnegative-integer?" i))
+  (let loop ([n i] [s st])
+    (cond
+     [(zero? n) empty-stream]
+     [(stream-empty? s)
+      (raise-arguments-error 'stream-take
+                             "stream ended before index"
+                             "index" i
+                             "stream" st)]
+     [else
+      (make-do-stream (lambda () #f)
+                      (lambda () (stream-first s))
+                      (lambda () (loop (sub1 n) (stream-rest s))))])))
+
 (define (stream-append . l)
   (for ([s (in-list l)])
     (unless (stream? s) (raise-argument-error 'stream-append "stream?" s)))
@@ -135,8 +162,10 @@
   (unless (stream? s) (raise-argument-error 'stream-map "stream?" s))
   (let loop ([s s])
     (if (stream-empty? s)
-      empty-stream
-      (stream-cons (f (stream-first s)) (loop (stream-rest s))))))
+        empty-stream
+        (make-do-stream (lambda () #f)
+                        (lambda () (call-with-values (lambda () (stream-first s)) f))
+                        (lambda () (loop (stream-rest s)))))))
 
 (define (stream-andmap f s)
   (unless (procedure? f) (raise-argument-error 'stream-andmap "procedure?" f))
@@ -171,7 +200,7 @@
    [else
     (let ([done? #f]
           [empty? #f]
-          [fst #f]
+          [stream-cons/fst #f]
           [rst #f])
       (define (force!)
         (unless done?
@@ -180,13 +209,13 @@
              [(stream-empty? s)
               (set! done? #t)
               (set! empty? #t)]
-             [(f (stream-first s))
-              (set! fst (stream-first s))
+             [(call-with-values (lambda () (stream-first s)) f)
+              (set! stream-cons/fst s)
               (set! rst (stream-filter f (stream-rest s)))]
              [else (loop (stream-rest s))]))
           (set! done? #t)))
       (make-do-stream (lambda () (force!) empty?)
-                      (lambda () (force!) fst)
+                      (lambda () (force!) (stream-first stream-cons/fst))
                       (lambda () (force!) rst)))]))
 
 (define (stream-add-between s e)
@@ -194,12 +223,19 @@
     (raise-argument-error 'stream-add-between "stream?" s))
   (if (stream-empty? s)
       empty-stream
-      (stream-cons
-       (stream-first s)
-       (let loop ([s (stream-rest s)])
-         (cond [(stream-empty? s) empty-stream]
-               [else (stream-cons e (stream-cons (stream-first s)
-                                                 (loop (stream-rest s))))])))))
+      (make-do-stream
+       (lambda () #f)
+       (lambda () (stream-first s))
+       (lambda ()
+         (let loop ([s (stream-rest s)])
+           (cond
+             [(stream-empty? s) empty-stream]
+             [else
+              (stream-cons e
+                           (make-do-stream
+                            (lambda () #f)
+                            (lambda () (stream-first s))
+                            (lambda () (loop (stream-rest s)))))]))))))
 
 ;; Impersonators and Chaperones ----------------------------------------------------------------------
 ;; (these are private because they would fail on lists, which satisfy `stream?`)
@@ -312,15 +348,14 @@
     (define ((make-for/stream derived-stx) stx)
       (syntax-case stx ()
         [(_ clauses . body)
-         (begin
-           (when (null? (syntax->list #'body))
-             (raise-syntax-error (syntax-e #'derived-stx)
-                                 "missing body expression after sequence bindings"
-                                 stx #'body))
-           #`(sequence->stream
-              (in-generator
-               (#,derived-stx #,stx () clauses
-                (yield (let () . body))
-                (values)))))]))
-    (values (make-for/stream #'for/fold/derived)
-            (make-for/stream #'for*/fold/derived))))
+         (with-syntax ([((pre-body ...) (post-body ...)) (split-for-body stx #'body)])
+           (quasisyntax/loc stx
+             (stream-lazy
+               (#,derived-stx #,stx
+                              ([get-rest empty-stream]
+                               #:delay-with thunk)
+                 clauses
+                 pre-body ...
+                 (stream-cons (let () post-body ...) (get-rest))))))]))
+    (values (make-for/stream #'for/foldr/derived)
+            (make-for/stream #'for*/foldr/derived))))

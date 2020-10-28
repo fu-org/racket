@@ -31,18 +31,23 @@ transfer the result to the target port using @racket[write-string] or
 the one given to the custom-write procedure, copy the given port's
 write handler, display handler, and print handler to the other port.
 
-The port given to a custom-write handler is not necessarily the actual
-target port. In particular, to detect cycles and sharing, the printer
-invokes a custom-write procedure with a port that records recursive
-prints, and does not retain any other output.
+The port given to @racket[write-proc] is not necessarily the actual
+target port. In particular, to detect cycles, sharing, and quoting
+modes (in the case of @racket[print]), the printer invokes a
+custom-write procedure with a port that records information about
+recursive prints, and does not retain any other output. This
+information-gathering phase needs the same objects (in the
+@racket[eq?] sense) to be printed as later, so that the recorded
+information can be correlated with printed values.
 
-Recursive print operations may trigger an escape from the call to the
-custom-write procedure (e.g., for pretty-printing where a tentative
-print attempt overflows the line, or for printing error output of a
-limited width).
+Recursive print operations may trigger an escape from a call to
+@racket[write-proc]. For example, printing may escape during
+pretty-printing where a tentative print attempt overflows the line, or
+it may escape while printing error output that is constrained to a
+limited width.
 
 The following example definition of a @racket[tuple] type includes
-custom-write procedures that print the tuple's list content using
+a @racket[write-proc] procedure that prints the tuple's list content using
 angle brackets in @racket[write] and @racket[print] mode and no brackets in
 @racket[display] mode. Elements of the tuple are printed recursively,
 so that graph and cycle structure can be represented.
@@ -78,7 +83,8 @@ so that graph and cycle structure can be represented.
   (write t))
 ]
 
-This function is often used in conjunction with @racket[make-constructor-style-printer].
+The @racket[make-constructor-style-printer] function can help in the
+implementation of a @racket[write-proc], as in this example:
 
 @examples[
  (eval:no-prompt (require racket/struct))
@@ -89,16 +95,18 @@ This function is often used in conjunction with @racket[make-constructor-style-p
        (make-constructor-style-printer
         (lambda (obj) 'point)
         (lambda (obj) (list (point-x obj) (point-y obj)))))]))
- 
+
   (print (point 1 2))
 
   (write (point 1 2))]
 }
 
 @defthing[prop:custom-write struct-type-property?]{
-A deprecated @tech{structure type property} (see @secref["structprops"])
+A @tech{structure type property} (see @secref["structprops"])
 that supplies a procedure that corresponds to @racket[gen:custom-write]'s
-@racket[write-proc]. Use @racket[gen:custom-write], instead.
+@racket[write-proc]. Using the @racket[prop:custom-write] property is
+discouraged; use the @racket[gen:custom-write] @tech{generic interface}
+instead.
 }
 
 @defproc[(custom-write? [v any/c]) boolean?]{
@@ -108,7 +116,7 @@ property, @racket[#f] otherwise.}
 
 
 @defproc[(custom-write-accessor [v custom-write?])
-         (custom-write? output-port? boolean? . -> . any)]{
+         (custom-write? output-port? (or/c #t #f 0 1) . -> . any)]{
 
 Returns the custom-write procedure associated with @racket[v].}
 

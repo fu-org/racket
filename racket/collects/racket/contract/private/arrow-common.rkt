@@ -33,14 +33,14 @@
 ;; kwd-infos : (listof kwd-info)
 ;; rest : (or/c #f contract?)
 ;; pre? : (or/c #f 'pre 'pre/desc)
+;; pre-thunk : (or/c #f thunk)
 ;; rngs : (listof contract?)
 ;; post? : (or/c #f 'post 'post/desc)
-;; plus-one-arity-function : procedure? -- special, +1 argument wrapper that accepts neg-party
+;; post-thunk : (or/c #f thunk)
 ;; chaperone-constructor ; procedure? -- function that builds a projection tailored to this arrow
 ;; method? : boolean?
-(define-struct base-> (min-arity doms kwd-infos rest pre? rngs post?
-                                 plus-one-arity-function chaperone-constructor
-                                 method?)
+(define-struct base-> (min-arity doms kwd-infos rest pre? pre-thunk rngs post? post-thunk
+                                 chaperone-constructor method?)
   #:property prop:custom-write custom-write-property-proc)
 
 (define-struct unsupplied-arg ())
@@ -349,8 +349,8 @@
                                #:missing-party [missing-party #f])
   (define num-values (length results))
   (define blame-case (if case-context 
-                         (blame-add-context blame (format "the ~a case of"
-                                                          (n->th (+ case-context 1))))
+                         (blame-add-context blame
+                                            (nth-case-of (+ case-context 1)))
                          blame))
   (raise-blame-error (blame-add-range-context blame-case)
                      #:missing-party missing-party
@@ -360,8 +360,7 @@
                      num-values (if (= num-values 1) "" "s")))
 
 (define (blame-add-nth-arg-context blame n)
-  (blame-add-context blame
-                     (format "the ~a argument of" (n->th n))))
+  (blame-add-context blame (nth-argument-of n)))
 
 (define (raise-wrong-number-of-args-error
          blame #:missing-party [missing-party #f] val

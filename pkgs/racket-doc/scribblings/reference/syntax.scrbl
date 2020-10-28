@@ -860,10 +860,10 @@ corresponds to the default @tech{module name resolver}.
  (eval:alts (require (planet mcdonald/farm:2:5/duck)) (void))
  ]}
 
- @defsubform*[((submod root-module submod-path-element ...)
+ @defsubform*[((submod root-module-path submod-path-element ...)
                (submod "." submod-path-element ...)
                (submod ".." submod-path-element ...))]{
-  Identifies a @tech{submodule} within the module specified by @racket[root-module]
+  Identifies a @tech{submodule} within the module specified by @racket[root-module-path]
   or relative to the current module in the case of @racket[(submod "." ....)],
   where  @racket[(submod ".." submod-path-element ...)] is equivalent to
   @racket[(submod "." ".." submod-path-element ...)].
@@ -1003,7 +1003,7 @@ as follows.
  @defsubform[(rename-out [orig-id export-id] ...)]{ Exports each
  @racket[orig-id], which must be @tech{bound} within the module at
  the relevant @tech{phase level}.  The symbolic name for each export is
- @racket[export-id] instead @racket[orig-d].
+ @racket[export-id] instead of @racket[orig-id].
 
  @examples[#:eval (syntax-eval) #:once
    (module nest racket
@@ -1105,7 +1105,9 @@ as follows.
    (list num-eggs num-chicks)
    (weak-eval 'num-eggs)
    (eval:error (weak-eval 'num-chicks))
- ]}
+ ]
+
+ See also @secref["code-inspectors+protect" #:doc '(lib "scribblings/guide/guide.scrbl")].}
 
  @specsubform[#:literals (for-meta) 
               (for-meta phase-level provide-spec ...)]{ Like the union of the
@@ -1836,13 +1838,14 @@ as follows:
        @racket[arg]s, the extra arguments are placed into a
        list that is associated to @racket[rest-id].}
 
+@margin-note{In other words, argument bindings with
+default-value expressions are evaluated analogous to @racket[let*].}
 The @racket[kw-formals] identifiers are bound in the
 @racket[body]s. When the procedure is applied, a new @tech{location}
 is created for each identifier, and the location is filled with the
 associated argument value. The @tech{locations} are created and filled
 in order, with @racket[_default-expr]s evaluated as needed to fill
-locations. @margin-note{In other words, argument bindings with
-default-value expressions are evaluated analogous to @racket[let*].}
+locations.
 
 If any identifier appears in the @racket[body]s that is not one of the
 identifiers in @racket[kw-formals], then it refers to the same
@@ -2583,20 +2586,17 @@ procedure that accepts and returns a syntax object representing a
 
 This form expands to @racket[define-syntax] with a use of
 @racket[make-require-transformer] (see @secref["require-trans"] for
-more information), and the @tech{syntax object} passed to and from the
-macro transformer is adjusted via @racket[syntax-local-require-introduce].
+more information).
 
 The second form is a shorthand the same as for @racket[define-syntax]; it
 expands to a definition of the first form where the @racket[proc-expr] is a
 @racket[lambda] form.}
 
-@defproc[(syntax-local-require-introduce [stx syntax?])
-         syntax?]{
+@defproc[(syntax-local-require-introduce [stx syntax?]) syntax?]{
 
-Provided @racket[for-syntax] for use only during the application of a
-@racket[require] sub-form macro transformer: like
-@racket[syntax-local-introduce], but for @racket[require] sub-form
-expansion.}
+For backward compatibility only; equivalent to @racket[syntax-local-introduce].
+
+@history[#:changed "6.90.0.29" @elem{Made equivalent to @racket[syntax-local-introduce].}]}
 
 @; ----------------------------------------------------------------------
 
@@ -2614,20 +2614,17 @@ procedure that accepts and returns a syntax object representing a
 
 This form expands to @racket[define-syntax] with a use of
 @racket[make-provide-transformer] (see @secref["provide-trans"] for
-more information), and the @tech{syntax object} passed to and from the
-macro transformer is adjusted via @racket[syntax-local-provide-introduce].
+more information).
 
 The second form is a shorthand the same as for @racket[define-syntax]; it
 expands to a definition of the first form where the @racket[expr] is a
 @racket[lambda] form.}
 
-@defproc[(syntax-local-provide-introduce [stx syntax?])
-         syntax?]{
+@defproc[(syntax-local-provide-introduce [stx syntax?]) syntax?]{
 
-Provided @racket[for-syntax] for use only during the application of a
-@racket[provide] sub-form macro transformer: like
-@racket[syntax-local-introduce], but for @racket[provide] sub-form
-expansion.}
+For backward compatibility only; equivalent to @racket[syntax-local-introduce].
+
+@history[#:changed "6.90.0.29" @elem{Made equivalent to @racket[syntax-local-introduce].}]}
 
 @;------------------------------------------------------------------------
 @section[#:tag "begin"]{Sequencing: @racket[begin], @racket[begin0], and @racket[begin-for-syntax]}
@@ -2848,7 +2845,7 @@ and the result of the @racket[_expr] takes the place of the
 @racket[(#,unquote-splicing-id _expr)] similarly escapes, but the
 @racket[_expr] must produce a list, and its elements are spliced as
 multiple values place of the @racket[(#,unquote-splicing-id _expr)], which
-must appear as the @racket[car] or a quoted pair, as an element of a
+must appear as the @racket[car] of a quoted pair, as an element of a
 quoted vector, or as an element of a quoted @tech{prefab} structure;
 in the case of a pair, if the @racket[cdr] of the relevant quoted pair
 is empty, then @racket[_expr] need not produce a list, and its result
@@ -2866,7 +2863,7 @@ other way than as @racket[(#,unquote-id _expr)] or
 (eval:alts (#,(racket quasiquote) (0 1 2)) `(0 1 2))
 (eval:alts (#,(racket quasiquote) (0 (#,unquote-id (+ 1 2)) 4)) `(0 ,(+ 1 2) 4))
 (eval:alts (#,(racket quasiquote) (0 (#,unquote-splicing-id (list 1 2)) 4)) `(0 ,@(list 1 2) 4))
-(eval:error (eval:alts (#,(racket quasiquote) (0 (#,unquote-splicing-id 1) 4)) `(0 ,@1 4)))
+(eval:alts (#,(racket quasiquote) (0 (#,unquote-splicing-id 1) 4)) (eval:error `(0 ,@1 4)))
 (eval:alts (#,(racket quasiquote) (0 (#,unquote-splicing-id 1))) `(0 ,@1))
 ]
 
@@ -2878,7 +2875,7 @@ form is typically abbreviated with @litchar{`}, @litchar{,}, or
 `(0 1 2)
 `(1 ,(+ 1 2) 4)
 `#s(stuff 1 ,(+ 1 2) 4)
-(eval:alts #,(racketfont (racketvalfont "`#hash((\"a\" . ") "," (racket (+ 1 2)) (racketvalfont "))")) #hash(("a" . 3)))
+`#hash(("a" . ,(+ 1 2)))
 `#hash((,(+ 1 2) . "a"))
 `(1 ,@(list 1 2) 4)
 `#(1 ,@(list 1 2) 4)
@@ -2905,7 +2902,14 @@ and @racket[unquote-splicing] expressions. For example, in
 ]
 
 a single tail @racket['(2 3)] is used for every evaluation of the
-@racket[quasiquote] expression.
+@racket[quasiquote] expression. When allocating fresh data,
+the @racket[quasiquote] form allocates mutable vectors, mutable boxes
+and immutable hashes.
+
+@mz-examples[
+(immutable? `#(,0))
+(immutable? `#hash((a . ,0)))
+]
 
 }
 
@@ -3049,7 +3053,7 @@ If the enclosing relative phase level is not 0, then
 @racket[module-path] is also placed in a submodule (with a use of
 @racket[define-runtime-module-path-index] at phase level 0 within the
 submodule). Introduced submodules have the names
-@racket[lazy-require-]@racket[_n]@racketidfont{-}@racket[_m], where
+@racket[lazy-require-aux]@racket[_n]@racketidfont{-}@racket[_m], where
 @racket[_n] is a phase-level number and @racket[_m] is a number.
 
 When the use of a lazily-required function triggers module loading, it
@@ -3069,6 +3073,92 @@ process of compiling a module).
   ['hello ([hello greet])])
 (greet)
 ]
+}
+
+@defform[(lazy-require-syntax [module-path (macro-import ...)] ...)
+         #:grammar
+         ([macro-import macro-id
+                        (orig-macro-id macro-id)])]{
+
+Like @racket[lazy-require] but for macros. That is, it defines each
+@racket[macro-id] as a macro that, when used, dynamically loads the
+macro's implementation from the given @racket[module-path]. If
+@racket[orig-macro-id] is not given, it defaults to @racket[macro-id].
+
+Use @racket[lazy-require-syntax] in the @emph{implementation} of a library
+with large, complicated macros to avoid a dependence from clients of
+the library on the macro ``compilers.'' Note that only macros with
+exceptionally large compile-time components (such as Typed Racket,
+which includes a type checker and optimizer) benefit from
+@racket[lazy-require-syntax]; typical macros do not.
+
+@bold{Warning:} @racket[lazy-require-syntax] breaks the invariants
+that Racket's module loader and linker rely on; these invariants
+normally ensure that the references in code produced by a macro are
+loaded before the code runs. Safe use of @racket[lazy-require-syntax]
+requires a particular structure in the macro implementation. (In
+particular, @racket[lazy-require-syntax] cannot simply be introduced
+in the client code.) The macro implementation must follow these rules:
+@itemlist[#:style 'ordered
+@item{the interface module must @racket[require] the runtime-support module}
+@item{the compiler module must @racket[require] the runtime-support module via
+an @emph{absolute} module path rather than a @emph{relative} path}
+]
+
+To explain the concepts of ``interface, compiler, and runtime-support
+modules'', here is an example module that exports a macro:
+@racketblock[  ;; @examples[#:eval lazy-require-eval #:label #f
+(module original racket/base
+  (define (ntimes-proc n thunk)
+    (for ([i (in-range n)]) (thunk)))
+  (define-syntax-rule (ntimes n expr)
+    (ntimes-proc n (lambda () expr)))
+  (provide ntimes))
+]
+Suppose we want to use @racket[lazy-require-syntax] to lazily load the
+implementation of the @racket[ntimes] macro transformer. The original
+module must be split into three parts:
+@racketblock[  ;; @examples[#:eval lazy-require-eval #:label #f
+(module runtime-support racket/base
+  (define (ntimes-proc n thunk)
+    (for ([i (in-range n)]) (thunk)))
+  (provide ntimes-proc))
+(module compiler racket/base
+  (require 'runtime-support)
+  (define-syntax-rule (ntimes n expr)
+    (ntimes-proc n (lambda () expr)))
+  (provide ntimes))
+(module interface racket/base
+  (require racket/lazy-require)
+  (require 'runtime-support)
+  (lazy-require-syntax ['compiler (ntimes)])
+  (provide ntimes))
+]
+The runtime support module contains the function and value definitions
+that the macro refers to. The compiler module contains the macro
+definition(s) themselves---the part of the code that ``disappears''
+after compile time. The interface module lazily loads the macro
+transformer, but it makes sure the runtime support module is defined at
+run time by requiring it normally. In a larger example, of course, the
+runtime support and compiler may both consist of multiple modules.
+
+Here what happens when we don't separate the runtime support into a
+separate module:
+@examples[#:eval lazy-require-eval #:label #f
+(module bad-no-runtime racket/base
+  (define (ntimes-proc n thunk)
+    (for ([i (in-range n)]) (thunk)))
+  (define-syntax-rule (ntimes n expr)
+    (ntimes-proc n (lambda () expr)))
+  (provide ntimes))
+(module bad-client racket/base
+  (require racket/lazy-require)
+  (lazy-require-syntax ['bad-no-runtime (ntimes)])
+  (ntimes 3 (printf "hello?\n")))
+(eval:error (require 'bad-client))
+]
+A similar error occurs when the interface module doesn't introduce a
+dependency on the runtime support module.
 }
 
 @(close-eval lazy-require-eval)

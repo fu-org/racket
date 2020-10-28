@@ -5,7 +5,9 @@
 
 (define SLEEP-TIME 0.1)
 
-(require racket/port)
+(require racket/port
+         ffi/unsafe
+         ffi/unsafe/port)
 
 ;; ----------------------------------------
 
@@ -680,7 +682,61 @@
             (sync (system-idle-evt))
             (write-char #\b o)))
   (test 1 peek-bytes-avail! (make-bytes 1) 2 #f (make-limited-input-port i 10)))
-	     
+
+;; ----------------------------------------
+;; Check that events raise an exception in the right thread
+;; when a point goes bad
+
+(let ()
+  (define (check make-evt)
+    (define-values (p fail)
+      (let* ([s (make-semaphore)]
+             [e (wrap-evt (semaphore-peek-evt s)
+                          (lambda (v) 0))])
+        (values
+         (make-input-port
+          'test
+          (lambda (bsr)
+            (if (sync/timeout 0 e)
+                (raise 'forced-failure)
+                e))
+          (lambda (bstr offset evt)
+            (if (sync/timeout 0 e)
+                (raise 'forced-failure)
+                e))
+          void
+          (lambda ()
+            (make-semaphore))
+          (lambda (n evt1 evt2)
+            (error "no")))
+         (lambda ()
+           (semaphore-post s)))))
+    
+    (thread (lambda ()
+              (sync (system-idle-evt))
+              (fail)))
+    
+    (err/rt-test (sync (make-evt p))
+                 (lambda (exn) (eq? exn 'forced-failure))))
+
+  (check (lambda (p) (eof-evt p)))
+  (check (lambda (p) (read-bytes-evt 10 p)))
+  (check (lambda (p) (read-bytes!-evt (make-bytes 10) p)))
+  (check (lambda (p) (read-bytes-avail!-evt (make-bytes 10) p)))
+  (check (lambda (p) (read-string-evt 10 p)))
+  (check (lambda (p) (read-string!-evt (make-string 10) p)))
+  (check (lambda (p) (read-line-evt p)))
+  (check (lambda (p) (read-bytes-line-evt p)))
+  (check (lambda (p) (peek-bytes-evt 10 0 #f p)))
+  (check (lambda (p) (peek-bytes!-evt (make-bytes 10) 0 #f p)))
+  (check (lambda (p) (peek-bytes!-evt (make-bytes 10) 0 (port-progress-evt p) p)))
+  (check (lambda (p) (peek-bytes-avail!-evt (make-bytes 10) 0 #f p)))
+  (check (lambda (p) (peek-bytes-avail!-evt (make-bytes 10) 0 (port-progress-evt p) p)))
+  (check (lambda (p) (peek-string-evt 10 0 #f p)))
+  (check (lambda (p) (peek-string-evt 10 0 (port-progress-evt p) p)))
+  (check (lambda (p) (peek-string!-evt (make-string 10) 0 #f p)))
+  (check (lambda (p) (peek-string!-evt (make-string 10) 0 (port-progress-evt p) p))))
+
 ;; ----------------------------------------
 ;; Conversion wrappers
 
@@ -938,6 +994,73 @@
   (test 44 file-position o2)
   (write-bytes (make-bytes 80) o2)
   (test 0 file-position o2))
+
+;; --------------------------------------------------
+;; test combine-output
+(let ([port-a (open-output-string)]
+      [port-b (open-output-string)])
+  (define two-byte-port (make-output-port
+                          `two-byte-port
+                          port-b
+                          (lambda (s start end non-blocking? breakable?)
+                            (cond
+                              [non-blocking?
+                               (write-bytes-avail* (subbytes
+                                                    s
+                                                    start
+                                                    (if (< start (- end 1)) (+ start 2) end))
+                                                    port-b)]
+                              [breakable?
+                               (write-bytes-avail/enable-break
+                                (subbytes
+                                 s
+                                 start
+                                 (if (< start (- end 1)) (+ start 2) end))
+                                 port-b)]
+                              [else
+                               (write-bytes s port-b)]))
+                          void))
+  (define port-ab (combine-output port-a two-byte-port))
+  (test 12  write-bytes #"hello, world" port-ab)
+  (test "hello, world" get-output-string port-a)
+  (test "he" get-output-string port-b)
+  (test 0 write-bytes-avail* #" test" port-ab)
+  (test "hello, world" get-output-string port-a)
+  (test "hell" get-output-string port-b)
+  (test (void) flush-output port-ab)
+  (test "hello, world" get-output-string port-a)
+  (test "hello, world" get-output-string port-b)
+  (define worker1 (thread
+                   (lambda ()
+                     (for ([i 10])
+                       (write-bytes (string->bytes/utf-8 (number->string i)) port-ab)))))
+  (define worker2 (thread
+                   (lambda ()
+                     (write-bytes-avail* #"0123456789" port-ab))))
+  (thread-wait worker1)
+  (thread-wait worker2)
+  (test "hello, world01234567890123456789" get-output-string port-a)
+  (test "hello, world01234567890123456789" get-output-string port-b)
+  (test (void) close-output-port port-ab)
+  (test (void) close-output-port port-a)
+  (test (void) close-output-port port-b)
+  (define-values (i1 o1) (make-pipe 10 'i1 'o1))
+  (define-values (i2 o2) (make-pipe 10 'i2 'o2))
+  (define two-pipes (combine-output o1 o2))
+  (test 10 write-bytes #"0123456789" two-pipes)
+  (define sync-test-var 0)
+  (define sync-thread (thread (lambda ()
+                                (begin
+                                  (sync two-pipes)
+                                  (set! sync-test-var 1)))))
+  (test #t equal? sync-test-var 0)
+  (test "01234" read-string 5 i1)
+  (test #t equal? sync-test-var 0)
+  (test "012" read-string 3 i2)
+  (thread-wait sync-thread)
+  (test #t equal? sync-test-var 1)
+  (let ([n (write-bytes-avail* #"test123" two-pipes)]) 
+    (test #t <= 1 n 5)))
 
 ;; --------------------------------------------------
 
@@ -1198,6 +1321,81 @@
                                  (lambda (v) (if (eof-object? v) v bstr))))
                      read-bytes write-bytes integer->byte list->bytes bytes?))
   (check-can-reuse read-string-evt read-string write-string integer->char list->string string?))
+
+;; --------------------------------------------------
+
+(let ()
+  ;; Check `special-filter-input-port`
+  (define-values (i o) (make-pipe-with-specials))
+  (define fi (special-filter-input-port
+              i
+              (lambda (proc bstr)
+                (bytes-set! bstr 0 (char->integer #\z))
+                1)))
+  (write-bytes #"abc" o)
+  (test #"abc" read-bytes 3 fi)
+  (write-special 'hello o)
+  (test #"z" read-bytes 1 fi)
+  (write-bytes #"ab" o)
+  (write-bytes #"c" o)
+  (write-special 'ok o)
+  (write-special 'bye o)
+  (test #"abczz" peek-bytes 5 0 fi)
+  (test #"abczz" peek-bytes 5 0 fi)
+  (test #"abcz" read-bytes 4 fi)
+  (define bstr (make-bytes 5))
+  (test 1 peek-bytes-avail! bstr 0 #f fi)
+  (test #"z" subbytes bstr 0 1))
+
+(let ()
+  ;; Check `special-filter-input-port` with `peeking-input-port`
+  (define-values (i o) (make-pipe-with-specials))
+  (define fi (special-filter-input-port
+              i
+              (lambda (proc bstr)
+                (bytes-set! bstr 0 (char->integer #\z))
+                1)))
+  (define pi (peeking-input-port fi))
+  (write-bytes #"abc" o)
+  (write-special 'hello o)
+  (write-special 'again o)
+  (test #"abczz" peek-bytes 5 0 pi))
+
+;; --------------------------------------------------
+
+(when (memq (system-type) '(unix macosx))
+  (define open (get-ffi-obj 'open #f (_fun _path _int -> _int)))
+  (define O_RDWR #x0002) ; probably
+  (for ([mode (in-list '((read) (write) (read write)))])
+    (define /dev/null-fd (open "/dev/null" O_RDWR))
+    (unless (= -1 /dev/null-fd)
+      (call-with-values (lambda () (unsafe-file-descriptor->port /dev/null-fd 'dev-null mode))
+        (case-lambda
+          [(p)
+           (test (equal? mode '(read)) input-port? p)
+           (test (equal? mode '(write)) output-port? p)
+           (test /dev/null-fd unsafe-port->file-descriptor p)
+           (define s (unsafe-file-descriptor->semaphore /dev/null-fd (car mode)))
+           (test #t 'sema (or (semaphore? s) (not s)))
+           (test s unsafe-file-descriptor->semaphore /dev/null-fd (case (car mode)
+                                                                    [(read) 'check-read]
+                                                                    [(write) 'check-write]))
+           (when s
+             (semaphore-wait s)
+             (unsafe-file-descriptor->semaphore /dev/null-fd 'remove))
+           (test #f unsafe-port->socket p)
+           (if (input-port? p)
+               (close-input-port p)
+               (close-output-port p))]
+          [(i o)
+           (test #t input-port? i)
+           (test #t output-port? o)
+           (test /dev/null-fd unsafe-port->file-descriptor i)
+           (test /dev/null-fd unsafe-port->file-descriptor o)
+           (test #f unsafe-port->socket i)
+           (test #f unsafe-port->socket o)
+           (close-input-port i)
+           (close-output-port o)])))))
 
 ;; --------------------------------------------------
 

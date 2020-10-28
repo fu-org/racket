@@ -1,15 +1,26 @@
 (load-relative "loadtest.rktl")
 (Section 'fixnum)
-(require scheme/fixnum
-         scheme/unsafe/ops
+(require racket/fixnum
+         racket/unsafe/ops
          "for-util.rkt")
 
-(define 64-bit? (fixnum? (expt 2 33)))
+(define 64-bit? (= (system-type 'word) 64))
 
-(define (fixnum-width) (if 64-bit? 63 31))
-(define (least-fixnum) (if 64-bit? (- (expt 2 62)) -1073741824))
-(define (greatest-fixnum) (if 64-bit? (- (expt 2 62) 1) +1073741823))
+(define (fixnum-width) (if (eq? 'racket (system-type))
+                           (if 64-bit? 63 31)
+                           (if 64-bit? 61 30)))
+(define (least-fixnum) (- (expt 2 (fixnum-width))))
+(define (greatest-fixnum) (sub1 (expt 2 (fixnum-width))))
 
+(test #t fixnum-for-every-system? 0)
+(test #t fixnum-for-every-system? -100)
+(test #t fixnum-for-every-system? 100)
+(test #t fixnum-for-every-system? (- (expt 2 29)))
+(test #t fixnum-for-every-system? (sub1 (expt 2 29)))
+(test #t fixnum? (- (expt 2 29)))
+(test #t fixnum? (sub1 (expt 2 29)))
+(test #f fixnum-for-every-system? (sub1 (- (expt 2 29))))
+(test #f fixnum-for-every-system? (expt 2 29))
 
 (define unary-table 
   (list (list fxnot unsafe-fxnot)
@@ -18,18 +29,8 @@
         (list (lambda (v) (fl->fx (exact->inexact x)))
               (lambda (v) (unsafe-fl->fx (exact->inexact x))))))
 
-(define binary-table
-  (list (list fx+ unsafe-fx+)
-        (list fx- unsafe-fx-)
-        (list fx* unsafe-fx*)
-
-        (list fxquotient unsafe-fxquotient)
-        (list fxremainder unsafe-fxremainder)
-        (list fxmodulo unsafe-fxmodulo)
-        
-        (list fxand unsafe-fxand)
-        (list fxior unsafe-fxior)
-        (list fxxor unsafe-fxxor)
+(define 1nary-table
+  (list (list fx- unsafe-fx-)
 
         (list fx>= unsafe-fx>=)
         (list fx> unsafe-fx>)
@@ -39,14 +40,24 @@
         (list fxmin unsafe-fxmin)
         (list fxmax unsafe-fxmax)))
 
+(define 0nary-table
+  (list (list fx+ unsafe-fx+)
+        (list fx* unsafe-fx*)
+
+        (list fxand unsafe-fxand)
+        (list fxior unsafe-fxior)
+        (list fxxor unsafe-fxxor)))
+
+(define binary-table
+  (list (list fxquotient unsafe-fxquotient)
+        (list fxremainder unsafe-fxremainder)
+        (list fxmodulo unsafe-fxmodulo)))
+
 (define binary/small-second-arg-table
   (list (list fxlshift unsafe-fxlshift)
         (list fxrshift unsafe-fxrshift)))
 
-(define nary-table
-  (list))
-
-(define table (append binary/small-second-arg-table binary-table unary-table nary-table))
+(define table (append binary/small-second-arg-table binary-table unary-table 1nary-table 0nary-table))
   
 (define (check-arity fx unsafe-fx)
   (let ([same-arities? (λ (x y) (equal? (procedure-arity x)
@@ -95,7 +106,8 @@
   
   (for ([line (in-list (append binary/small-second-arg-table 
                                binary-table
-                               nary-table))])
+                               1nary-table
+                               0nary-table))])
     (for ([i (in-range (- (expt 2 4)) (expt 2 4))])
       (for ([j (in-range (- (expt 2 4)) (expt 2 4))])
         (test #t same-results (list-ref line 0) (list-ref line 1) (list i j))))))
@@ -108,7 +120,8 @@
     
     (for ([line (in-list (append binary/small-second-arg-table
                                  binary-table
-                                 nary-table))])
+                                 1nary-table
+                                 0nary-table))])
       (for ([i (in-list interesting-values)])
         (for ([j (in-list interesting-values)])
           (test #t same-results (list-ref line 0) (list-ref line 1) (list i j)))))))
@@ -123,14 +136,19 @@
         (test #t same-results (list-ref line 0) (list-ref line 1) (list i)))
       (for ([line (in-list binary-table)])
         (test #t same-results (list-ref line 0) (list-ref line 1) (list i j)))
+      (for ([line (in-list 0nary-table)])
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i j)))
+      (for ([line (in-list 1nary-table)])
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i j)))
       (for ([line (in-list binary/small-second-arg-table)])
         (test #t same-results (list-ref line 0) (list-ref line 1) (list i k)))
-      (for ([line (in-list nary-table)])
-        (test #t same-results (list-ref line 0) (list-ref line 1) (list i))
-        (test #t same-results (list-ref line 0) (list-ref line 1) (list i j))
+      (for ([line (in-list (append 0nary-table 1nary-table))])
         (test #t same-results (list-ref line 0) (list-ref line 1) (list i j k))
         (test #t same-results (list-ref line 0) (list-ref line 1) (list i k j))
-        (test #t same-results (list-ref line 0) (list-ref line 1) more-fixnums)))))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (cons i more-fixnums))))))
 
 (define (random-fixnum)
   (inexact->exact (floor (+ (least-fixnum) (* (random) (+ (- (greatest-fixnum) (least-fixnum)) 1))))))
@@ -227,6 +245,10 @@
 (test-sequence [(2 4 6)] (in-fxvector (fxvector 1 2 3 4 5 6 7 8) 1 6 2))
 (test-sequence [(8 6 4)] (in-fxvector (fxvector 1 2 3 4 5 6 7 8) 7 2 -2))
 
+;; test malformed in-fxvector
+(err/rt-test (for/list ([x (in-fxvector)]) x))
+(err/rt-test (in-fxvector))
+
 ;; fxvector sequence tests
 (test-sequence [(1 2 3)] (fxvector 1 2 3))
 (test '() 'empty-fxvector-sequence (for/list ([i (fxvector)]) i))
@@ -238,5 +260,88 @@
 (err/rt-test (for/fxvector #:length 5 #:fill 0.0 ([i 5]) 8))
 (err/rt-test (for/fxvector #:length 10 #:fill 0.0 ([i 5]) 8))
 
+;; ----------------------------------------
+;; Make sure `fxvector` is not incorrectly constant-folded
+
+(let ([v (fxvector 1 2 3)])
+  (unsafe-fxvector-set! v 0 10)
+  (test 10 'ref (unsafe-fxvector-ref v 0)))
+
+;; ----------------------------------------
+
+(test 2.0 fx->fl 2)
+(test -2.0 fx->fl -2)
+
+(test 2 fl->fx 2.0)
+(test 2 fl->fx 2.2)
+(test -2 fl->fx -2.0)
+(test -2 fl->fx -2.2)
+
+(test 0 fl->fx 0.0)
+(test 0 fl->fx -0.0)
+
+(err/rt-test (fl->fx +inf.0))
+(err/rt-test (fl->fx -inf.0))
+(err/rt-test (fl->fx +nan.0))
+
+(if (fixnum? 536870911)
+    (begin
+      (test 536870911 fl->fx 536870911.0)
+      (test 536870911 fl->fx 536870911.5))
+    (begin
+      (err/rt-test (fl->fx 536870911.0))
+      (err/rt-test (fl->fx 536870911.5))))
+(if (fixnum? -536870912)
+    (begin
+      (test -536870912 fl->fx -536870912.0)
+      (test -536870912 fl->fx -536870912.5))
+    (begin
+      (err/rt-test (fl->fx -536870912.0))
+      (err/rt-test (fl->fx -536870912.5))))
+
+(if (fixnum? 1073741823)
+    (begin
+      (test 1073741823 fl->fx 1073741823.0)
+      (test 1073741823 fl->fx 1073741823.5))
+    (begin
+      (err/rt-test (fl->fx 1073741823.0))
+      (err/rt-test (fl->fx 1073741823.5))))
+(if (fixnum? -1073741824)
+    (begin
+      (test -1073741824 fl->fx -1073741824.0)
+      (test -1073741824 fl->fx -1073741824.5))
+    (begin
+      (err/rt-test (fl->fx -1073741824.0))
+      (err/rt-test (fl->fx -1073741824.5))))
+
+(if (fixnum? 1152921504606846975)
+    (test 1152921504606846848 fl->fx 1152921504606846800.0)
+    (err/rt-test (fl->fx 1152921504606846800.0)))
+(if (fixnum? -1152921504606846976)
+    (test -1152921504606846976 fl->fx -1152921504606847000.0)
+    (err/rt-test (fl->fx -1152921504606847000.0)))
+
+(if (fixnum? 1152921504606846976)
+    (test 1152921504606846976 fl->fx 1152921504606847000.0)
+    (err/rt-test (fl->fx 1152921504606847000.0)))
+(if (fixnum? -1152921504606847232)
+    (test -1152921504606847232 fl->fx -1152921504606847200.0)
+    (err/rt-test (fl->fx -1152921504606847200.0)))
+
+(if (fixnum? 4611686018427387903)
+    ;; Note: 4611686018427387903 won't round-trip
+    ;; if it's the biggest fixnum
+    (test 4611686018427387392 fl->fx 4.6116860184273874e+18)
+    (err/rt-test (fl->fx 4.6116860184273874e+18)))
+(if (fixnum? -4611686018427387904)
+    ;; Ditto (about round-trip)
+    (test -4611686018427387904 fl->fx -4.611686018427388e+18)
+    (err/rt-test (fl->fx -4.611686018427388e+18)))
+
+;; Too big for all current fixnum ranges:
+(err/rt-test (fl->fx 4.611686018427388e+18))
+(err/rt-test (fl->fx -4.611686018427389e+18))
+
+;; ----------------------------------------
 
 (report-errs)

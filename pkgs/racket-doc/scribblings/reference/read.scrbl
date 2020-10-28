@@ -12,7 +12,8 @@ default reader is used, as parameterized by the
 @racket[current-readtable] parameter, as well as many other
 parameters.
 
-See @secref["reader"] for information on the default reader.}
+See @secref["reader"] for information on the default reader and
+@secref["parse-reader"] for the protocol of @racket[read].}
 
 @defproc[(read-syntax [source-name any/c (object-name in)]
                       [in input-port? (current-input-port)])
@@ -24,7 +25,8 @@ source field of the syntax object; it can be an arbitrary value, but
 it should generally be a path for the source file.
 
 See @secref["reader"] for information on the default reader in
-@racket[read-syntax] mode.}
+@racket[read-syntax] mode and @secref["parse-reader"] for
+the protocol of @racket[read-syntax].}
 
 @defproc[(read/recursive [in input-port? (current-input-port)]
                          [start (or/c char? #f) #f]
@@ -60,17 +62,9 @@ When @racket[graph?] is @racket[#f], graph structure annotations in
 the read datum are local to the datum.
 
 When called within the dynamic extent of @racket[read], the
-@racket[read/recursive] procedure produces either an opaque
-placeholder value, a special-comment value, or an end-of-file.  The
-result is a special-comment value (see @secref["special-comments"])
-when the input stream's first non-whitespace content parses as a
-comment. The result is end-of-file when @racket[read/recursive]
-encounters an end-of-file. Otherwise, the result is a placeholder that
-protects graph references that are not yet resolved. When this
-placeholder is returned within an S-expression that is produced by any
-reader-extension procedure (see @secref["reader-procs"]) for the
-same outermost @racket[read], it will be replaced with the actual read
-value before the outermost @racket[read] returns.
+@racket[read/recursive] procedure can produce a special-comment value
+(see @secref["special-comments"]) when the input stream's first
+non-whitespace content parses as a comment.
 
 See @secref["readtables"] for an extended example that uses
 @racket[read/recursive].
@@ -152,7 +146,7 @@ The function produced by @racketidfont{get-info} reflects information
 about the expected syntax of the input stream. The first argument to the
 function serves as a key on such information; acceptable keys and the
 interpretation of results is up to external tools, such as DrRacket (see
-@seclink["_lang-based_Languages_in_DrRacket"
+@seclink["lang-languages-customization"
          #:doc '(lib "scribblings/tools/tools.scrbl")
          #:indirect? #t]{the DrRacket documentation}).
 If no information is available for a given key, the result should be
@@ -266,6 +260,14 @@ A @tech{parameter} that controls parsing input numbers with a decimal point
 or exponent (but no explicit exactness tag). See
 @secref["parse-number"] for more information.}
 
+@defboolparam[read-single-flonum on?]{
+
+A @tech{parameter} that controls parsing input numbers that have a
+@litchar{f}, @litchar{F}, @litchar{s}, or @litchar{S} precision
+character. See @secref["parse-number"] for more information.
+
+@history[#:added "7.3.0.5"]}
+
 @defboolparam[read-accept-dot on?]{
 
 A @tech{parameter} that controls parsing input with a dot, which is normally
@@ -300,7 +302,7 @@ or @litchar{#!} are allowed for selecting a parser. See
 
 @defboolparam[read-accept-lang on?]{
 
-A @tech{parameter} that (along with @racket[read-accept-reader] controls
+A @tech{parameter} that (along with @racket[read-accept-reader]) controls
 whether @litchar{#lang} and @litchar{#!} are allowed for selecting a
 parser. See @secref["parse-reader"] for more information.}
 

@@ -5,6 +5,10 @@
 
 (require ffi/unsafe
          ffi/unsafe/cvector
+         ffi/unsafe/alloc
+         ffi/unsafe/define
+         ffi/unsafe/define/conventions
+         ffi/unsafe/global
          ffi/vector
          racket/extflonum
          racket/place
@@ -16,7 +20,8 @@
 (test #f malloc 0 _int)
 (test #f malloc _int 0)
 
-(test 0 bytes-length (make-sized-byte-string #f 0))
+(unless (eq? 'cs (system-type 'gc))
+  (test 0 bytes-length (make-sized-byte-string #f 0)))
 
 ;; Check integer-range checking:
 (let ()
@@ -152,6 +157,18 @@
   (check s 'c 14)
   (check s 'd 16))
 
+(let ([_bm _bitmask])
+  (let ([s (_bm '(a b c = 14 d))])
+    (test 2 values (cast 'b s _int))))
+
+(let ()
+  (define _test32_enum (_enum `(TEST32 = 1073741906) _sint32))
+  (define _test64_enum (_enum `(TEST64 = 4611686018427387904) _sint64))
+  (test 1073741906 cast 'TEST32 _test32_enum _sint32)
+  (test 'TEST32 cast 1073741906 _sint32 _test32_enum)
+  (test 4611686018427387904 cast  'TEST64 _test64_enum _sint64)
+  (test 'TEST64 cast 4611686018427387904 _sint64 _test64_enum))
+
 ;; Make sure `_box` at least compiles:
 (test #t ctype? (_fun (_box _int) -> _void))
 
@@ -183,6 +200,9 @@
 
 (define _borl (_union _byte _long))
 (define _ic7iorl (_union _ic7i _long))
+(define _iord (_union _int _double))
+(define _dorf (_union _double _float))
+(define _dor2f (_union _double (_array _float 2)))
 
 (define test-lib (ffi-lib (build-path test-tmp-dir "foreign-test")))
 
@@ -272,7 +292,7 @@
          3 (lambda (x) (lambda (y) (+ y (* x x))))))
   ;; ---
   (let ([qsort (get-ffi-obj 'qsort #f
-                            (_fun (l    : (_list io _int len))
+                            (_fun (l    : (_list io _int len atomic-interior))
                                   (len  : _int = (length l))
                                   (size : _int = (ctype-sizeof _int))
                                   (compare : (_fun _pointer _pointer -> _int))
@@ -301,6 +321,17 @@
     (t 1212       'charint_to_int (_fun _charint -> _int)     '(12 1200))
     (t '(123 123) 'int_to_charint (_fun _int -> _charint)     123)
     (t '(255 1)   'charint_swap   (_fun _charint -> _charint) '(1 255)))
+  ;; Make sure allocation mode is used for function result
+  (let ()
+    (define-cstruct _charint ([b _byte]
+                              [i _int])
+      #:malloc-mode 'atomic-interior)
+    (define v ((ffi 'int_to_charint (_fun _int -> _charint)) 77))
+    (define addr (cast v _pointer _intptr))
+    (test 77 charint-b v)
+    (test 77 charint-b v)
+    (collect-garbage)
+    (test #t eqv? (cast v _pointer _intptr) addr))
   ;; ---
   ;; test sending a callback for C to hold, preventing the callback from GCing
   (let ([with-keeper
@@ -318,9 +349,10 @@
       (set-box! b #f)))
   ;; ---
   ;; test exposing internal mzscheme functionality
-  (test '(1 2)
-        (get-ffi-obj 'scheme_make_pair #f (_fun _scheme _scheme -> _scheme))
-        1 '(2))
+  (when (eq? 'racket (system-type 'vm))
+    (test '(1 2)
+          (get-ffi-obj 'scheme_make_pair #f (_fun _scheme _scheme -> _scheme))
+          1 '(2)))
   ;; ---
   ;; test arrays
   (let ([p (malloc _c7_list)]) ;; should allocate the right size
@@ -368,6 +400,7 @@
         (let ([ic7i-3 ((ffi 'ic7i_cb (_fun _ic7i (_fun _ic7i -> _ic7i) -> _ic7i))
                        ic7i
                        (lambda (ic7i-4)
+                         (collect-garbage 'minor)
                          (test 12 ic7i-i1 ic7i-4)
                          (test (cons 255 (map sub1 (cdr v))) ic7i-c7 ic7i-4)
                          (test 13 ic7i-i2 ic7i-4)
@@ -413,6 +446,36 @@
         (test 10 ic7i-i1 (union-ref u2 0))
         (test 89 ic7i-i2 (union-ref u2 0))
         (test (map add1 v) ic7i-c7 (union-ref u2 0)))))
+  (let ([u (ptr-ref (malloc _iord) _iord)])
+    (union-set! u 0 (expt 2 18))
+    (test (expt 2 18) union-ref u 0)
+    (let ([u2 ((ffi 'increment_iord (_fun _int _iord -> _iord)) 0 u)])
+      (test (add1 (expt 2 18)) union-ref u2 0))
+    (union-set! u 1 3.145)
+    (test 3.145 union-ref u 1)
+    (let ([u2 ((ffi 'increment_iord (_fun _int _iord -> _iord)) 1 u)])
+      (test 4.145 union-ref u2 1)))
+  (let ([u (ptr-ref (malloc _dorf) _dorf)])
+    (union-set! u 0 1.075)
+    (test 1.075 union-ref u 0)
+    (let ([u2 ((ffi 'increment_dorf (_fun _int _dorf -> _dorf)) 0 u)])
+      (test 2.075 union-ref u2 0))
+    (union-set! u 1 3.5)
+    (test 3.5 union-ref u 1)
+    (let ([u2 ((ffi 'increment_dorf (_fun _int _dorf -> _dorf)) 1 u)])
+      (test 4.5 union-ref u2 1)))
+  (let ([u (ptr-ref (malloc _dor2f) _dor2f)])
+    (union-set! u 0 3.075)
+    (test 3.075 union-ref u 0)
+    (let ([u2 ((ffi 'increment_dor2f (_fun _int _dor2f -> _dor2f)) 0 u)])
+      (test 4.075 union-ref u2 0))
+    (array-set! (union-ref u 1) 0 5.25)
+    (array-set! (union-ref u 1) 1 7.25)
+    (test 5.25 array-ref (union-ref u 1) 0)
+    (test 7.25 array-ref (union-ref u 1) 1)
+    (let ([u2 ((ffi 'increment_dor2f (_fun _int _dor2f -> _dor2f)) 1 u)])
+      (test 6.25 array-ref (union-ref u2 1) 0)
+      (test 8.25 array-ref (union-ref u2 1) 1)))
   ;; ---
   ;; test retries
   (t  78 'add1_int_int
@@ -497,6 +560,36 @@
   (ptr-set! v _pointer (ptr-add #f 107))
   (test 107 ptr-ref v _intptr))
 
+;; Test _bytes and _bytes/nul-terminated
+(let ([p (malloc 8)])
+  (memcpy p #"hi, all\0" 8)
+  (test #"hi, all" cast p _pointer _bytes)
+  (test #"hi, all" cast p _pointer _bytes/nul-terminated))
+(let ([p (malloc 8)])
+  (memcpy p #"hi, all!" 8)
+  (test #"hi, all!" cast p _pointer (_bytes o 8))
+  (test #"hi, all!" cast p _pointer (_bytes/nul-terminated o 8)))
+(let* ([strdup (get-ffi-obj (if (eq? 'windows (system-type))
+				'_strdup
+				'strdup)
+			    (if (eq? 'windows (system-type))
+				(ffi-lib "msvcrt.dll")
+				#f)
+			    (_fun _bytes/nul-terminated -> _pointer))]
+       [p (strdup #"howdy...")])
+  (test #"howdy..." cast p _pointer _bytes)
+  (test #"howdy..." cast p _pointer _bytes/nul-terminated)
+  (let ([free (if (eq? 'windows (system-type))
+		  ;; get `free` consistent with `_strdup`:
+		  (get-ffi-obj 'free (ffi-lib "msvcrt.dll") (_fun _pointer -> _void))
+		  free)])
+    (free p)))
+
+(let ([return_null (get-ffi-obj 'return_null test-lib (_fun -> _bytes/nul-terminated))])
+  (test #f return_null))
+(let ([return_null (get-ffi-obj 'return_null test-lib (_fun -> (_bytes/nul-terminated o 20)))])
+  (test #f return_null))
+
 ;; Test equality and hashing of c pointers:
 (let ([seventeen1 (cast 17 _intptr _pointer)]
       [seventeen2 (cast 17 _intptr _pointer)]
@@ -513,7 +606,7 @@
     (test 'hello hash-ref ht seventeen3 #f)))
 
 ;; Check proper handling of offsets:
-(let ()
+(when (eq? 'racket (system-type 'vm))
   (define scheme_make_sized_byte_string 
     (get-ffi-obj 'scheme_make_sized_byte_string #f (_fun _pointer _intptr _int -> _scheme)))
   ;; Non-gcable:
@@ -545,13 +638,47 @@
   (define _stuff-pointer (_cpointer 'stuff))
   
   (define p (cast (ptr-add (malloc 10) 5) _pointer _thing-pointer))
-  (cpointer-gcable? p)
+  (test #t cpointer-gcable? p)
   (define q (cast p _thing-pointer _stuff-pointer))
   (test (cast p _pointer _intptr)
         cast q _pointer _intptr)
   (collect-garbage)
   (test (cast p _thing-pointer _intptr)
         cast q _stuff-pointer _intptr))
+
+;; test 'interior allocation mode
+(when (eq? 'racket (system-type 'vm))
+  ;; Example by Ron Garcia
+  (define-struct data (a b))
+  (define (cbox s)
+    (define ptr (malloc _racket 'interior))
+    (ptr-set! ptr _racket s)
+    ptr)
+  (define (cunbox cb)
+    (ptr-ref cb _racket 0))
+  (define cb1 (cbox (make-data 1 2)))
+  (collect-garbage)
+  (test 1 data-a (cunbox cb1)))
+
+;; Make sure calling a foreign function retains the function arguments
+;; until the foreign function returns, even if it invokes a callback
+(let ()
+  (define sum_after_callback
+    (get-ffi-obj 'sum_after_callback test-lib (_fun _pointer _int (_fun -> _void) -> _int)))
+  (define N 1000)
+  (test 499500
+        'sum-after-callback
+        (let ([n (malloc 'atomic-interior _int N)])
+          (for ([i (in-range N)])
+            (ptr-set! n _int i i))
+          (sum_after_callback n N (lambda ()
+                                    (collect-garbage)
+                                    (collect-garbage)
+                                    (collect-garbage)
+                                    (for ([i 100])
+                                      (let ([m (malloc _int N)])
+                                        (for ([i (in-range N)])
+                                          (ptr-set! m _int i 0)))))))))
 
 (let ()
   (struct foo (ptr)
@@ -587,7 +714,7 @@
   (define ENOENT 2)
   (define ERANGE 34)
   (define _getcwd   ;; sets errno = ERANGE if path longer than buffer
-    (get-ffi-obj '_getcwd msvcrt (_fun #:save-errno 'posix _bytes _int -> _void)))
+    (get-ffi-obj '_getcwd msvcrt (_fun #:save-errno 'posix _bytes/nul-terminated _int -> _void)))
   (define _chdir    ;; sets errno = ENOENT if path doesn't exist
     (get-ffi-obj '_chdir  msvcrt (_fun #:save-errno 'posix _string -> _int)))
   (define (bad/ERANGE) (_getcwd (make-bytes 1) 1))
@@ -604,7 +731,7 @@
 
 (delete-test-files)
 
-(let ()
+(when (eq? 'racket (system-type 'vm))
   (define _values (get-ffi-obj 'scheme_values #f (_fun _int (_list i _racket) -> _racket)))
   (test-values '(1 "b" three) (lambda () (_values 3 (list 1 "b" 'three)))))
 
@@ -619,17 +746,23 @@
   (test 4.4t0 extflvector-ref v 2)
   (test 2.2t0 ptr-ref (ptr-add (extflvector->cpointer v) (ctype-sizeof _longdouble)) _longdouble))
 
-;; Check a corner of UTF-16 conversion:
-(test "\U171D3" cast (cast "\U171D3" _string/utf-16 _gcpointer) _gcpointer _string/utf-16)
+(when (eq? 'racket (system-type 'vm))
+  ;; Check a corner of UTF-16 conversion:
+  (test "\U171D3" cast (cast "\U171D3" _string/utf-16 _gcpointer) _gcpointer _string/utf-16))
+
+;; strings can be cast
+(test "heλλo" cast (cast "he\u3bb\u3bbo" _string/utf-16 _gcpointer) _gcpointer _string/utf-16)
 
 ;; check async:
 (when test-async?
   (define (check async like)
     (define foreign_thread_callback (get-ffi-obj 'foreign_thread_callback test-lib 
-                                                 (_fun (_fun #:async-apply async
+                                                 (_fun #:blocking? #t
+                                                       (_fun #:async-apply async
                                                              _intptr -> _intptr)
                                                        _intptr
-                                                       (_fun -> _void)
+                                                       (_fun #:async-apply (lambda (f) (f))
+                                                             -> _void)
                                                        -> _intptr)))
     (test (like 16) foreign_thread_callback (lambda (v) (add1 v)) 16 sleep))
   (check (lambda (f) (f)) add1)
@@ -652,7 +785,6 @@
 
   (err/rt-test (in-array '(1 2 3)) exn:fail:contract?))
 
-
 ;; check cstruct serialization (define-serialize-cstruct must be at module level, can't use (let () ...))
 (module mod-cstruct-serialize racket/base
   (require (for-syntax racket/base)
@@ -669,61 +801,51 @@
       (begin . body)))
 
   (define (malloc/register size/type)
-    (define m (malloc (if (ctype? size/type)
-                          (ctype-sizeof size/type)
-                          size/type)
-                      'raw))
+    (define sz (if (ctype? size/type)
+                   (ctype-sizeof size/type)
+                   size/type))
+    (define m (malloc sz 'raw))
+    (memset m 0 sz)
     (hash-set! (current-raw) m #t)
     m)
 
   ;; run multiple times to better catching gc related errors
   (define num-runs 5)
 
+  (define-syntax-rule (err/rt-test e p?)
+    (with-handlers ([p? void]
+                    [exn:fail? (lambda (exn) (error 'test "exn test ~a failed, expected ~a but got ~a" 'e p? exn))])
+      e))
+
   (define-syntax-rule (check-exn exn thunk)
     (if (regexp? exn)
         (err/rt-test (thunk) (lambda (e) (regexp-match? exn (exn-message e))))
         (err/rt-test (thunk) exn)))
-   (define-syntax-rule (err/rt-test e p?)
-     (with-handlers ([p? void]
-                     [exn:fail? (lambda (exn) (eprintf "exn test ~a failed, expected ~a but got ~a\n" 'e p? exn))])
-       e))
 
   ;; --- syntax errors
-  (define-syntax-rule (check-not-exn e)
-    (with-handlers ([exn:fail? (lambda (exn) (eprintf "no-exn test ~a failed, got exn ~a\n" 'e exn))])
-      e))
+  (define-syntax-rule (check-not-exn thunk)
+    (with-handlers ([exn:fail? (lambda (exn) (error 'test "no-exn test ~a failed, got exn ~a" 'e exn))])
+      (thunk)))
 
   (define-syntax-rule (check-equal? e v)
     (let ([r e]
           [v* v])
       (unless (equal? e v*)
-        (eprintf "check-equal? ~a: expected ~a but got ~a" 'e v* r))))
-  (begin-for-syntax
-   (define-syntax-rule (err/rt-test e p?)
-     (with-handlers ([p? void]
-                     [exn:fail? (lambda (exn) (eprintf "exn test ~a failed, expected ~a but got ~a\n" 'e p? exn))])
-       e))
-   (define-syntax-rule (check-not-exn e)
-     (with-handlers ([exn:fail? (lambda (exn) (eprintf "no-exn test ~a failed, got exn ~a\n" 'e exn))])
-       e))
-   (define-syntax-rule (check-exn+rx exn rx thunk)
-     (begin
-       (err/rt-test (thunk) exn)
-       (err/rt-test (thunk) (lambda (e) (regexp-match? rx (exn-message e))))))
+        (error 'test "check-equal? ~a: expected ~s but got ~s" 'e v* r))))
 
-
-
-
-
-   (check-exn+rx exn:fail:syntax? #rx"id must start with"
-                 (lambda () (local-expand #'(define-serializable-cstruct F1a ([a _int])) 'module #f)))
-   (check-exn+rx exn:fail:syntax? #rx"only allowed in module context"
-                 (lambda () (local-expand #'(define-serializable-cstruct _F1b ([a _int])) 'expression #f)))
-   (check-exn+rx exn:fail:syntax? #rx"#:property prop:serializable not allowed"
-                 (lambda () (local-expand #'(define-serializable-cstruct _F1c ([a _int]) #:property prop:serializable #f)
-                                          'module #f)))
-   (check-exn+rx exn:fail:syntax? #rx"expected \\[field-id ctype\\]"
-                 (lambda () (local-expand #'(define-serializable-cstruct _F1d ()) 'module #f))))
+  (define-syntax-rule (check-exn+rx exn rx thunk)
+    (begin
+      (err/rt-test (thunk) exn)
+      (err/rt-test (thunk) (lambda (e) (regexp-match? rx (exn-message e))))))
+  
+  (check-exn+rx exn:fail:syntax? #rx"id must start with"
+                (lambda () (expand #'(define-serializable-cstruct F1a ([a _int])))))
+  (check-exn+rx exn:fail:syntax? #rx"only allowed in module or top-level context"
+                (lambda () (expand #'(+ 1 (define-serializable-cstruct _F1b ([a _int]))))))
+  (check-exn+rx exn:fail:syntax? #rx"#:property prop:serializable not allowed"
+                (lambda () (expand #'(define-serializable-cstruct _F1c ([a _int]) #:property prop:serializable #f))))
+  (check-exn+rx exn:fail:syntax? #rx"expected \\[field-id ctype\\]"
+                (lambda () (expand #'(define-serializable-cstruct _F1d ()))))
 
 
   ;; --- misc creation tests
@@ -837,7 +959,7 @@
 
      (define s1 (serialize a))
      (define ds1 (deserialize s1))
-     (check-equal? #t (ptr-equal? (C-b (A-c ds1)) (D-b (A-d ds1))))
+     (check-equal? (ptr-equal? (C-b (A-c ds1)) (D-b (A-d ds1))) #t)
 
      (collect-garbage)
      (check-equal? (C-b (A-c a)) (D-b (A-d a)))
@@ -912,9 +1034,10 @@
      (define ds (deserialize (serialize par)))
      (collect-garbage)
 
-     (check-equal? #t
+     (check-equal?
       (for*/and ([i 2] [j 5])
-        (= (SINT-a (array-ref (PTRAR-a ds) i j)) (+ 10 j (* i 5)))))
+        (= (SINT-a (array-ref (PTRAR-a ds) i j)) (+ 10 j (* i 5))))
+      #t)
 
      ;; --
      (define ear (ptr-ref (malloc/register _EMBAR) _EMBAR))
@@ -924,9 +1047,10 @@
      (define ds2 (deserialize (serialize ear)))
      (collect-garbage)
 
-     (check-equal? #t
+     (check-equal?
       (for*/and ([i 2] [j 5])
-        (= (SINT-a (array-ref (EMBAR-a ds2) i j)) (+ 10 j (* i 5)))))))
+        (= (SINT-a (array-ref (EMBAR-a ds2) i j)) (+ 10 j (* i 5))))
+      #t)))
 
   ;; --- array with embedded struct with pointer
   (define-serializable-cstruct _TP ([a _int]) #:malloc-mode malloc/register)
@@ -949,6 +1073,8 @@
 
 
   ;; --- inplace tests
+  (define can-in-place? (not (eq? 'chez-scheme (system-type 'vm))))
+
   (define-serializable-cstruct _NOIN ([a _int]))
 
   (define-serializable-cstruct _INS ([a _int]) #:serialize-inplace)
@@ -957,7 +1083,9 @@
 
   (define-serializable-cstruct _INSD ([a _int])
     #:serialize-inplace #:deserialize-inplace
-    #:malloc-mode (lambda (_) (error "should not get here")))
+    #:malloc-mode (if can-in-place?
+                      (lambda (_) (error "should not get here"))
+                      malloc/register))
 
   ;; non-inplace + modification
   (let ()
@@ -988,7 +1116,7 @@
     ;; modified
     (set-INS-a! ins 456)
     (define ds2 (deserialize s))
-    (check-equal? 456 (INS-a ds2)))
+    (check-equal? (if can-in-place? 456 123) (INS-a ds2)))
 
   ;; inplace deser
   (let ()
@@ -1016,6 +1144,28 @@
 
 (require (only-in 'mod-cstruct-serialize))
 
+;; Check that `define-serializable-cstruct' works in a top-level context
+(require racket/serialize
+         ffi/serialize-cstruct)
+(define-serializable-cstruct _serializable-example-1 ([a _int]))
+(test 17 serializable-example-1-a (deserialize (serialize (make-serializable-example-1 17))))
+
+;; ----------------------------------------
+;; Check that `i`, `o`, and `io` are matched as symbols, not by binding:
+
+(let ([i 'no]
+      [o 'no]
+      [io 'no])
+  (test #t ctype? (_ptr i _int))
+  (test #t ctype? (_ptr o _int))
+  (test #t ctype? (_ptr io _int))
+  (test #t ctype? (_list i _int))
+  (test #t ctype? (_list o _int 10))
+  (test #t ctype? (_list io _int 10))
+  (test #t ctype? (_vector i _int))
+  (test #t ctype? (_vector o _int 10))
+  (test #t ctype? (_vector io _int 10)))
+
 ;; ----------------------------------------
 
 (define-cpointer-type _foo)
@@ -1034,159 +1184,226 @@
 ;; ----------------------------------------
 ;; Test JIT inlining
 
-(define bstr (cast (make-bytes 64) _pointer _pointer))
+(define (test-ptr-jit-inline bstr)
+  (for/fold ([v 1.0]) ([i (in-range 100)])
+    (ptr-set! bstr _float v)
+    (ptr-set! bstr _float 1 (+ v 0.5))
+    (ptr-set! bstr _float 'abs 8 (+ v 0.25))
+    (unless (= v (ptr-ref bstr _float))
+      (error 'float "failed"))
+    (unless (= (+ v 0.5) (ptr-ref bstr _float 'abs 4))
+      (error 'float "failed(2) ~s ~s" (+ v 0.5) (ptr-ref bstr _float 'abs 4)))
+    (unless (= (+ v 0.25) (ptr-ref bstr _float 2))
+      (error 'float "failed(3)"))
+    (+ 1.0 v))
 
-(for/fold ([v 1.0]) ([i (in-range 100)])
-  (ptr-set! bstr _float v)
-  (ptr-set! bstr _float 1 (+ v 0.5))
-  (ptr-set! bstr _float 'abs 8 (+ v 0.25))
-  (unless (= v (ptr-ref bstr _float))
-    (error 'float "failed"))
-  (unless (= (+ v 0.5) (ptr-ref bstr _float 'abs 4))
-    (error 'float "failed(2) ~s ~s" (+ v 0.5) (ptr-ref bstr _float 'abs 4)))
-  (unless (= (+ v 0.25) (ptr-ref bstr _float 2))
-    (error 'float "failed(3)"))
-  (+ 1.0 v))
+  (for/fold ([v 1.0]) ([i (in-range 100)])
+    (ptr-set! bstr _double v)
+    (ptr-set! bstr _double 1 (+ v 0.5))
+    (ptr-set! bstr _double 'abs 16 (+ v 0.25))
+    (ptr-set! (ptr-add bstr 24) _double (+ v 0.125))
+    (unless (= v (ptr-ref bstr _double))
+      (error 'double "failed"))
+    (unless (= (+ v 0.5) (ptr-ref bstr _double 'abs 8))
+      (error 'double "failed(2)"))
+    (unless (= (+ v 0.25) (ptr-ref bstr _double 2))
+      (error 'double "failed(3)"))
+    (unless (= (+ v 0.5) (ptr-ref (ptr-add bstr 8) _double))
+      (error 'double "failed(4)"))
+    (unless (= (+ v 0.125) (ptr-ref (ptr-add bstr 24) _double))
+      (error 'double "failed(5)"))
+    (+ 1.0 v))
 
-(for/fold ([v 1.0]) ([i (in-range 100)])
-  (ptr-set! bstr _double v)
-  (ptr-set! bstr _double 1 (+ v 0.5))
-  (ptr-set! bstr _double 'abs 16 (+ v 0.25))
-  (unless (= v (ptr-ref bstr _double))
-    (error 'double "failed"))
-  (unless (= (+ v 0.5) (ptr-ref bstr _double 'abs 8))
-    (error 'double "failed(2)"))
-  (unless (= (+ v 0.25) (ptr-ref bstr _double 2))
-    (error 'double "failed(3)"))
-  (+ 1.0 v))
+  (for ([i (in-range 256)])
+    (ptr-set! bstr _uint8 i)
+    (ptr-set! bstr _uint8 1 (- 255 i))
+    (unless (= i (ptr-ref bstr _uint8))
+      (error 'uint8 "fail ~s vs. ~s" i (ptr-ref bstr _uint8)))
+    (unless (= (- 255 i) (ptr-ref bstr _uint8 'abs 1))
+      (error 'uint8 "fail(2) ~s vs. ~s" (- 255 i) (ptr-ref bstr _uint8 'abs 1))))
 
-(for ([i (in-range 256)])
-  (ptr-set! bstr _uint8 i)
-  (ptr-set! bstr _uint8 1 (- 255 i))
-  (unless (= i (ptr-ref bstr _uint8))
-    (error 'uint8 "fail ~s vs. ~s" i (ptr-ref bstr _uint8)))
-  (unless (= (- 255 i) (ptr-ref bstr _uint8 'abs 1))
-    (error 'uint8 "fail(2) ~s vs. ~s" (- 255 i) (ptr-ref bstr _uint8 'abs 1))))
+  (for ([i (in-range -128 128)])
+    (ptr-set! bstr _int8 i)
+    (unless (= i (ptr-ref bstr _int8))
+      (error 'int8 "fail ~s vs. ~s" i (ptr-ref bstr _int8))))
 
-(for ([i (in-range -128 128)])
-  (ptr-set! bstr _int8 i)
-  (unless (= i (ptr-ref bstr _int8))
-    (error 'int8 "fail ~s vs. ~s" i (ptr-ref bstr _int8))))
+  (for ([i (in-range (expt 2 16))])
+    (ptr-set! bstr _uint16 i)
+    (ptr-set! bstr _uint16 3 (- (sub1 (expt 2 16)) i))
+    (unless (= i (ptr-ref bstr _uint16))
+      (error 'uint16 "fail ~s vs. ~s" i (ptr-ref bstr _uint16)))
+    (unless (= (- (sub1 (expt 2 16)) i) (ptr-ref bstr _uint16 'abs 6))
+      (error 'uint16 "fail(2) ~s vs. ~s" (- (sub1 (expt 2 16)) i) (ptr-ref bstr _uint16 'abs 6))))
 
-(for ([i (in-range (expt 2 16))])
-  (ptr-set! bstr _uint16 i)
-  (ptr-set! bstr _uint16 3 (- (sub1 (expt 2 16)) i))
-  (unless (= i (ptr-ref bstr _uint16))
-    (error 'uint16 "fail ~s vs. ~s" i (ptr-ref bstr _uint16)))
-  (unless (= (- (sub1 (expt 2 16)) i) (ptr-ref bstr _uint16 'abs 6))
-    (error 'uint16 "fail(2) ~s vs. ~s" (- (sub1 (expt 2 16)) i) (ptr-ref bstr _uint16 'abs 6))))
+  (for ([j (in-range 100)])
+    (for ([i (in-range (- (expt 2 15)) (sub1 (expt 2 15)))])
+      (ptr-set! bstr _int16 i)
+      (unless (= i (ptr-ref bstr _int16))
+        (error 'int16 "fail ~s vs. ~s" i (ptr-ref bstr _int16)))))
 
-(for ([j (in-range 100)])
-  (for ([i (in-range (- (expt 2 15)) (sub1 (expt 2 15)))])
-    (ptr-set! bstr _int16 i)
-    (unless (= i (ptr-ref bstr _int16))
-      (error 'int16 "fail ~s vs. ~s" i (ptr-ref bstr _int16)))))
+  (let ()
+    (define (go lo hi)
+      (for ([i (in-range lo hi)])
+        (ptr-set! bstr _uint32 i)
+        (ptr-set! bstr _uint32 1 (- hi (- i lo) 1))
+        (unless (= i (ptr-ref bstr _uint32))
+          (error 'uint32 "fail ~s vs. ~s" i (ptr-ref bstr _uint32)))
+        (unless (= (- hi (- i lo) 1) (ptr-ref bstr _uint32 'abs 4))
+          (error 'uint32 "fail ~s vs. ~s" (- hi (- i lo) 1) (ptr-ref bstr _uint32)))))
+    (go 0 256)
+    (go (- (expt 2 31) 256) (+ (expt 2 31) 256))
+    (go (- (expt 2 32) 256) (expt 2 32)))
+
+  (let ()
+    (define (go lo hi)
+      (for ([i (in-range lo hi)])
+        (ptr-set! bstr _int32 i)
+        (unless (= i (ptr-ref bstr _int32))
+          (error 'int32 "fail ~s vs. ~s" i (ptr-ref bstr _int32)))))
+    (go -256 256)
+    (go (- (expt 2 31) 256) (sub1 (expt 2 31)))
+    (go (- (expt 2 31)) (- 256 (expt 2 31))))
+
+  (let ()
+    (define (go lo hi)
+      (for ([i (in-range lo hi)])
+        (ptr-set! bstr _uint64 i)
+        (ptr-set! bstr _uint64 1 (- hi (- i lo) 1))
+        (unless (= i (ptr-ref bstr _uint64))
+          (error 'uint64 "fail ~s vs. ~s" i (ptr-ref bstr _uint64)))
+        (unless (= (- hi (- i lo) 1) (ptr-ref bstr _uint64 'abs 8))
+          (error 'uint32 "fail ~s vs. ~s" (- hi (- i lo) 1) (ptr-ref bstr _uint64)))))
+    (go 0 256)
+    (go (- (expt 2 63) 256) (+ (expt 2 63) 256))
+    (go (- (expt 2 64) 256) (expt 2 64)))
+
+  (let ()
+    (define (go lo hi)
+      (for ([i (in-range lo hi)])
+        (ptr-set! bstr _int64 i)
+        (unless (= i (ptr-ref bstr _int64))
+          (error 'int64 "fail ~s vs. ~s" i (ptr-ref bstr _int64)))))
+    (go -256 256)
+    (go (- (expt 2 63) 256) (sub1 (expt 2 63)))
+    (go (- (expt 2 63)) (- 256 (expt 2 63))))
+
+  (let ()
+    (define p (cast bstr _pointer _pointer))
+    (for ([i (in-range 100)])
+      (ptr-set! bstr _pointer (ptr-add p i))
+      (ptr-set! bstr _pointer 2 p)
+      (unless (ptr-equal? p (ptr-add (ptr-ref bstr _pointer) (- i)))
+        (error 'pointer "fail ~s vs. ~s"
+               (cast p _pointer _intptr)
+               (cast (ptr-ref bstr _pointer) _pointer _intptr)))
+      (unless (ptr-equal? p (ptr-ref bstr _pointer 'abs (* 2 (ctype-sizeof _pointer))))
+        (error 'pointer "fail ~s vs. ~s"
+               (cast p _pointer _intptr)
+               (cast (ptr-ref bstr _pointer 'abs (ctype-sizeof _pointer)) _pointer _intptr))))))
 
 (let ()
-  (define (go lo hi)
-    (for ([i (in-range lo hi)])
-      (ptr-set! bstr _uint32 i)
-      (ptr-set! bstr _uint32 1 (- hi (- i lo) 1))
-      (unless (= i (ptr-ref bstr _uint32))
-        (error 'uint32 "fail ~s vs. ~s" i (ptr-ref bstr _uint32)))
-      (unless (= (- hi (- i lo) 1) (ptr-ref bstr _uint32 'abs 4))
-        (error 'uint32 "fail ~s vs. ~s" (- hi (- i lo) 1) (ptr-ref bstr _uint32)))))
-  (go 0 256)
-  (go (- (expt 2 31) 256) (+ (expt 2 31) 256))
-  (go (- (expt 2 32) 256) (expt 2 32)))
-
-(let ()
-  (define (go lo hi)
-    (for ([i (in-range lo hi)])
-      (ptr-set! bstr _int32 i)
-      (unless (= i (ptr-ref bstr _int32))
-        (error 'int32 "fail ~s vs. ~s" i (ptr-ref bstr _int32)))))
-  (go -256 256)
-  (go (- (expt 2 31) 256) (sub1 (expt 2 31)))
-  (go (- (expt 2 31)) (- 256 (expt 2 31))))
-
-(let ()
-  (define (go lo hi)
-    (for ([i (in-range lo hi)])
-      (ptr-set! bstr _uint64 i)
-      (ptr-set! bstr _uint64 1 (- hi (- i lo) 1))
-      (unless (= i (ptr-ref bstr _uint64))
-        (error 'uint64 "fail ~s vs. ~s" i (ptr-ref bstr _uint64)))
-      (unless (= (- hi (- i lo) 1) (ptr-ref bstr _uint64 'abs 8))
-        (error 'uint32 "fail ~s vs. ~s" (- hi (- i lo) 1) (ptr-ref bstr _uint64)))))
-  (go 0 256)
-  (go (- (expt 2 63) 256) (+ (expt 2 63) 256))
-  (go (- (expt 2 64) 256) (expt 2 64)))
-
-(let ()
-  (define (go lo hi)
-    (for ([i (in-range lo hi)])
-      (ptr-set! bstr _int64 i)
-      (unless (= i (ptr-ref bstr _int64))
-        (error 'int64 "fail ~s vs. ~s" i (ptr-ref bstr _int64)))))
-  (go -256 256)
-  (go (- (expt 2 63) 256) (sub1 (expt 2 63)))
-  (go (- (expt 2 63)) (- 256 (expt 2 63))))
-
-(let ()
-  (define p (cast bstr _pointer _pointer))
-  (for ([i (in-range 100)])
-    (ptr-set! bstr _pointer (ptr-add p i))
-    (ptr-set! bstr _pointer 2 p)
-    (unless (ptr-equal? p (ptr-add (ptr-ref bstr _pointer) (- i)))
-      (error 'pointer "fail ~s vs. ~s"
-             (cast p _pointer _intptr)
-             (cast (ptr-ref bstr _pointer) _pointer _intptr)))
-    (unless (ptr-equal? p (ptr-ref bstr _pointer 'abs (* 2 (ctype-sizeof _pointer))))
-      (error 'pointer "fail ~s vs. ~s"
-             (cast p _pointer _intptr)
-             (cast (ptr-ref bstr _pointer 'abs (ctype-sizeof _pointer)) _pointer _intptr)))))
+  (test-ptr-jit-inline (make-bytes 64))
+  (test-ptr-jit-inline (cast (make-bytes 64) _pointer _pointer))
+  (let ([p (malloc 'raw 64)])
+    (test-ptr-jit-inline p)
+    (free p)))
 
 ;; ----------------------------------------
 
-(define scheme_make_type
-  (get-ffi-obj 'scheme_make_type #f (_fun _string -> _short)))
-(define scheme_register_type_gc_shape
-  (get-ffi-obj 'scheme_register_type_gc_shape #f (_fun _short (_list i _intptr) -> _void)))
+(when (eq? 'racket (system-type 'vm))
+  (define scheme_make_type
+    (get-ffi-obj 'scheme_make_type #f (_fun _string -> _short)))
+  (define scheme_register_type_gc_shape
+    (get-ffi-obj 'scheme_register_type_gc_shape #f (_fun _short (_list i _intptr) -> _void)))
 
-(define SHAPE_STR_TERM       0)
-(define SHAPE_STR_PTR_OFFSET 1)
+  (define SHAPE_STR_TERM       0)
+  (define SHAPE_STR_PTR_OFFSET 1)
 
-(define-cstruct _tagged ([type-tag _short]
-                         [obj1 _racket]
-                         [non2 _intptr]
-                         [obj3 _racket]
-                         [non4 _intptr])
-  #:define-unsafe
-  #:malloc-mode 'tagged)
-(test #t cpointer-predicate-procedure? tagged?)
+  (define-cstruct _tagged ([type-tag _short]
+                           [obj1 _racket]
+                           [non2 _intptr]
+                           [obj3 _racket]
+                           [non4 _intptr])
+    #:define-unsafe
+    #:malloc-mode 'tagged)
+  (test #t cpointer-predicate-procedure? tagged?)
 
-(define t (scheme_make_type "new-type"))
-(scheme_register_type_gc_shape t (list SHAPE_STR_PTR_OFFSET tagged-obj1-offset
-                                       SHAPE_STR_PTR_OFFSET tagged-obj3-offset
-                                       SHAPE_STR_TERM))
+  (define t (scheme_make_type "new-type"))
+  (scheme_register_type_gc_shape t (list SHAPE_STR_PTR_OFFSET tagged-obj1-offset
+                                         SHAPE_STR_PTR_OFFSET tagged-obj3-offset
+                                         SHAPE_STR_TERM))
 
-(define obj1 (make-string 10))
-(define obj2 (make-bytes 12))
-(define obj3 (make-bytes 14))
-(define obj4 (make-string 16))
+  (define obj1 (make-string 10))
+  (define obj2 (make-bytes 12))
+  (define obj3 (make-bytes 14))
+  (define obj4 (make-string 16))
 
-(define obj2-addr (cast obj2 _racket _intptr))
-(define obj4-addr (cast obj4 _racket _intptr))
+  (define obj2-addr (cast obj2 _racket _intptr))
+  (define obj4-addr (cast obj4 _racket _intptr))
 
-(define o (make-tagged t obj1 obj2-addr obj3 obj4-addr))
+  (define o (make-tagged t obj1 obj2-addr obj3 obj4-addr))
 
-(collect-garbage)
+  (collect-garbage)
 
-(eq? (tagged-obj1 o) obj1)
-(eq? (tagged-obj3 o) obj3)
-(= (tagged-non2 o) obj2-addr)
-(= (tagged-non4 o) obj4-addr)
+  (eq? (tagged-obj1 o) obj1)
+  (eq? (tagged-obj3 o) obj3)
+  (= (tagged-non2 o) obj2-addr)
+  (= (tagged-non4 o) obj4-addr))
+
+;; ----------------------------------------
+
+(test #t procedure? ((allocator void) void))
+(test #f (allocator void) #f)
+
+;; ----------------------------------------
+
+;; Check `void/reference-sink`
+(let* ([sym (gensym)]
+       [wb (make-weak-box sym)])
+  (collect-garbage)
+  (void/reference-sink sym)
+  (test #f not (weak-box-value wb)))
+
+;; ----------------------------------------
+
+(let ()
+  (unless (eq? (system-type) 'windows)
+    (define-ffi-definer define-test-lib test-lib
+      #:make-c-id convention:hyphen->underscore)
+    (define-test-lib check-multiple-of-ten
+      (_fun #:save-errno 'posix _int -> _int))
+    (test 0 check-multiple-of-ten 40)
+    (test -1 check-multiple-of-ten 42)
+    (test 2 saved-errno)
+    (saved-errno 5)
+    (test 5 saved-errno)))
+
+;; ----------------------------------------
+;; Make sure `_union` can deal with various things
+;; that create a large structure
+
+(let ()
+  (define-cpointer-type _FcCharSet)
+  (define-cstruct _FcMatrix ([xx _double] [xy _double]
+                             [yx _double] [yy _double]))
+  (define-cstruct _FcValue ([u (_union _bytes _int _bool _double
+                                       _long _long _long _long
+                                       _FcMatrix-pointer
+                                       _FcCharSet)]))
+  (malloc _FcValue))
+
+;; ----------------------------------------
+
+(let* ([bstr (string->bytes/utf-8 (format "~a ~a" (current-inexact-milliseconds) (random)))]
+       [orig-bstr (bytes-copy bstr)])
+  (err/rt-test (register-process-global 7 8))
+  (err/rt-test (register-process-global "7" 8))
+  (test #f register-process-global bstr #f)
+  (test #f register-process-global bstr #"data\0")
+  (test #"data" cast (register-process-global bstr #f) _pointer _bytes)
+  (bytes-set! bstr 0 65)
+  (test #f register-process-global bstr #f)
+  (test #"data" cast (register-process-global orig-bstr #"data\0") _pointer _bytes))
 
 ;; ----------------------------------------
 

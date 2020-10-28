@@ -14,7 +14,11 @@
 ;; ----------------------------------------
 ;; config: definitions
 
-(define config-table
+(provide get-config-table
+         to-path
+         combine-search)
+
+(define (get-config-table find-config-dir)
   (delay/sync
    (let ([d (find-config-dir)])
      (if d
@@ -28,6 +32,9 @@
                      (read in)))))
                #hash()))
          #hash()))))
+
+(define config-table
+  (get-config-table find-config-dir))
 
 (define (to-path l)
   (cond [(string? l) (simplify-path (complete-path (string->path l)))]
@@ -69,6 +76,7 @@
 (define-config config:pkgs-search-dirs 'pkgs-search-dirs to-path)
 (define-config config:cgc-suffix 'cgc-suffix values)
 (define-config config:3m-suffix '3m-suffix values)
+(define-config config:cs-suffix 'cs-suffix values)
 (define-config config:absolute-installation? 'absolute-installation? (lambda (x) (and x #t)))
 (define-config config:doc-search-url 'doc-search-url values)
 (define-config config:doc-open-url 'doc-open-url values)
@@ -78,6 +86,7 @@
 (provide get-absolute-installation?
          get-cgc-suffix
          get-3m-suffix
+         get-cs-suffix
          get-doc-search-url
          get-doc-open-url
          get-installation-name
@@ -86,6 +95,7 @@
 (define (get-absolute-installation?) (force config:absolute-installation?))
 (define (get-cgc-suffix) (force config:cgc-suffix))
 (define (get-3m-suffix) (force config:3m-suffix))
+(define (get-cs-suffix) (force config:cs-suffix))
 (define (get-doc-search-url) (or (force config:doc-search-url)
                                  "http://docs.racket-lang.org/local-redirect/index.html"))
 (define (get-doc-open-url) (force config:doc-open-url))
@@ -237,7 +247,7 @@
   find-lib-dir
   find-user-lib-dir
   config:lib-search-dirs
-  get-lib-search-dirs
+  get-cross-lib-search-dirs
   "lib")
 
 ;; ----------------------------------------
@@ -256,7 +266,8 @@
   config:apps-dir
   find-apps-dir
   find-user-apps-dir #:default (build-path "share" "applications")
-  (chain-to (lambda () (build-path (find-share-dir) "applications"))))
+  (chain-to (lambda () (let ([p (find-share-dir)])
+                         (and p (build-path p "applications"))))))
 
 ;; ----------------------------------------
 ;; "man"
@@ -293,10 +304,14 @@
 
 (define (find-links-file)
   (or (force config:links-file)
-      (build-path (find-share-dir) "links.rktd")))
+      (let ([p (find-share-dir)])
+        (and p (build-path p "links.rktd")))))
 (define (get-links-search-files)
   (combine-search (force config:links-search-files)
-                  (list (find-links-file))))
+                  (let ([p (find-links-file)])
+                    (if p
+                        (list p)
+                        null))))
 
 (define (find-user-links-file [vers (get-installation-name)])
   (build-path (find-system-path 'addon-dir)
@@ -312,7 +327,8 @@
   get-false
   config:pkgs-search-dirs
   get-pkgs-search-dirs
-  (chain-to (lambda () (build-path (find-share-dir) "pkgs"))))
+  (chain-to (lambda () (let ([p (find-share-dir)])
+                         (and p (build-path p "pkgs"))))))
 
 (provide find-user-pkgs-dir)
 (define (find-user-pkgs-dir [vers (get-installation-name)])

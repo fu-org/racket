@@ -1094,9 +1094,9 @@
   (define u1 (unit (import) (export x-sub y-sub) (define x 1) (define xx 2) (define y 3) (define yy 4)))
   (define-values/invoke-unit u1 (import) (export x-sig))
   (test 1 x)
-  (test-runtime-error exn? "xx: undefined;\n cannot reference undefined identifier" xx)
-  (test-runtime-error exn? "y: undefined;\n cannot reference undefined identifier" y)
-  (test-runtime-error exn? "yy: undefined;\n cannot reference undefined identifier" yy))
+  (test-runtime-error exn? "xx: undefined;\n cannot reference" xx)
+  (test-runtime-error exn? "y: undefined;\n cannot reference" y)
+  (test-runtime-error exn? "yy: undefined;\n cannot reference" yy))
 
 (let ()
   (define u1 (unit (import) (export x-sig) (define x 1)))
@@ -1634,7 +1634,7 @@
 
 (test-syntax-error
 
- "x: unbound identifier in module"
+ "x: unbound identifier"
  (module foo racket
    (define-signature x-sig (x))
    (define-unit u (import x-sig) (export) x)
@@ -1642,7 +1642,7 @@
 
 (test-syntax-error
 
- "y: unbound identifier in module"
+ "y: unbound identifier"
  (module foo racket
    (define-signature x-sig (x))
    (define-signature y-sig (y))
@@ -1700,12 +1700,12 @@
  (compound-unit/infer (import) (export) (link (((A : b)) c))))
 (test-syntax-error
 "compound-unit/infer: unknown signature"
- (compound-unit/infer (import ??) (export) (link)))
+ (compound-unit/infer (import ???) (export) (link)))
 (test-syntax-error "compound-unit/infer: unknown sig"
-                   (compound-unit/infer (import) (export ??) (link)))
+                   (compound-unit/infer (import) (export ???) (link)))
 (test-syntax-error 
  "compound-unit/infer: unknown linking identifier"
- (compound-unit/infer (import) (export) (link (() u ??))))
+ (compound-unit/infer (import) (export) (link (() u ???))))
 
 
 (define-unit x
@@ -2062,9 +2062,9 @@
 
   (test 'zero (use-unit))
   (test 'zero (use-unit2))
-  (test-runtime-error exn:fail:contract:variable? "u-a: undefined;\n cannot reference undefined identifier"
+  (test-runtime-error exn:fail:contract:variable? "u-a: undefined;\n cannot reference"
                       (use-unit-badly1 u-a))
-  (test-runtime-error exn:fail:contract:variable? "u-a: undefined;\n cannot reference undefined identifier"
+  (test-runtime-error exn:fail:contract:variable? "u-a: undefined;\n cannot reference"
                       (use-unit-badly2 sig^))
 
   (test 12

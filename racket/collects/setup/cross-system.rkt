@@ -7,7 +7,7 @@
 
 (define cross-system-table #f)
 
-(define system-type-symbols '(os word gc link machine so-suffix so-mode fs-change))
+(define system-type-symbols '(os word gc vm link machine so-suffix so-mode fs-change target-machine))
 
 (define (compute-cross!)
   (unless cross-system-table
@@ -21,16 +21,27 @@
                                          f
                                          read)))])
                              (and (hash? ht)
-                                  (for/and ([sym (in-list (list*
-                                                           'library-subpath
-                                                           'library-subpath-convention
+                                  ;; If 'vm doesn't match, then assuming that we're looking
+                                  ;; at a multi-vm overlay, instead of cross-compiling,
+                                  ;; because cross-compiling requires the same VM.
+                                  (eq? (system-type 'vm)
+                                       (hash-ref ht 'vm #f))
+                                  (for/and ([sym (in-list (append
+                                                           '(library-subpath
+                                                             library-subpath-convention)
                                                            system-type-symbols))])
-                                    (hash-ref ht sym #f))
+                                    (not (void? (hash-ref ht sym (void)))))
                                   (not
                                    (and (for/and ([sym (in-list system-type-symbols)]
                                                   #:unless (or (eq? sym 'machine)
                                                                (eq? sym 'gc)))
-                                          (equal? (hash-ref ht sym) (system-type sym)))
+                                          (define v (hash-ref ht sym))
+                                          (or (equal? v (system-type sym))
+                                              ;; If 'target-machine is set to #f, that's
+                                              ;; for SERVER_COMPILE_MACHINE=any mode
+                                              (and (not v)
+                                                   (eq? sym 'target-machine)
+                                                   (eq? (system-type 'cross) 'infer))))
                                         (equal? (bytes->path (hash-ref ht 'library-subpath)
                                                              (hash-ref ht 'library-subpath-convention))
                                                 (system-library-subpath #f))))
@@ -49,19 +60,21 @@
      (unless (memq mode system-type-symbols)
        (raise-argument-error
         'cross-system-type
-        "(or/c 'os 'word 'gc 'link 'machine 'so-suffix 'so-mode 'fs-change)"
+        "(or/c 'os 'word 'gc 'vm 'link 'machine 'target-machine 'so-suffix 'so-mode 'fs-change)"
         mode))
      (compute-cross!)
-     (or (hash-ref cross-system-table mode #f)
-         (system-type mode))]))
+     (define v (hash-ref cross-system-table mode (void)))
+     (if (eq? v (void))
+         (system-type mode)
+         v)]))
 
 (define (cross-system-library-subpath [mode (begin
                                               (compute-cross!)
                                               (cross-system-type 'gc))])
-  (unless (memq mode '(#f 3m cgc))
+  (unless (memq mode '(#f 3m cgc cs))
     (raise-argument-error
      'cross-system-library-subtype
-     "(or/c #f '3m 'cgc)"
+     "(or/c #f '3m 'cgc 'cs)"
      mode))
   (compute-cross!)
   (define bstr (hash-ref cross-system-table 'library-subpath #f))
@@ -71,9 +84,11 @@
     (define path (bytes->path bstr conv))
     (case mode
       [(#f cgc) path]
-      [(3m) (build-path path (bytes->path #"3m" conv))])]
+      [(3m) (build-path path (bytes->path #"3m" conv))]
+      [(cs) (build-path path (bytes->path #"cs" conv))])]
    [else (system-library-subpath mode)]))
 
 (define (cross-installation?)
   (compute-cross!)
-  (positive? (hash-count cross-system-table)))
+  (or (eq? (system-type 'cross) 'force)
+      (positive? (hash-count cross-system-table))))

@@ -3,8 +3,10 @@
 
 (Section 'parameters)
 
+(require racket/file)
+
 (define temp-compiled-file
-  (path->string (build-path (find-system-path 'temp-dir) "param-temp-file")))
+  (path->string (make-temporary-file "param-temp-file~a")))
 
 (let ([p (open-output-file temp-compiled-file #:exists 'replace)])
   (display (compile '(cons 1 2)) p)
@@ -35,7 +37,7 @@
 			(if erroring-set?
 			    (begin
 			      (set! erroring-set? #f)
-			      (error 'output))
+			      (error 'output "~s" s))
 			    (display (subbytes s start end) orig))
 			(- end start)))
 		    void))
@@ -166,9 +168,12 @@
       (test v cd)
       (test v current-directory))))
 
-(arity-test make-parameter 1 2)
+(test 'this-one object-name (make-parameter 7 #f 'this-one))
+
+(arity-test make-parameter 1 3)
 (err/rt-test (make-parameter 0 zero-arg-proc))
 (err/rt-test (make-parameter 0 two-arg-proc))
+(err/rt-test (make-parameter 0 #f 7))
 
 (define-struct bad-test (value exn?))
 
@@ -267,7 +272,7 @@
 		(list current-output-port
 		      (list (current-output-port)
 			    erroring-port)
-		      '(begin 
+		      '(let ()
 			 (set! erroring-set? #t) 
 			 (display 5) 
 			 (set! erroring-set? #f))
@@ -420,7 +425,7 @@
 	 [expr (caddr d)]
 	 [exn? (cadddr d)])
      (parameterize ([param alt1])
-	  (test (void) void (teval expr)))
+	  (test (void) void (eval expr)))
      (parameterize ([param alt2])
 	  (error-test (datum->syntax #f expr #f) exn?))))
  params)

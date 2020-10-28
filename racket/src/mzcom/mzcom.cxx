@@ -3,7 +3,7 @@
 // This file is not xformed for 3m. There's just one
 // bit of conditional compilation on MZCOM_3M.
 
-#include "../racket/src/schvers.h"
+#include "../version/racket_version.h"
 #include "resource.h"
 
 #include <objbase.h>
@@ -119,11 +119,9 @@ int IsFlag(LPCTSTR cmd, LPCTSTR flag)
 }
 
 #define DLL_RELATIVE_PATH L"."
-#include "../racket/delayed.inc"
+#include "../start/delayed.inc"
 
-#define ASSUME_ASCII_COMMAND_LINE
-#define GC_CAN_IGNORE
-#include "../racket/parse_cmdl.inc"
+#include "../start/cmdl_to_argv.inc"
 
 /////////////////////////////////////////////////////////////////////////////
 //
@@ -245,6 +243,17 @@ extern "C" int WINAPI WinMain(HINSTANCE hInstance,
                 }
               }
               nRet |= RegCloseKey(sub);
+            }
+
+            if (!nRet) {
+	      ITypeLib *typelib;
+	      wchar_t *path;
+	      path = (wchar_t *)malloc(1024 * sizeof(wchar_t));
+	      GetModuleFileNameW(NULL, path, 1024);
+	      nRet = LoadTypeLibEx(path, REGKIND_REGISTER, &typelib);
+	      if (!nRet)
+		typelib->Release();
+	      free(path);
             }
 
 	    bRun = FALSE;

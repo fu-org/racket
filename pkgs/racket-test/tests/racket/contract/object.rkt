@@ -2,7 +2,8 @@
 (require "test-util.rkt")
 
 (parameterize ([current-contract-namespace
-                (make-basic-contract-namespace 'racket/class)])
+                (make-basic-contract-namespace 'racket/class
+                                               'racket/contract/combinator)])
 (test/pos-blame
  'object/c-first-order-object-1
  '(contract (object/c)
@@ -219,6 +220,16 @@
         baz 1)
  '(0 1))
 
+(test/spec-passed/result
+ 'object/c-error-checking-earlier-coerce-contract
+ '(with-handlers
+      ([exn:fail?
+        (λ (x)
+          (regexp-match? #rx"^object/c:"
+                        (exn-message x)))])
+    (object/c (field [f '(1)])))
+ #t)
+
 (test/pos-blame
  'object/c-multiple-wrapping-1
  '(let ()
@@ -283,6 +294,51 @@
 
     (send x3 p)))
 
+  (test/pos-blame
+   'object/c-lots-of-wrapping.1
+   '(let ()
+      (define N 40)
+
+      (define c
+        (for/fold ([c (-> integer? integer?)])
+                  ([i (in-range N)])
+          (object/c (field [fld c]))))
+
+      (define o
+        (for/fold ([v 'not-a-proc])
+                  ([i (in-range N)])
+          (new
+           (class object%
+             (field [fld v])
+             (super-new)))))
+
+      (let loop ([o (contract c o 'pos 'neg)])
+        (loop (get-field fld o)))))
+
+  (test/neg-blame
+   'object/c-lots-of-wrapping.2
+   '(let ()
+      (define N 40)
+
+      (define c
+        (for/fold ([c (-> integer? integer?)])
+                  ([i (in-range N)])
+          (object/c (field [fld c]))))
+
+      (define o
+        (for/fold ([v add1])
+                  ([i (in-range N)])
+          (new
+           (class object%
+             (field [fld v])
+             (super-new)))))
+
+      (let loop ([o (contract c o 'pos 'neg)]
+                 [i N])
+        (cond
+          [(= i 1) (set-field! fld o 'not-a-proc)]
+          [else (loop (get-field fld o) (- i 1))]))))
+
   (test/spec-passed
    'object/c-just-check-existence
    '(contract (object/c m)
@@ -299,5 +355,157 @@
                (class object% (super-new)))
               'pos 'neg))
 
+  (test/spec-passed/result
+   'object/c-multi-wrap-just-check-existence/field
+   '(let ([ctc (object/c (field foo))]
+          [v (new (class object% (super-new) (field (foo 0))))])
+      (get-field
+       foo
+       (contract
+        ctc
+        (contract
+         ctc
+         (contract
+          ctc
+          v
+          'p 'n)
+         'p 'n)
+        'p 'n)))
+   0)
 
+  (test/spec-passed/result
+   'object/c-multi-wrap-just-check-existence/method
+   '(let ([ctc (object/c foo)]
+          [v (new (class object% (super-new) (define/public (foo) 0)))])
+      (send
+       (contract
+        ctc
+        (contract
+         ctc
+         (contract
+          ctc
+          v
+          'p 'n)
+         'p 'n)
+        'p 'n)
+       foo))
+   0)
+
+
+  ;; this test makes sure that we don't rewrap
+  ;; contracts when we are just putting three
+  ;; different contracts on
+  (test/spec-passed/result
+   'object/c-avoid-redundancy
+   '(let ()
+      (define log '())
+
+      (define (printing/c l)
+        (make-contract
+         #:late-neg-projection
+         (λ (blame)
+           (λ (val missing-party)
+             (set! log (cons l log))
+             val))))
+
+      (define foo%
+        (class object%
+          (super-new)
+          (define/public (m) #f)))
+
+      (define (printing-foo/c l)
+        (object/c [m (printing/c l)]))
+
+      (define oa
+        (contract (printing-foo/c 'a)
+                  (new foo%)
+                  'pos 'neg))
+
+      (define ob
+        (contract (printing-foo/c 'b)
+                  oa
+                  'pos 'neg))
+
+      (define oc
+        (contract (printing-foo/c 'c)
+                  ob
+                  'pos 'neg))
+      log)
+
+   '(c b a)
+   '(c c c c c c c c c c c b b b b b b b b b b b a a a a a a a a a a a))
+
+  ;; this tests the situation where the double-wrapping avoidance
+  ;; kicks in. The second part of the result, '(a b b a a), indicates
+  ;; that there are still too many calls to the projection
+  ;; (namely there is an extra `a` coming from the creation of
+  ;; `new-cls` (in class-c-old.rkt, currently line 1368))
+  (test/spec-passed/result
+   'object/c-avoid-redundancy.2
+   '(let ()
+      (define log '())
+
+      (struct logging/c (name)
+        #:property prop:chaperone-contract
+        (build-chaperone-contract-property
+         #:late-neg-projection
+         (λ (this)
+           (λ (blame)
+             (λ (val missing-party)
+               (set! log (cons (logging/c-name this) log))
+               val)))
+         #:name (λ (x) `(logging/c ,(logging/c-name x)))
+         #:first-order (λ (x) #t)
+         #:stronger
+         (λ (this that)
+           (and (logging/c? that)
+                (equal? (logging/c-name this) (logging/c-name that))))
+         #:equivalent
+         (λ (this that)
+           (and (logging/c? that)
+                (equal? (logging/c-name this) (logging/c-name that))))))
+
+      (define foo%
+        (class object%
+          (super-new)
+          (define/public (m) #f)))
+
+      (define printing-a
+        (object/c [m (logging/c 'a)]))
+
+      (define printing-b
+        (object/c [m (logging/c 'b)]))
+
+      (define oa
+        (contract printing-a
+                  (new foo%)
+                  'pos 'neg))
+
+      (define ob
+        (contract printing-b
+                  oa
+                  'pos 'neg))
+
+      (define oc
+        (contract printing-a
+                  ob
+                  'pos 'neg))
+
+      (define od
+        (contract printing-b
+                  oc
+                  'pos 'neg))
+
+      (define log1 log)
+      (set! log '())
+
+      (define oe
+        (contract printing-a
+                  od
+                  'pos 'neg))
+
+      (list log1 log))
+
+   '((b a b a) (a b b a a))
+   do-not-double-wrap)
 )

@@ -1,6 +1,6 @@
 #lang scribble/manual
 
-@(require (for-label racket/base json))
+@(require (for-label racket/base racket/contract json racket/port))
 
 @(define website @link["http://json.org"]{JSON web site})
 @(define rfc @link["http://www.ietf.org/rfc/rfc4627.txt"]{JSON RFC})
@@ -21,7 +21,7 @@ the @rfc for more information about JSON.
 
 @section{JS-Expressions}
 
-@defproc[(jsexpr? [x any] [#:null jsnull any? (json-null)])
+@defproc[(jsexpr? [x any/c] [#:null jsnull any/c (json-null)])
          boolean?]{
   Performs a deep check to determine whether @racket[x] is a @tech{jsexpr}.
 
@@ -30,12 +30,13 @@ the @rfc for more information about JSON.
   @deftech{JS-Expression}, or @deftech{jsexpr}, is one of:
 
   @itemize[
-    @item{the value of @racket[jsnull], @racket['null] by default}
+    @item{the value of @racket[jsnull], @racket['null] by default,
+  which is recognized using @racket[eq?]}
     @item{@racket[boolean?]}
     @item{@racket[string?]}
-    @item{@racket[(or exact-integer? inexact-real?)]}
+    @item{@racket[(or/c exact-integer? (and/c inexact-real? rational?))]}
     @item{@racket[(listof jsexpr?)]}
-    @item{@racket[(hasheqof symbol? jsexpr?)]}]
+    @item{@racket[(hash/c symbol? jsexpr?)]}]
 
 @examples[#:eval ev
   (jsexpr? 'null)
@@ -46,25 +47,30 @@ the @rfc for more information about JSON.
   (jsexpr? #hasheq((turnip . 82)))
   (jsexpr? (vector 1 2 3 4))
   (jsexpr? #hasheq(("turnip" . 82)))
+  (jsexpr? +inf.0)
 ]
 }
 
-@defparam[json-null jsnull any?]{
+@defparam[json-null jsnull any/c]{
   This parameter determines the default Racket value that corresponds to
   a JSON ``@tt{null}''.  By default, it is the @racket['null] symbol.
   In some cases a different value may better fit your needs, therefore
   all functions in this library accept a @racket[#:null] keyword
   argument for the value that is used to represent a JSON ``@tt{null}'',
-  and this argument defaults to @racket[(json-null)].}
+  and this argument defaults to @racket[(json-null)].
+
+  Note that the value of @racket[(json-null)] (or an explicitly-provided
+  @racket[#:null] argument) is recognized using @racket[eq?].
+}
 
 @section{Generating JSON Text from JS-Expressions}
 
 @defproc[(write-json [x jsexpr?] [out output-port? (current-output-port)]
-                     [#:null jsnull any? (json-null)]
+                     [#:null jsnull any/c (json-null)]
                      [#:encode encode (or/c 'control 'all) 'control])
          any]{
   Writes the @racket[x] @tech{jsexpr}, encoded as JSON, to the
-  @racket[outp] output port.
+  @racket[out] output port.
 
   By default, only ASCII control characters are encoded as
   ``@tt{\uHHHH}''.  If @racket[encode] is given as @racket['all], then
@@ -84,7 +90,7 @@ the @rfc for more information about JSON.
 }
 
 @defproc[(jsexpr->string [x jsexpr?]
-                         [#:null jsnull any? (json-null)]
+                         [#:null jsnull any/c (json-null)]
                          [#:encode encode (or/c 'control 'all) 'control])
          string?]{
   Generates a JSON source string for the @tech{jsexpr} @racket[x].
@@ -95,7 +101,7 @@ the @rfc for more information about JSON.
 }
 
 @defproc[(jsexpr->bytes [x jsexpr?]
-                        [#:null jsnull any? (json-null)]
+                        [#:null jsnull any/c (json-null)]
                         [#:encode encode (or/c 'control 'all) 'control])
          bytes?]{
   Generates a JSON source byte string for the @tech{jsexpr} @racket[x].
@@ -106,38 +112,76 @@ the @rfc for more information about JSON.
 ]
 }
 
+@; -----------------------------------------------------------------------------
 @section{Parsing JSON Text into JS-Expressions}
 
 @defproc[(read-json [in input-port? (current-input-port)]
-                    [#:null jsnull any? (json-null)])
+                    [#:null jsnull any/c (json-null)])
          (or/c jsexpr? eof-object?)]{
-  Reads a @tech{jsexpr} from a JSON-encoded input port @racket[in] as a
+  Reads a @tech{jsexpr} from a single JSON-encoded input port @racket[in] as a
   Racket (immutable) value, or produces @racket[eof] if only whitespace
-  remains.
+  remains. Like @racket[read], the function leaves all remaining
+  characters in the port so that a second call can retrieve the
+  remaining JSON input(s). If the JSON inputs aren't delimited per se
+  (true, false, null), they  must be separated by whitespace from the
+  following JSON input. 
+  
 
 @examples[#:eval ev
   (with-input-from-string
     "{\"arr\" : [1, 2, 3, 4]}"
     (λ () (read-json)))
+
+  (with-input-from-string
+    "\"sandwich\""
+    (λ () (read-json)))
+
+  (with-input-from-string
+    "true false"
+    (λ () (list (read-json) (read-json))))
+
+  (with-input-from-string
+    "true[1,2,3]"
+    (λ () (list (read-json) (read-json))))
+
+  (with-input-from-string
+    "true\"hello\""
+    (λ () (list (read-json) (read-json))))
+
+  (with-input-from-string
+    "\"world\"41"
+    (λ () (list (read-json) (read-json))))
+
   (eval:error
     (with-input-from-string
       "sandwich sandwich" (code:comment "invalid JSON")
       (λ () (read-json))))
+
+  (eval:error
+    (with-input-from-string
+      "false42" (code:comment "invalid JSON text sequence")
+      (λ () (read-json))))
 ]
 }
 
-@defproc[(string->jsexpr [str string?] [#:null jsnull any? (json-null)])
+@defproc[(string->jsexpr [str string?] [#:null jsnull any/c (json-null)])
          jsexpr?]{
-  Parses the JSON string @racket[str] as an immutable @tech{jsexpr}.
+  Parses a recognizable prefix of the string @racket[str] as an immutable @tech{jsexpr}.
+  If the prefix isn't a delimited per se   (true, false, null), it
+  must be separated by whitespace from the remaining characters.
+
 
 @examples[#:eval ev
   (string->jsexpr "{\"pancake\" : 5, \"waffle\" : 7}")
 ]
 }
 
-@defproc[(bytes->jsexpr [str bytes?] [#:null jsnull any? (json-null)])
+@defproc[(bytes->jsexpr [str bytes?] [#:null jsnull any/c (json-null)])
          jsexpr?]{
-  Parses the JSON bytes string @racket[str] as an immutable @tech{jsexpr}.
+  Parses a recognizable prefix of the string @racket[str] as an immutable @tech{jsexpr}.
+  If the prefix isn't a delimited per se (true, false, null), it
+  must be separated by whitespace from the remaining bytes.
+
 
 @examples[#:eval ev
   (bytes->jsexpr #"{\"pancake\" : 5, \"waffle\" : 7}")
@@ -155,7 +199,7 @@ should represent a JSON ``@tt{null}''.  This library uses the Racket
 Racket symbols are used only as object keys, which are required to be
 strings in JSON.
 
-Several other options have been used by various libaries.  For example,
+Several other options have been used by various libraries.  For example,
 Dave Herman's PLaneT library (which has been the basis for this library)
 uses the @racket[#\nul] character, other libraries for Racket and other
 Lisps use @racket[(void)], @tt{NIL} (some use it also for JSON
@@ -183,7 +227,7 @@ collection, the introduction states:
 In practice, JSON libraries discard the order of object literals in
 parsed JSON text and make no guarantees about the order of generated
 object literals, usually using a hash table of some flavor as a natural
-choice.  We therefore use do so as well.
+choice.  We therefore do so as well.
 
 @subsection{Naming Conventions}
 

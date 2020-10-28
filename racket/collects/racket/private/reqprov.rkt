@@ -1,9 +1,9 @@
 (module reqprov '#%kernel
   (#%require "define.rkt"
              (for-syntax '#%kernel
-                         "stx.rkt" "stxcase-scheme.rkt" "small-scheme.rkt" 
+                         "stx.rkt" "stxcase-scheme.rkt" "define-et-al.rkt"
+                         "qq-and-or.rkt" "cond.rkt"
                          "stxloc.rkt" "qqstx.rkt" "more-scheme.rkt"
-                         "member.rkt"
                          "../require-transform.rkt"
                          "../provide-transform.rkt"
                          "struct-info.rkt"))
@@ -725,7 +725,7 @@
        (raise-syntax-error #f
                            "not at module level"
                            stx)]))
-  
+
   (define-syntax (provide-trampoline stx)
     (syntax-case stx ()
       [(_ out ...)
@@ -758,25 +758,30 @@
                  (syntax/loc stx
                    (begin new-out ...)))))]))]))
 
+  (define-for-syntax (combine-prop b a)
+    (if a (if b (cons a b) a) b))
+
   (define-for-syntax (copy-disappeared-uses outs r)
     (cond
-     [(null? outs) r]
-     [else
-      (let ([p (syntax-property (car outs) 'disappeared-use)]
-            [name (if (identifier? (car outs))
-                      #f
-                      (syntax-local-introduce (car (syntax-e (car outs)))))]
-            [combine (lambda (b a)
-                       (if a
-                           (if b
-                               (cons a b)
-                               a)
-                           b))])
-        (syntax-property r 'disappeared-use
-                         (combine p
-                                  (combine
-                                   name
-                                   (syntax-property r 'disappeared-use)))))]))
+      [(null? outs) r]
+      [else
+       (syntax-property
+        r
+        'disappeared-use
+        (let loop ([outs outs]
+                   [disappeared-uses (syntax-property r 'disappeared-use)])
+          (cond
+            [(null? outs) disappeared-uses]
+            [else
+             (let ([p (syntax-property (car outs) 'disappeared-use)]
+                   [name (if (identifier? (car outs))
+                             #f
+                             (syntax-local-introduce (car (syntax-e (car outs)))))])
+               (loop
+                (cdr outs)
+                (combine-prop p (combine-prop name disappeared-uses))))])))]))
+
+
 
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;; provide transformers
@@ -794,7 +799,7 @@
     (make-provide-transformer
      (lambda (stx modes)
        (syntax-case stx ()
-         [(_) 
+         [(_)
           (let* ([ht (syntax-local-module-defined-identifiers)]
                  [same-ctx? (lambda (free-identifier=?)
                               (lambda (id)
@@ -986,7 +991,8 @@
           stx))
        (syntax-case stx ()
          [(_ id)
-          (let ([id #'id])
+          (let ([id #'id]
+                [s-id #'id])
             (unless (identifier? id)
               (raise-syntax-error
                #f
@@ -1056,7 +1062,14 @@
                      (map (lambda (id)
                             (and id
                                  (let ([id (find-imported/defined id)])
-                                   (make-export id
+                                   (make-export (syntax-property
+                                                 id
+                                                 'disappeared-use
+                                                 (combine-prop
+                                                  (syntax-local-introduce s-id)
+                                                  (syntax-property
+                                                   id
+                                                   'disappeared-use)))
                                                 (syntax-e id)
                                                 0
                                                 #f
@@ -1071,23 +1084,12 @@
                                           (list-ref super-v 3)))
                            (list-ize (list-ref v 4)
                                      (and super-v
-                                          (list-ref super-v 3)))))))
+                                          (list-ref super-v 4)))))))
                   (raise-syntax-error
                    #f
                    "identifier is not bound to struct type information"
                    stx
-                   id))))]))
-     (λ (stx modes)
-       (syntax-case stx ()
-         [(_ id)
-          (and (identifier? #'id)
-               (struct-info? (syntax-local-value #'id (lambda () #f))))
-          (syntax-local-lift-expression
-           (syntax-property #'(void)
-                            'disappeared-use
-                            (syntax-local-introduce #'id)))]
-         [whatevs (void)])
-       stx)))
+                   id))))]))))
 
   (define-syntax combine-out
     (make-provide-transformer
@@ -1177,12 +1179,12 @@
     (datum->syntax
      (import-orig-stx i)
      (list #'just-meta
-           (import-req-mode i)
+           (import-orig-mode i)
            (list #'for-meta
                  (import-mode i)
                  (list #'rename
                        (import-src-mod-path i)
-                       (syntax-local-introduce (import-local-id i))
+                       (import-local-id i)
                        (import-src-sym i))))
      (import-orig-stx i)))
 
@@ -1192,25 +1194,30 @@
   (define-syntax (local-require stx)
     (when (eq? 'expression (syntax-local-context))
       (raise-syntax-error #f "not allowed in an expression context" stx))
-    (syntax-case stx []
-      [(_ spec ...)
-       (let*-values ([(imports sources)
-                      (expand-import
-                       (datum->syntax
-                        stx
-                        (list* #'only-meta-in 0 (syntax->list #'(spec ...)))
-                        stx))]
-                     [(names) (map import-local-id imports)]
-                     [(reqd-names) 
-                      (let ([ctx (syntax-local-get-shadower (datum->syntax #f (gensym)))])
-                        (map (lambda (n) (datum->syntax ctx (syntax-e n) n)) names))]
-                     [(renamed-imports) (map rename-import imports reqd-names)]
-                     [(raw-specs) (map import->raw-require-spec renamed-imports)]
-                     [(lifts) (map syntax-local-lift-require raw-specs reqd-names)])
-         (with-syntax ([(name ...) names]
-                       [(lifted ...) lifts])
-           (syntax/loc stx (define-syntaxes (name ...)
-                             (values (make-rename-transformer (quote-syntax lifted)) ...)))))]))
+    (let ([stx (syntax-local-introduce stx)])
+      (syntax-case stx []
+        [(_ spec ...)
+         (let*-values ([(imports sources)
+                        (expand-import
+                         (datum->syntax
+                          stx
+                          (list* #'only-meta-in 0 (syntax->list #'(spec ...)))
+                          stx))]
+                       [(names) (map import-local-id imports)]
+                       [(reqd-names)
+                        ;; Could be just `(generate-temporaries names)`, but using the
+                        ;; exported name turns out to be a hint to Check Syntax for binding
+                        ;; arrows, for now:
+                        (let ([intro (make-syntax-introducer)])
+                          (map (lambda (n) (intro (datum->syntax #f (syntax-e n) n)))
+                               names))]
+                       [(renamed-imports) (map rename-import imports reqd-names)]
+                       [(raw-specs) (map import->raw-require-spec renamed-imports)]
+                       [(lifts) (map syntax-local-lift-require raw-specs reqd-names)])
+           (with-syntax ([(name ...) (map syntax-local-introduce names)]
+                         [(lifted ...) (map syntax-local-introduce lifts)])
+             (syntax/loc stx (define-syntaxes (name ...)
+                               (values (make-rename-transformer (quote-syntax lifted)) ...)))))])))
 
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   )

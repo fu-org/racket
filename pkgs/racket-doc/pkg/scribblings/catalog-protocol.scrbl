@@ -1,7 +1,8 @@
 #lang scribble/manual
 @(require scribble/bnf
           "common.rkt"
-          (for-label syntax/modcollapse))
+          (for-label syntax/modcollapse
+                     (only-in pkg/db get-pkg-ring)))
 
 @title[#:tag "catalog-protocol"]{Package Catalog Protocol}
 
@@ -94,6 +95,10 @@ information about packages:
               clients at version 5.3.6 and earlier (which do not check
               for @racket['versions]).}
 
+        @item{@racket['ring] (optional) --- either @racket[#f] or a
+              ring number. See @racket[get-pkg-ring] for more
+              information.}
+
        ]}
  
 
@@ -134,8 +139,8 @@ works as a remote URL, as long as the @filepath{pkgs} and
 local but required for HTTP).
 
 The source for the PLT-hosted @tech{package catalog} is in the
-@racket[(collection-file-path "pkg-catalog" "meta")]
-directory of the full Racket distribution.
+@hyperlink["https://pkgs.racket-lang.org/package/pkg-index"]{pkg-index}
+package.
 
 @; ----------------------------------------
 
@@ -216,5 +221,16 @@ constructed in any way as long as it contains the following tables:
 
        This table is not currently used by any @exec{raco pkg}
        command.}
+
+ @item{A @tt{ring} table with the form
+
+             @verbatim[#:indent 2]{(pkg TEXT,
+                                    catalog SMALLINT,
+                                    ring SMALLINT)}
+
+       where the @tt{pkg} and @tt{catalog} combination identifies a unique
+       row in @tt{pkg}.
+
+       @history[#:added "6.10.0.3"]}
 
 ]

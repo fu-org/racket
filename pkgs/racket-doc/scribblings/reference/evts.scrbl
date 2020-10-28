@@ -1,7 +1,8 @@
 #lang scribble/doc
 @(require scribble/struct
           "mz.rkt"
-          (for-label racket/async-channel))
+          (for-label racket/async-channel
+                     (only-in ffi/unsafe/schedule unsafe-poller)))
 
 @(define evt-eval (make-base-eval))
 
@@ -14,7 +15,7 @@ A @deftech{synchronizable event} (or just @defterm{event} for short)
 works with the @racket[sync] procedure to coordinate synchronization
 among threads. Certain kinds of objects double as events, including
 ports and threads. Other kinds of objects exist only for their use as
-events.
+events. Racket's event system is based on Concurrent ML @cite{Reppy99}.
 
 At any point in time, an event is either @deftech{ready for
 synchronization}, or it is not; depending on the kind of event and how
@@ -30,10 +31,18 @@ events, however (such as a port), synchronizing does not modify the
 event's state.
 
 Racket values that act as @tech{synchronizable events} include
-@tech{semaphores}, @tech{channels}, @tech{asynchronous channels},
-@tech{ports}, @tech{TCP listeners}, @tech{log receiver}s, @tech{threads},
-@tech{subprocess}es, @tech{will executors}, and @tech{custodian
-box}es. Libraries can define new synchronizable events, especially
+@tech{asynchronous channels},
+@tech{channels},
+@tech{custodian box}es,
+@tech{log receivers},
+@tech{place channels},
+@tech{ports},
+@tech{semaphores},
+@tech{subprocess}es,
+@tech{TCP listeners},
+@tech{threads}, and
+@tech{will executors}.
+Libraries can define new synchronizable events, especially
 though @racket[prop:evt].
 
 @;------------------------------------------------------------------------
@@ -354,6 +363,11 @@ A @tech{structure type property} that identifies structure types whose
  ready.}
 
 ]
+
+@margin-note{For working with foreign libraries, a @racket[prop:evt]
+             value can also be a result of @racket[unsafe-poller],
+             although that possibility is omitted from the safe
+             contract of @racket[prop:evt].}
 
 Instances of a structure type with the @racket[prop:input-port] or
 @racket[prop:output-port] property are also @tech{synchronizable events} by virtue

@@ -519,6 +519,92 @@
   (provide v))
 (test 1 dynamic-require ''uses-internal-definition-context-around-id 'v)
 
+;; Make sure `syntax-local-make-definition-context` can be called
+;; at unusual times, where the scope that is otherwise captured
+;; for `quote-syntax` isn't or can't be recorded
+(let-syntax ([x (syntax-local-make-definition-context)])
+  (void))
+(module makes-definition-context-at-compile-time-begin racket
+  (begin-for-syntax
+    (syntax-local-make-definition-context)))
+(require 'makes-definition-context-at-compile-time-begin)
+
+
+(module create-definition-context-during-visit racket/base
+  (require (for-syntax racket/base))
+  (provide (for-syntax ds))
+  ;; won't be stipped for `quote-syntax`
+  (define-for-syntax ds (syntax-local-make-definition-context)))
+
+(module create-definition-context-during-expand racket/base
+  (require (for-syntax racket/base)
+           'create-definition-context-during-visit)
+  (provide results
+           get-results)
+
+  ;; will be stipped for `quote-syntax`
+  (define-for-syntax ds2 (syntax-local-make-definition-context))
+
+  (define-syntax (m stx)
+    (syntax-case stx ()
+      [(_ body)
+       (internal-definition-context-introduce ds #'body)]))
+
+  (define-syntax (m2 stx)
+    (syntax-case stx ()
+      [(_ body)
+       (internal-definition-context-introduce ds2 #'body)]))
+
+  (define-syntax (m3 stx)
+    (syntax-case stx ()
+      [(_ body)
+       (let ([ds3 (syntax-local-make-definition-context)])
+         (internal-definition-context-introduce ds3 #'body))]))
+
+  (define results
+    (list
+     (bound-identifier=? (m #'x)
+                         #'x)
+     (bound-identifier=? (m2 #'x)
+                         #'x)
+     (bound-identifier=? (m3 #'x)
+                         #'x)))
+
+  (define (get-results)
+    (list
+     (bound-identifier=? (m #'x)
+                         #'x)
+     (bound-identifier=? (m2 #'x)
+                         #'x)
+     (bound-identifier=? (m3 #'x)
+                         #'x))))
+
+(test '(#f #t #t) dynamic-require ''create-definition-context-during-expand 'results)
+(test '(#f #t #t) (dynamic-require ''create-definition-context-during-expand 'get-results))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(module local-expand-begin-for-syntax-test racket/base
+  (require (for-syntax racket/base)
+           (for-meta 2 racket/base))
+
+  (provide result)
+
+  (begin-for-syntax
+    (define-syntax (z stx)
+      (syntax-local-lift-expression #'(+ 1 2))))
+
+  (define-syntax (m stx)
+    #`'#,(local-expand #'(begin-for-syntax (define x 10) (z)) 'top-level null))
+
+  (define result (m)))
+
+(let ([r (dynamic-require ''local-expand-begin-for-syntax-test 'result)])
+  (define lifted-id (and (list? r) (last r)))
+  (test `(begin-for-syntax (define-values (,lifted-id) (#%app + '1 '2)) (define-values (x) '10) ,lifted-id)
+        'local-expand-begin-for-syntax
+        r))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (module rename-transformer-tests racket/base
@@ -607,30 +693,32 @@
     (parameterize ([current-output-port o]
                    [current-error-port e]
                    [current-namespace (make-base-namespace)])
-      (call-with-continuation-prompt
-       (lambda ()
-         (eval
-          `(module m racket/base
-            (require (for-syntax racket/base))
-            
-            (define v 0)
-            
-            (begin-for-syntax
-              (struct e (p)
-                      #:property ,prop:macro ,(if (eq? prop:macro 'prop:procedure)
-                                                  0
-                                                  (list #'quote-syntax
-                                                        (syntax-property #'v
-                                                                         'not-free-identifier=?
-                                                                         #t)))
-                      #:property prop:expansion-contexts ',contexts))
-            
-            (define-syntax m (e (lambda (stx)
-                                  (displayln (syntax-local-context))
-                                  #'10)))
-            
-            ,(wrap 'm)))
-         (dynamic-require (if sub? '(submod 'm sub) ''m) #f))))
+      ;; these tests rely on errors printing to the current-error-port
+      (with-handlers ([exn:fail? (lambda (e) ((error-display-handler) (exn-message e) e))])
+        (call-with-continuation-prompt
+         (lambda ()
+           (eval
+            `(module m racket/base
+               (require (for-syntax racket/base))
+               
+               (define v 0)
+               
+               (begin-for-syntax
+                 (struct e (p)
+                   #:property ,prop:macro ,(if (eq? prop:macro 'prop:procedure)
+                                               0
+                                               (list #'quote-syntax
+                                                     (syntax-property #'v
+                                                                      'not-free-identifier=?
+                                                                      #t)))
+                   #:property prop:expansion-contexts ',contexts))
+               
+               (define-syntax m (e (lambda (stx)
+                                     (displayln (syntax-local-context))
+                                     #'10)))
+               
+               ,(wrap 'm)))
+           (dynamic-require (if sub? '(submod 'm sub) ''m) #f)))))
     (list (get-output-string o)
           (if error-rx
               (let ([m (regexp-match error-rx (get-output-string e))])
@@ -743,6 +831,16 @@
 (syntax-test #'(datum-case '(1 "x" -> y) (->) [(a b -> c) (define q 1)])
              #rx"macro.rktl:.*no expression after a sequence of internal definitions")
 
+(let ()
+  (define-syntax-rule (check-error clause)
+    (err/rt-test
+     (datum-case '((1 2) (3)) () clause)
+     (lambda (exn)
+       (and (regexp-match? #rx"incompatible ellipsis match counts for template"
+                           (exn-message exn))))))
+  (check-error [((a ...) (b ...)) (datum ((a b) ...))])
+  (check-error [((a ...) (b ...)) (datum ((a 0 b) ...))])
+  (check-error [((a ...) (b ...)) (datum (((a) (b)) ...))]))
 
 ;; ----------------------------------------
 ;; Check `#%variable-reference' expansion to make sure
@@ -764,7 +862,7 @@
 (require 'm-check-varref-expand)
 
 ;; ----------------------------------------
-;; Check that a modul-level binding with 0 marks
+;; Check that a module-level binding with 0 marks
 ;;  but lexical context is found correctly with
 ;;  1 and 2 marks (test case by Carl):
 
@@ -947,6 +1045,34 @@
 ;; ----------------------------------------
 
 (err/rt-test (syntax-local-lift-require 'abc #'def))
+
+(for ([lift-attempt+rx:expected-error
+       (in-list
+        (list (cons '(syntax-local-lift-require 'racket #'body)
+                    #rx"could not find target context")
+              (cons '(syntax-local-lift-expression #'body)
+                    #rx"no lift target")
+              (cons '(syntax-local-lift-module  #'(module m racket/base))
+                    #rx"not currently transforming within a module declaration or top level")
+              (cons '(syntax-local-lift-module-end-declaration  #'(define done #t))
+                    #rx"not currently transforming an expression within a module declaration")
+              (cons '(syntax-local-lift-provide #'cons)
+                    #rx"not expanding in a module run-time body")))])
+  (define lift-attempt (car lift-attempt+rx:expected-error))
+  (define rx:expected-error (cdr lift-attempt+rx:expected-error))
+  (err/rt-test
+   (expand `(module m racket/base
+              (require (for-syntax racket/base))
+              
+              (provide #%module-begin)
+              
+              (define-syntax (#%module-begin stx)
+                (syntax-case stx ()
+                  [(_ body) ,lift-attempt]))
+              
+              (module* test (submod "..")
+              body)))
+   (lambda (exn) (regexp-match? rx:expected-error (exn-message exn)))))
 
 ;; ----------------------------------------
 
@@ -1449,6 +1575,22 @@
              (eval-syntax (expand-syntax #'b)))])))
 
 ;; ----------------------------------------
+;; Basic use-site scope example
+
+(module define-n-as-ten-not-five racket/base
+  (define x 10)
+  
+  (define-syntax-rule (use-x misc-id)
+    (let ([misc-id 5])
+      x))
+  
+  (define n (use-x x))
+  
+  (provide n))
+
+(test 10 dynamic-require ''define-n-as-ten-not-five 'n)
+
+;; ----------------------------------------
 ;; Check that use-site scopes are not pruned too eagerly
 ;;  (based on examples from Brian Mastenbrook)
 
@@ -1666,6 +1808,95 @@
 (test '(1 2 3) dynamic-require ''uses-local-lift-values-at-expansion-time 'l)
 
 ;; ----------------------------------------
+;; Check that `local-expand` tentatively allows out-of-context identifiers
+
+(module tentatively-out-of-context racket/base
+  (require (for-syntax racket/base))
+
+  (define-syntax (new-lam stx)
+    (syntax-case stx ()
+      [(_ x body)
+       (with-syntax ([(_ (x+) body+)
+                      (local-expand #'(lambda (x) body) 'expression null)])
+         (with-syntax ([body++ ;; double-expand body
+                        (local-expand #'body+ 'expression null)])
+           #'(lambda (x+) body++)))]))
+
+  ((new-lam X X) 100))
+
+;; ----------------------------------------
+;; Check that properties interact properly with the rename transformer
+;; that is used to implement `let-syntax` [example from Stephen Chang]
+
+(define-syntax (test-key-property-as-val stx)
+  (syntax-case stx ()
+    [(_ x)
+     (with-syntax ([x/prop (syntax-property #'x 'key 'val)])
+       (with-syntax ([(lam _ (lv1 _ (lv2 _ x+)))
+                      (local-expand
+                       #'(lambda (x)
+                           (let-syntax ([x (lambda (stx) #'x)])
+                             x/prop))
+                       'expression null)])
+         #`'#,(syntax-property #'x+ 'key)))]))
+
+(test 'val 'let-syntax-rename-transformer-property (test-key-property-as-val stx))
+
+;; ----------------------------------------
+;; Check that a chain of rename transformers maintains properties correctly
+
+(module chains-properties-through-two-rename-transformer racket/base
+  (require (for-syntax racket/base))
+  
+  (define a 'a)
+  
+  (define-syntax b (make-rename-transformer (syntax-property #'a 'ids 'b)))
+  (define-syntax c (make-rename-transformer (syntax-property #'b 'ids 'c)))
+  
+  (define-syntax (inspect stx)
+    (syntax-case stx ()
+      [(_ e)
+       (let ([e (local-expand #'e 'expression null)])
+         #`(quote #,(syntax-property e 'ids)))]))
+  
+  (provide prop-val)
+  (define prop-val (inspect c)))
+
+(test '(b . c) dynamic-require ''chains-properties-through-two-rename-transformer 'prop-val)
+
+;; ----------------------------------------
+;; Check that the wrong properties are *not* added when a rename transformer is involed
+
+(module inner-and-outer-properties-around-rename-transformers racket/base
+  (require (for-syntax racket/base))
+
+  (define-syntax (some-define stx)
+    (syntax-case stx ()
+      [(_ x)
+       #'(define-syntax x
+           (make-rename-transformer
+            (syntax-property #'void 'prop 'inner)))]))
+
+  (some-define x)
+
+  (define-syntax (wrapper stx)
+    (syntax-case stx ()
+      [(_ e)
+       (local-expand
+        (syntax-property #'e 'prop 'outer)
+        'expression null)]))
+
+  (define-syntax (#%app stx)
+    (syntax-case stx ()
+      [(_ f)
+       #`(quote #,(syntax-property #'f 'prop))]))
+
+  (provide prop-val)
+  (define prop-val (wrapper (x))))
+
+(test 'inner dynamic-require ''inner-and-outer-properties-around-rename-transformers 'prop-val)
+
+;; ----------------------------------------
 ;; Check that a `prop:rename-transformer` procedure is called in a
 ;; `syntax-transforming?` mode when used as an expression
 
@@ -1698,6 +1929,13 @@
     (test 'two values also-x)))
 
 ;; ----------------------------------------
+;; Make sure top-level definition replaces a macro binding
+
+(define-syntax-rule (something-previously-bound-as-syntax) 1)
+(define something-previously-bound-as-syntax 5)
+(test 5 values something-previously-bound-as-syntax)
+
+;; ----------------------------------------
 ;; Check that ellipsis-counts errors are reported when a single
 ;; pattern variable is used at different depths
 
@@ -1707,5 +1945,621 @@
              (lambda (exn) (regexp-match? #rx"incompatible ellipsis" (exn-message exn))))
 
 ;; ----------------------------------------
+;; Check `local-expand` for a `#%module-begin` that
+;; routes `require`s through a macro (which involves use-site
+;; scopes)
+
+(module module-begin-check/mb racket/base
+  (require (for-syntax racket/base))
+  
+  (provide (except-out (all-from-out racket/base)
+                       #%module-begin)
+           (rename-out [mb #%module-begin]))
+  
+  (define-syntax (mb stx)
+    (syntax-case stx ()
+      [(_ f ... last)
+       (local-expand #'(#%module-begin f ... last)
+                     'module-begin 
+                     (list #'module*))])))
+
+(module module-begin-check/y racket/base
+  (provide y)
+  (define y 'y))
+
+(module x 'module-begin-check/mb
+  (define-syntax-rule (req mod ...)
+    (require mod ...))
+  (req 'module-begin-check/y)
+  (void y))
+
+;; ----------------------------------------
+;; Check that expansion to `#%module-begin` is prepared to handle
+;; definition contexts
+
+(module make-definition-context-during-module-begin racket/base
+  (require (for-syntax racket/base))
+  
+  (define-syntax (bind-and-expand stx)
+    (syntax-case stx ()
+      [(_ x form ...)
+       (let ()
+         (define ctx (syntax-local-make-definition-context))
+         (syntax-local-bind-syntaxes (list #'x) #'(λ (stx) (println stx) #'(void)) ctx)
+         (local-expand #'(#%plain-module-begin form ...) 'module-begin '() ctx))]))
+  
+  (module* a #f (bind-and-expand x x))
+  (module* b #f (bind-and-expand x (list x))))
+
+;; ----------------------------------------
+;; Make sure it's ok to produce an already-expanded
+;; expression in a definition context
+
+(module macro-with-syntax-local-expand-expression-in-a-definition-context racket/base
+  (require (for-syntax racket/base))
+
+  (define-syntax (m stx)
+    (syntax-case stx ()
+      [(_ e)
+       (let ()
+         (define-values (new-stx new-exp)
+           (syntax-local-expand-expression #'e #t))
+         new-exp)]))
+
+  (m 5)
+
+  (let ()
+    (define whatever 10)
+    (m (+ 1 2))
+    'ok))
+
+;; ----------------------------------------
+;; Error (instead of looping) when an implicit is not bound as syntax
+
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (let-syntax ([#%app (make-rename-transformer #'unbound)])
+                   (+ 1 2))))
+
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (let-syntax ([#%app (make-rename-transformer #'cons)])
+                   (+ 1 2))))
+
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (let-syntax ([#%datum (make-rename-transformer #'unbound)])
+                   (+ 1 2))))
+
+(module make-sure-not-bound-as-syntax-is-not-propagated-to-reexpansion racket/base
+  (module new-top racket/base
+    (provide #%top)
+    (define (helper sym) sym)
+    (define-syntax-rule (#%top . ID)
+      (helper 'ID)))
+  
+  (local-require (submod 'new-top))
+  foobar)
+
+;; ----------------------------------------
+;; Check that definition context bindings are made available when the context is provided as fourth
+;; argument of syntax-local-bind-syntaxes
+
+(module syntax-local-bind-syntaxes-local-value-in-other-context racket/base
+  (require (for-syntax racket/base))
+  (begin-for-syntax
+    (define intdef-ctx-a (syntax-local-make-definition-context))
+    (syntax-local-bind-syntaxes (list #'x) #'42 intdef-ctx-a)
+
+    (define intdef-ctx-b (syntax-local-make-definition-context intdef-ctx-a))
+    (syntax-local-bind-syntaxes (list #'y) #'(syntax-local-value #'x) intdef-ctx-b intdef-ctx-a)))
+
+;; ----------------------------------------
+;; internal-definition-context-introduce always adds scope
+
+(module internal-definition-context-introduce-always-adds-scope racket/base
+  (require (for-syntax racket/base))
+  (provide result)
+  (define-syntax (m stx)
+    (define intdef-ctx (syntax-local-make-definition-context #f #f))
+    (syntax-local-bind-syntaxes (list #'x) #''value intdef-ctx)
+    #`(list '#,(syntax-local-value #'x (λ () #f) intdef-ctx)
+            '#,(syntax-local-value (internal-definition-context-introduce intdef-ctx #'x)
+                                   (λ () #f) intdef-ctx)))
+  (define result (m)))
+
+(test '(#f value) dynamic-require ''internal-definition-context-introduce-always-adds-scope 'result)
+
+
+;; ----------------------------------------
+;; Make sure `#%expression` doesn't appear in fully
+;; expanded forms
+
+(let ([stx (expand '(module m racket/base
+                      (require racket/class)
+                      (define c
+                        (class object%
+                          (super-new)))))])
+  (test #f 'any-#%expression? (let loop ([e stx])
+                                (cond
+                                  [(eq? e '#%expression) #t]
+                                  [(syntax? e) (loop (syntax-e e))]
+                                  [(pair? e) (or (loop (car e)) (loop (cdr e)))]
+                                  [else #f]))))
+
+;; ----------------------------------------
+;; parent definition contexts’ bindings, but not scopes, are added implicitly during expansion
+
+(err/rt-test
+ (eval #'(module parent-internal-definition-contexts-do-not-add-scopes racket/base
+           (require (for-syntax racket/base))
+           (begin-for-syntax
+             (define intdef-ctx-a (syntax-local-make-definition-context))
+             (syntax-local-bind-syntaxes (list #'x) #'42 intdef-ctx-a)
+
+             (define intdef-ctx-b (syntax-local-make-definition-context intdef-ctx-a))
+             (syntax-local-bind-syntaxes (list #'y) #'(make-rename-transformer #'x) intdef-ctx-b)
+
+             (syntax-local-value (internal-definition-context-introduce intdef-ctx-b #'y)
+                                 #f intdef-ctx-b))))
+ exn:fail?)
+
+(module parent-internal-definition-contexts-do-add-bindings racket/base
+  (require (for-syntax racket/base))
+  (provide result)
+  (define-syntax (m stx)
+    (define intdef-ctx-a (syntax-local-make-definition-context))
+    (syntax-local-bind-syntaxes (list #'x) #'42 intdef-ctx-a)
+
+    (define intdef-ctx-b (syntax-local-make-definition-context intdef-ctx-a))
+    (define x_a-id (internal-definition-context-introduce intdef-ctx-a #'x))
+    (syntax-local-bind-syntaxes (list #'y) #`(make-rename-transformer #'#,x_a-id) intdef-ctx-b)
+
+    #`(quote #,(syntax-local-value (internal-definition-context-introduce intdef-ctx-b #'y)
+                                   #f intdef-ctx-b)))
+  (define result (m)))
+
+(test 42 dynamic-require ''parent-internal-definition-contexts-do-add-bindings 'result)
+
+;; ----------------------------------------
+;; Make sure that changing the code expander disables syntax
+;; disarming when it should
+
+(parameterize ([current-namespace (make-base-namespace)]
+               [current-code-inspector (current-code-inspector)])
+
+  (eval
+   '(module disarm racket/base
+      (require (for-template racket/base))
+      (define (disarm s)
+        (unless (syntax-tainted? (car (syntax-e (syntax-disarm s #f))))
+          (error "disarm succeeded!"))
+        #''ok)
+      (provide disarm)))
+
+  (eval
+   '(module mapply racket/base
+      (require (for-syntax racket/base))
+      (provide mapply)
+      (define-syntax (mapply stx)
+        (syntax-case stx ()
+          [(_ m) #`(m #,(syntax-protect #'(x)))]))))
+
+  (current-code-inspector (make-inspector (current-code-inspector)))
+
+  (eval
+   '(module orig racket/base
+      (require (for-syntax racket/base
+                           'disarm)
+               'mapply)
+      (define-syntax (m stx)
+        (syntax-case stx ()
+          [(_ e) (disarm #'e)]))
+      (mapply m))))
+
+;; ----------------------------------------
+;; Make sure `local-expand` doesn't flip the use-site
+;; scope in addition to the introduction scope
+
+(module local-expand-result-depends-on-use-site-scope racket/base
+  (require (for-syntax racket/base))
+  (define x 1)
+  
+  (define-syntax (a stx)
+    (syntax-case stx ()
+      [(a id)
+       (local-expand #'(let ([id 3]) x) 'expression '())]))
+  
+  (define result (a x))
+  (provide result))
+
+(test 1 dynamic-require ''local-expand-result-depends-on-use-site-scope 'result)
+
+;; ----------------------------------------
+;; Make sure `local-expand` doesn't get confused about the
+;; post-expansion scope needed to make a binding phase-specific
+
+(module test-for-scope-specific-binding racket/base
+
+  (module l racket/base
+    (require (for-syntax racket/base racket/syntax)
+             syntax/parse/define)
+
+    (provide #%module-begin m
+             (all-from-out racket/base))
+
+    (define-syntax-parser #%module-begin
+      [(_ form ...)
+       (let ([intdef-ctx (syntax-local-make-definition-context #f #f)])
+         (local-expand #'(#%plain-module-begin form ...)
+                       'module-begin
+                       '()
+                       intdef-ctx))])
+
+    (define-syntax-parser m
+      [(_)
+       #:with x (generate-temporary)
+       #'(begin
+           (define x #f)
+           ;; The #' here triggers a `syntax-local-value` call:
+           (begin-for-syntax #'x))]))
+
+  (module c (submod ".." l)
+    (#%module-begin
+     (m))))
+
+(module test-for-scope-specific-binding/nested racket/base
+
+  (module l racket/base
+    (require (for-syntax racket/base racket/syntax)
+             syntax/parse/define)
+
+    (provide expand-in-modbeg m
+             (all-from-out racket/base))
+
+    (define-syntax-parser expand-in-modbeg
+      [(_ form ...)
+       (local-expand #'(#%plain-module-begin form ...)
+                     'module-begin
+                     '())
+       #'(void)])
+
+    (define-syntax-parser m
+      [(_)
+       #:with x (generate-temporary)
+       #'(begin
+           (define x #f)
+           (begin-for-syntax #'x))]))
+
+  (module c (submod ".." l)
+    (let ()
+      (expand-in-modbeg
+       (m)))))
+
+;; ----------------------------------------
+;; Make sure `syntax-local-bind-syntaxes` binds variables in a way
+;; that `local-expand` replaces a use with the binding scopes.
+
+(module uses-definition-context-and-local-expand-to-replace racket/base
+  (require (for-syntax racket/base))
+
+  (define-syntax (m stx)
+    (syntax-case stx ()
+      [(_ id)
+       (let ()
+         (define intdef (syntax-local-make-definition-context))
+         (syntax-local-bind-syntaxes (list #'id)
+                                     #f ; => local variable
+                                     intdef)
+         (define raw-bind-id (internal-definition-context-introduce intdef #'id))
+         (define raw-ex-id (local-expand ((make-syntax-introducer) #'id) 'expression null intdef))
+         (define bind-id (syntax-local-identifier-as-binding raw-bind-id))
+         (define ex-id (syntax-local-identifier-as-binding raw-ex-id))
+         #`(list #,(free-identifier=? bind-id ex-id)
+                 #,(bound-identifier=? bind-id ex-id)))]))
+
+  (define result (m x))
+  (provide result))
+
+(test '(#t #t) dynamic-require ''uses-definition-context-and-local-expand-to-replace 'result)
+
+;; ----------------------------------------
+;; Check that a rename transformer mapped to a
+;; primitive is ok in the result of a local expansion
+
+(module module-begin-with-a-rename-transformer racket/base
+  (require (for-syntax racket/base))
+
+  (define-syntax m (make-rename-transformer #'#%expression))
+  
+  (begin-for-syntax
+    (local-expand #'(#%plain-module-begin (m #f)) 'module-begin '())))
+
+;; ----------------------------------------
+;; Check order of complaints for unbound identifiers
+
+(define (check-complain-first m)
+  (err/rt-test (eval m)
+               (lambda (x)
+                 (regexp-match? #rx"complain-about-this-one" (exn-message x)))))
+
+(check-complain-first '(module m racket/base
+                         (define (f a)
+                           (complain-about-this-one (not-about-this-one)))))
+(check-complain-first '(module m racket/base
+                         (require (for-syntax racket/base))
+                         (define-syntax (f a)
+                           (complain-about-this-one (not-about-this-one)))))
+
+;; ----------------------------------------
+;; Make sure "currently expanding" is not propagated to threads
+
+(let ()
+  (define-syntax (m stx)
+    (syntax-case stx ()
+      [(_ e)
+       (let ([ok? #t])
+         (sync (thread (lambda ()
+                         (local-expand #'e 'expression null)
+                         (set! ok? #f))))
+         (if ok? #''ok #''oops))]))
+  
+  (test 'ok values (m 1)))
+
+;; ----------------------------------------
+
+(test 'ok 'scope-for-letrec
+      (let ([x 'ok])
+        (letrec-syntax ([foo (lambda (stx)
+                               #'x)])
+          (define x 2)
+          (foo))))
+
+
+(test 1 'scope-for-letrec
+      (let ()
+        (define-syntaxes (stash restore)
+          (let ([stash #f])
+            (values
+             ;; stash
+             (lambda (stx)
+               (syntax-case stx ()
+                 [(_ arg)
+                  (begin (set! stash (syntax-local-introduce #'arg))
+                         #'arg)]))
+             ;; restore
+             (lambda (stx)
+               (syntax-local-introduce stash)))))
+
+        (define x 1)
+
+        (letrec-values ([(foo) (stash x)])
+          (define x 2)
+          (restore))))
+
+;; ----------------------------------------
+;; Make sure something reasonable happens when a `for-syntax` `define`
+;; is seen via `local-expand` but is not preserved in the expansion
+
+(module module-compiles-but-does-not-visit racket/base
+  (require (for-syntax racket/base))
+
+  (begin-for-syntax
+    (when (eq? (syntax-local-context) 'module)
+      (local-expand
+       #'(#%plain-module-begin
+          (begin-for-syntax
+            (define x 42)))
+       'module-begin
+       '())))
+
+  (begin-for-syntax
+    ;; Weird: can be 42 at compile time, but since the for-syntax
+    ;; `define` did not survive in the fully expanded form, it
+    ;; turns into a reference to an undefined variable.
+    x))
+
+(err/rt-test/once (begin
+                    (eval '(require 'module-compiles-but-does-not-visit))
+                    ;; triggers visit:
+                    (eval #t))
+                  exn:fail:contract:variable?)
+
+;; ----------------------------------------
+;; Make sure a reasonable exceptoion happens when `local-expand`
+;; is misused under `begin-for-syntax`
+
+(module module-also-compiles-but-does-not-visit racket/base
+  (require (for-syntax racket/base))
+
+  (begin-for-syntax
+    (local-expand
+     #'(#%plain-module-begin
+        (begin-for-syntax
+          (define x 42)))
+     'module-begin
+     '())))
+
+(err/rt-test/once (begin
+                    (eval '(require 'module-also-compiles-but-does-not-visit))
+                    ;; triggers visit:
+                    (eval #t))
+                  (lambda (exn)
+                    (and (exn:fail:syntax? exn) ; the error is from `#%plain-module-begin`
+                         (regexp-match? #rx"not currently transforming a module" (exn-message exn)))))
+
+;; ----------------------------------------
+;; Make sure `syntax-local-bind-syntaxes` binds installs `free-identifier=?`
+;; equivalences in a context in which previous definitions in the context are bound
+
+(module syntax-local-bind-syntaxes-free-id-context racket/base
+  (require (for-syntax racket/base))
+  (provide result)
+  (define-syntax (letrec-syntax/intdef stx)
+    (syntax-case stx ()
+      [(_ ([x rhs] ...) e)
+       (let ()
+         (define intdef (syntax-local-make-definition-context))
+         (for ([x (in-list (syntax->list #'(x ...)))]
+               [rhs (in-list (syntax->list #'(rhs ...)))])
+           (syntax-local-bind-syntaxes (list x) rhs intdef))
+         (local-expand #'e 'expression '() intdef))]))
+  (begin-for-syntax
+    (struct indirect-rename-transformer (target-holder)
+      #:property prop:rename-transformer
+      (lambda (self) (syntax-local-value (indirect-rename-transformer-target-holder self)))))
+  (define result
+    (letrec-syntax/intdef ([holder #'add1]
+                           [add1-indirect (indirect-rename-transformer #'holder)])
+      (add1-indirect 10))))
+
+(test 11 dynamic-require ''syntax-local-bind-syntaxes-free-id-context 'result)
+
+;; ----------------------------------------
+;; Related to the above, make sure `syntax-local-value/immediate` resolves rename
+;; transformers in a context with first-class definition context bindings
+
+(module syntax-local-value-free-id-context racket/base
+  (require (for-syntax racket/base))
+  (provide result)
+  (begin-for-syntax
+    (struct indirect-rename-transformer (target-holder)
+      #:property prop:rename-transformer
+      (lambda (self) (syntax-local-value (indirect-rename-transformer-target-holder self)))))
+  (define-syntax (m stx)
+    (define intdef (syntax-local-make-definition-context))
+    (syntax-local-bind-syntaxes (list (syntax-local-introduce #'holder)) #'#'add1 intdef)
+    (syntax-local-bind-syntaxes (list (syntax-local-introduce #'add1-indirect))
+                                (syntax-local-introduce #'(indirect-rename-transformer #'holder))
+                                intdef)
+    (define-values [value target]
+      (syntax-local-value/immediate
+       (internal-definition-context-introduce intdef #'add1-indirect 'add)
+       #f
+       (list intdef)))
+    #`'#,(indirect-rename-transformer? value))
+  (define result (m)))
+
+(test #t dynamic-require ''syntax-local-value-free-id-context 'result)
+
+;; ----------------------------------------
+;; Ensure the expansion of a rename transformer is not `syntax-original?`
+
+(module rename-transformer-introduction-scope racket/base
+  (require (for-syntax racket/base))
+  (provide sym free-id=? original? sameloc?
+           set-sym set-free-id=? set-original? set-sameloc?)
+  (define x #f)
+  (define-syntax y (make-rename-transformer #'x))
+  (define-syntax (m stx)
+    (define orig-y #'y)
+    (define expanded-y (syntax-local-introduce (local-expand orig-y 'expression '())))
+    (define expanded-set-y (syntax-local-introduce (local-expand #`(set! #,orig-y 5) 'expression '())))
+    (define (same-srcloc? a b) (and (equal? (syntax-source a) (syntax-source b))
+                                    (equal? (syntax-line a) (syntax-line b))
+                                    (equal? (syntax-column a) (syntax-column b))))
+    (syntax-case expanded-set-y ()
+      [(_ set!ed-y _)
+       #`(values '#,(syntax-e expanded-y)
+                 '#,(free-identifier=? expanded-y #'x)
+                 '#,(syntax-original? expanded-y)
+                 '#,(same-srcloc? expanded-y orig-y)
+                 '#,(syntax-e #'set!ed-y)
+                 '#,(free-identifier=? #'set!ed-y #'x)
+                 '#,(syntax-original? #'set!ed-y)
+                 '#,(same-srcloc? #'set!ed-y orig-y))]))
+  (define-values (sym free-id=? original? sameloc?
+                      set-sym set-free-id=? set-original? set-sameloc?)
+    (m)))
+
+(test 'x dynamic-require ''rename-transformer-introduction-scope 'sym)
+(test #t dynamic-require ''rename-transformer-introduction-scope 'free-id=?)
+(test #f dynamic-require ''rename-transformer-introduction-scope 'original?)
+(test #t dynamic-require ''rename-transformer-introduction-scope 'sameloc?)
+
+(test 'x dynamic-require ''rename-transformer-introduction-scope 'set-sym)
+(test #t dynamic-require ''rename-transformer-introduction-scope 'set-free-id=?)
+(test #f dynamic-require ''rename-transformer-introduction-scope 'set-original?)
+(test #t dynamic-require ''rename-transformer-introduction-scope 'set-sameloc?)
+
+;; ----------------------------------------
+;; Make sure replacing scopes of binding on reference does not
+;; turn a non-`syntax-original?` identifier into a `syntax-original?`
+;; one
+
+(let ([m #'(module m racket/base
+             (let ()
+               (define x 10)
+               (define-syntax y
+                 (syntax-rules ()
+                   [(_) x]))
+               (+ (y)
+                  x)))])
+  (define found-it? #f)
+  (define (check s)
+    (cond
+      [(syntax? s)
+       (when (and (syntax-original? s)
+                  (eq? (syntax-e s) 'x))
+         (test #f = (syntax-line s) (+ (syntax-line m) 6))
+         (when (= (syntax-line s) (+ (syntax-line m) 7))
+           (set! found-it? #t)))
+       (check (syntax-e s))]
+    [(pair? s)
+     (check (car s))
+     (check (cdr s))]))
+  (check (expand m))
+  (test #t values found-it?))
+
+;; ----------------------------------------
+;; Make sure that `block` forces an expression context with #%expression
+
+(let ()
+  (define-syntax-rule (m x) (set! x 'outer))
+  (define res #f)
+  (let ()
+    (block
+      (m res))
+    (define-syntax-rule (m x) (set! x 'inner))
+    (void))
+  (test 'inner values res))
+
+;; ----------------------------------------
+;; Make sure that `block` works normally in a non-expression context
+(let ()
+  (block
+    ; ensure forward references work
+    (define (f x) (g x))
+    ; ensure definition splices
+    (define-syntax-rule (def-g name)
+      (define (name x) (h x)))
+    ; ensure use-site binder doesn't capture
+    (define-syntax-rule (def-h name arg)
+      (define (name x)
+        (let ([arg 'bad])
+          x)))
+    (def-g g)
+    (def-h h x)
+    (test 'ok values (f 'ok))))
+
+;; ----------------------------------------
+;; Make sure that `local` works normally in a non-expression context
+
+(require racket/local)
+(let ()
+  (local [; ensure forward references work
+          (define (f x) (g x))
+          ; ensure definition splices
+          (define-syntax-rule (def-g name)
+            (define (name x) x))
+          ; ensure use-site binder doesn't capture
+          (define-syntax-rule (def-h name arg)
+            (define (name x)
+              (let ([arg 'bad])
+                x)))
+          (def-g g)
+          (def-h h x)]
+    (test 'ok values (f 'ok))))
+
 
 (report-errs)

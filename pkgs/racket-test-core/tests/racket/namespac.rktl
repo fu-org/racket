@@ -109,7 +109,7 @@
 
 (arity-test namespace-mapped-symbols 0 1)
 (arity-test namespace-variable-value 1 4)
-(arity-test namespace-set-variable-value! 2 4)
+(arity-test namespace-set-variable-value! 2 5)
 (arity-test namespace-undefine-variable! 1 2)
 
 (define n (make-base-namespace))
@@ -142,6 +142,21 @@
   (test 27 namespace-variable-value 'bar)
   (test (void) namespace-undefine-variable! 'bar)
   (test 28 namespace-variable-value 'bar #t (lambda () 28)))
+
+;; ----------------------------------------
+
+(test #f
+      variable-reference->module-path-index (#%variable-reference test))
+(test (module-path-index-join ''#%kernel #f)
+      variable-reference->module-path-index (#%variable-reference +))
+(require (only-in racket/unsafe/ops
+                  [unsafe-fx+ $$unsafe-fx+]))
+(test (module-path-index-join ''#%unsafe #f)
+      variable-reference->module-path-index (#%variable-reference $$unsafe-fx+))
+
+(test #t variable-reference-constant? (#%variable-reference cons))
+(require (only-in ffi/unsafe _bool))
+(test #t variable-reference-constant? (#%variable-reference _bool))
 
 ;; ----------------------------------------
 
@@ -297,6 +312,39 @@
   (err/rt-test (eval '(define + -)) #rx"cannot change constant"))
 
 ;; ----------------------------------------
+;; Check that `namespace-require/copy` does define variables
+;; but doesn't bind as required
+
+(parameterize ([current-namespace (make-base-empty-namespace)])
+  (namespace-require/copy 'racket/base)
+  (test (void) eval '(void))
+  (test #f identifier-binding (namespace-syntax-introduce (datum->syntax #f 'void)))
+  (test #t list? (identifier-binding (namespace-syntax-introduce (datum->syntax #f 'lambda)))))
+
+;; ----------------------------------------
+;; Check that `namespace-require/copy` works with complex module specs
+
+(let ()
+  (define ns (make-base-namespace))
+  (eval '(module m racket/base
+           (provide y x)
+           (define-syntax-rule (y) 8)
+           (define x 5))
+        ns)
+  (namespace-require/copy '(for-meta 0 'm) ns)
+  (test 5 eval 'x ns))
+
+;; ----------------------------------------
+;; Check that `namespace-require/copy` works at compile time
+
+(let-syntax ([m (lambda (stx)
+                  (define ns (make-base-empty-namespace))
+                  (parameterize ([current-namespace ns])
+                    (namespace-require/copy 'racket/base)
+                    #`#,(eval '(+ 1 2))))])
+  (test 3 values (m)))
+
+;; ----------------------------------------
 ;; Check that bulk `require` replaces individual bindings
 
 (let ([ns (make-base-empty-namespace)])
@@ -417,6 +465,21 @@
                    (define id gen))]))))
   (eval '(m3 self))
   (test #t eval '(eq? self (self))))
+
+;; ----------------------------------------
+
+(module check-module-path-index-inside-and-outside racket/base
+  (provide get)
+  (define me 5)
+  (define (get)
+    (define-values (path1 base1) (module-path-index-split (car (identifier-binding #'me))))
+    (define-values (path2 base2)
+      (eval '(module-path-index-split (car (identifier-binding #'me)))
+            (variable-reference->namespace (#%variable-reference))))
+    (list (list path1 base1) (list path2 base2))))
+
+(test '(('check-module-path-index-inside-and-outside #f) (#f #f))
+      (dynamic-require ''check-module-path-index-inside-and-outside 'get))
 
 ;; ----------------------------------------
 

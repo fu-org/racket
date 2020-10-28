@@ -22,7 +22,8 @@
 (define (test-set-balance as bs cs ds
 			  sa sb sc sd
 			  a% b% c% d%)
-  (when (equal? "" Section-prefix)
+  (when (and (run-unreliable-tests? 'timing)
+             (equal? "" Section-prefix))
     (let ([a (box 0)]
           [b (box 0)]
           [c (box 0)]
@@ -52,7 +53,7 @@
             [vc (unbox c)]
             [vd (unbox d)])
         (define (roughly= x y)
-          (<= (* (- x 1) 0.9) y (* (+ x 1) 1.1)))
+          (<= (- (* (- x 1) 0.9) 10) y (+ (* (+ x 1) 1.1) 10)))
 
         (test #t roughly= vb (* b% va))
         (test #t roughly= vc (* c% va))
@@ -152,7 +153,9 @@
 (test #f eq? start result)
 (test #t thread-running? th1)
 (test #f thread-dead? th1)
+(test #f custodian-shut-down? cm)
 (custodian-shutdown-all cm)
+(test #t custodian-shut-down? cm)
 (thread-wait th1)
 (set! start result)
 (test #f thread-running? th1)
@@ -172,6 +175,24 @@
 
 (err/rt-test (parameterize ([current-custodian cm]) (kill-thread (current-thread)))
 	     exn:application:mismatch?)
+
+;; Make sure a custodian is not retained just because there's
+;; a limit when it has no managed objects that can contribute
+;; to that limit
+(unless (eq? 'cgc (system-type 'gc))
+  (define c (make-custodian))
+  (define b (make-weak-box c))
+  (define c2 (make-custodian c))
+  (define cb (make-custodian-box c 'ok))
+  (define bb (make-weak-box cb))
+  (custodian-limit-memory c 10000000 c)
+  (set! c #f)
+  (set! c2 #f)
+  (set! cb #f)
+  (for ([i 3])
+    (collect-garbage))
+  (test #f weak-box-value b)
+  (test #f weak-box-value bb))
 
 (test #t custodian? cm)
 (test #f custodian? 1)
@@ -194,6 +215,49 @@
 (err/rt-test (break-thread (current-thread)) exn:break?)
 (err/rt-test (break-thread (current-thread) 'hang-up) exn:break:hang-up?)
 (err/rt-test (break-thread (current-thread) 'terminate) exn:break:terminate?)
+
+(let ([bad? #f])
+  (define t
+    (thread
+     (lambda ()
+       (let/ec k
+         (parameterize-break #f
+           (break-thread (current-thread))
+           (k #f)))
+       (set! bad? #t))))
+  (sync t)
+  (test #f 'escape bad?))
+
+(let ([bad? #f])
+  (define t
+    (thread
+     (lambda ()
+       (let/cc k
+         (parameterize-break #f
+           (break-thread (current-thread))
+           (k #f)))
+       (set! bad? #t))))
+  (sync t)
+  (test #f 'escape/cc bad?))
+
+(let ([bad? #f])
+  (define t
+    (thread
+     (lambda ()
+       (define jump-k #f)
+       (parameterize-break #f
+         ((let/cc k
+            (set! jump-k k)
+            void)
+          #f))
+       (let/cc k
+         (parameterize-break #f
+           (break-thread (current-thread))
+           (jump-k k)))
+       (set! bad? #t))))
+  (sync t)
+  (test #f 'jump-in bad?))
+
 
 (let ([ex? #f]
       [s (make-semaphore)])
@@ -555,7 +619,11 @@
 	  (sleep)
 	  'not-void)))
 
-(err/rt-test (let/cc k (call-in-nested-thread (lambda () (k)))) exn:fail:contract:continuation?)
+(err/rt-test (call-with-continuation-barrier
+              (lambda ()
+                (let/cc k (call-in-nested-thread (lambda () (k)))) exn:fail:contract:continuation?)))
+(test 1 call-with-continuation-prompt (lambda ()
+                                        (let/cc k (call-in-nested-thread (lambda () (k 1))))))
 (err/rt-test (let/ec k (call-in-nested-thread (lambda () (k)))) exn:fail:contract:continuation?)
 (err/rt-test ((call-in-nested-thread (lambda () (let/cc k k)))) exn:fail:contract:continuation?)
 (err/rt-test ((call-in-nested-thread (lambda () (let/ec k k)))) exn:fail:contract:continuation?)
@@ -625,7 +693,7 @@
   (let ([t (thread
 	    (lambda ()
 	      (sync s-t)))]
-  [portnum (listen-port l)] ; so parallel tests work ok
+        [portnum (listen-port l)] ; so parallel tests work ok
 	[orig-thread (current-thread)])
     (let-values ([(r w) (make-pipe)])
       
@@ -728,6 +796,7 @@
 		(loop))))
 
 	  (close-output-port sw)
+	  (test cr sync cr)
 	  (test cr sync s t l sr cr)
 	  (test cr sync s t l sr cr)
 
@@ -995,9 +1064,10 @@
        [loop (lambda ()
 	       (let loop ()
 		 (set! v (add1 v))
-		 (sync (car all-ticks))
-                 (set! all-ticks (cdr all-ticks))
-                 (loop)))]
+                 (unless (null? all-ticks)
+                   (sync (car all-ticks))
+                   (set! all-ticks (cdr all-ticks))
+                   (loop))))]
        [c0 (make-custodian)])
   (let ([try
 	 (lambda (resumable?)
@@ -1250,10 +1320,23 @@
       (collect-garbage)
       (plumber-flush-all c)
       (test 6 values done)
-      (set! h #f)
+      (test #t plumber-flush-handle? h)
       (collect-garbage)
       (plumber-flush-all c)
       (test 6 values done))))
+
+;; Make sure plumbers don't suffer a key-in-value leak:
+(unless (eq? 'cgc (system-type 'gc))
+  (define p (make-plumber))
+  (define fh
+    (plumber-add-flush! (current-plumber)
+                        (lambda (fh) p)
+                        ;; weak:
+                        #t))
+  (plumber-add-flush! p (lambda (fh2) fh))
+  (define wb (make-weak-box p))
+  (collect-garbage)
+  (test #f weak-box-value wb))
 
 ;; ----------------------------------------
 
@@ -1456,8 +1539,8 @@
   (run #t))
 
 ;; Make sure that transitive thread-resume keeps a weak link
-;; when thread is blocked (but only test under 3m):
-(when (regexp-match #rx"3m" (path->bytes (system-library-subpath)))
+;; when thread is blocked
+(unless (eq? 'cgc (system-type 'gc))
   (let ([run
          (lambda (suspend-first?)
            (let ([done (make-semaphore)])

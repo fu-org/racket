@@ -12,6 +12,12 @@
 ;; Notes on shared library versions when provided by OS
 ;; ie, VERSION s.t. OS provides "lib{crypto,ssl}.{so,dylib}.$VERSION"
 ;;
+;; As of 1.0.0, OpenSSL has adopted a friendlier version policy (see
+;; https://www.openssl.org/policies/releasestrat.html), and recent
+;; Linux distros (eg Fedora 27, Debian 9.3 ("stretch")) seem to be
+;; using (more) compatible .so versions.
+;;
+;; Notes on older versions:
 ;; - Debian and Ubuntu use a few fixed library versions even though
 ;;   actual OpenSSL version changes:
 ;;   - Debian squeeze: lib{crypto,ssl}.so.0.9.8
@@ -24,20 +30,37 @@
 ;;   - Fedora 21: lib{crypto,ssl}.so.1.0.1j, also lib{crypto,ssl}.so.10
 ;;   - Fedora 22: lib{crypto,ssl}.so.1.0.1k, also lib{crypto,ssl}.so.10
 ;;   - Fedora also provides a versionless library in pkg "openssl-devel"
-;; - Mac OS includes 0.9.8, 0.9.7, and versionless
+;; - Mac OS includes 0.9.8, 0.9.7, and versionless, but as of 10.15 the
+;;   versionless dylib and will abort with the following error:
+;;   "Invalid dylib load. Clients should not load the unversioned libcrypto
+;;   dylib as it does not have a stable ABI."
 
 (define openssl-lib-versions
-  '(;; Versionless (eg from devel pkg)
-    ""
+  (let
+    ([versions
+      '("1.1"
+        "1.0.2"
 
-    ;; Compatibility-based version / SONAME
-    "10"     ;; Fedora
-    "1.0.0"  ;; Debian, Ubuntu
+        ;; Compatibility-based version / SONAME
+        "10"     ;; Fedora
+        "1.0.0"  ;; Debian, Ubuntu
 
-    ;; Other specific known versions
-    "1.0.1k" "1.0.1j" "1.0.1g" "1.0.1e"
-    "1.0" "1.0.0" "1.0.0e" "1.0.0d" "1.0.0c" "1.0.0b" "1.0.0a"
-    "0.9.8e" "0.9.8b" "0.9.8" "0.9.7"))
+        ;; Other specific known versions
+        "1.0.1k" "1.0.1j" "1.0.1g" "1.0.1e"
+        "1.0" "1.0.0" "1.0.0e" "1.0.0d" "1.0.0c" "1.0.0b" "1.0.0a"
+        "0.9.8e" "0.9.8b" "0.9.8" "0.9.7"
+
+        ;; Known versions for *BSD variants
+        "111")])
+    ;; Don't use the versionless dylib on macOS, as it aborts on 10.15
+    (case (system-type)
+      [(macosx) versions]
+      [else
+       (case (path->string (system-library-subpath #f))
+         [("x86_64-darwin" "i386-darwin") versions]
+         [else
+          (cons "" ; versionless (eg from devel pkg)
+                versions)])])))
 
 (define libcrypto-load-fail-reason #f)
 
@@ -48,8 +71,8 @@
   (case (if runtime? (system-type) (cross-system-type))
     [(windows) '(so "libeay32")]
     [(macosx)
-     ;; Version "1.0.0" is bundled with Racket
-     '(so "libcrypto" ("1.0.0" #f))]
+     ;; Version "1.1" is bundled with Racket
+     '(so "libcrypto" ("1.1" #f))]
     [else '(so "libcrypto")]))
 
 (define libcrypto

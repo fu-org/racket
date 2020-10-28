@@ -5,6 +5,7 @@
                      syntax/keyword
                      racket/syntax
                      "minimatch.rkt"
+                     "datum-to-expr.rkt"
                      "rep-attrs.rkt"
                      "rep-data.rkt"
                      "rep-patterns.rkt"
@@ -17,7 +18,7 @@
          racket/stxparam
          syntax/stx
          syntax/parse/private/residual ;; keep abs. path
-         syntax/parse/private/runtime  ;; keep abs.path 
+         "runtime.rkt"
          syntax/parse/private/runtime-reflect) ;; keep abs. path
 
 ;; ============================================================
@@ -53,16 +54,17 @@
         (let-values ([(name formals arity)
                       (let ([p (check-stxclass-header #'header stx)])
                         (values (car p) (cadr p) (caddr p)))])
-          (let ([the-rhs (parse-rhs #'rhss #f splicing? #:context stx)])
+          (let ([the-rhs (parse-rhs #'rhss splicing? #:context stx
+                                    #:default-description (symbol->string (syntax-e name)))])
             (with-syntax ([name name]
                           [formals formals]
-                          [desc (cond [(rhs-description the-rhs) => constant-desc]
-                                      [else (symbol->string (syntax-e name))])]
+                          [desc (cond [(rhs-description the-rhs) => constant-desc] [else #f])]
                           [parser (generate-temporary (format-symbol "parse-~a" name))]
                           [arity arity]
                           [attrs (rhs-attrs the-rhs)]
                           [commit? (rhs-commit? the-rhs)]
-                          [delimit-cut? (rhs-delimit-cut? the-rhs)])
+                          [delimit-cut? (rhs-delimit-cut? the-rhs)]
+                          [the-rhs-expr (datum->expression the-rhs)])
               #`(begin (define-syntax name
                          (stxclass 'name 'arity
                                    'attrs
@@ -71,7 +73,7 @@
                                    (scopts (length 'attrs) 'commit? 'delimit-cut? desc)
                                    #f))
                        (define-values (parser)
-                         (parser/rhs name formals attrs rhss #,splicing? #,stx)))))))])))
+                         (parser/rhs name formals attrs the-rhs-expr #,splicing? #,stx)))))))])))
 
 (define-syntax define-syntax-class
   (lambda (stx) (tx:define-*-syntax-class stx #f)))
@@ -89,21 +91,23 @@
                             #f
                             (scopts 0 #t #t 'description)
                             (quote-syntax predicate)))
-                (define (parser x cx pr es fh0 cp0 rl success)
+                (define (parser x cx pr es undos fh0 cp0 rl success)
                   (if (predicate x)
-                      (success fh0)
+                      (success fh0 undos)
                       (let ([es (es-add-thing pr 'description #t rl es)])
-                        (fh0 (failure* pr es)))))))]))
+                        (fh0 undos (failure* pr es)))))))]))
 
 (define-syntax (parser/rhs stx)
   (syntax-case stx ()
-    [(parser/rhs name formals relsattrs rhss splicing? ctx)
+    [(parser/rhs name formals relsattrs the-rhs-expr splicing? ctx)
      (with-disappeared-uses
       (let ()
         (define the-rhs
           (parameterize ((current-syntax-context #'ctx))
-            (parse-rhs #'rhss (syntax->datum #'relsattrs) (syntax-e #'splicing?)
-                       #:context #'ctx)))
+            (fixup-rhs (syntax-local-eval
+                        (syntax-local-introduce #'the-rhs-expr))
+                       (syntax-e #'splicing?)
+                       (syntax->datum #'relsattrs))))
         (rhs->parser #'name #'formals #'relsattrs the-rhs (syntax-e #'splicing?) #'ctx)))]))
 
 (begin-for-syntax
@@ -151,11 +155,11 @@
    (with-syntax ([formals* formals*]
                  [(def ...) defs]
                  [((vdef ...) ...) vdefss]
-                 [description (or description (symbol->string (syntax-e name)))]
+                 [description description]
                  [transparent? transparent?]
                  [delimit-cut? delimit-cut?]
                  [body body])
-     #`(lambda (x cx pr es fh0 cp0 rl success . formals*)
+     #`(lambda (x cx pr es undos fh0 cp0 rl success . formals*)
          (with ([this-syntax x]
                 [this-role rl])
                def ...
@@ -168,7 +172,8 @@
                                           #,(if no-fail? #'#f #'es))]
                         [pr (if 'transparent? pr (ps-add-opaque pr))])
                     (with ([fail-handler fh0]
-                           [cut-prompt cp0])
+                           [cut-prompt cp0]
+                           [undo-stack undos])
                       ;; Update the prompt, if required
                       ;; FIXME: can be optimized away if no cut exposed within variants
                       (with-maybe-delimit-cut delimit-cut?
@@ -210,6 +215,7 @@
                                          #:splicing? #f
                                          #:decls (new-declenv null)
                                          #:context stx)])
+        (define no-fail? (patterns-cannot-fail? (list pattern)))
         (let ([expr
                (syntax-case rest ()
                  [( expr ) #'expr]
@@ -218,19 +224,24 @@
           (with-syntax ([(a ...) attrs]
                         [(#s(attr name _ _) ...) attrs]
                         [pattern pattern]
+                        [es0 (if no-fail? #'#f #'#t)]
                         [(def ...) defs]
                         [expr expr])
             #'(defattrs/unpack (a ...)
                 (let* ([x (datum->syntax #f expr)]
                        [cx x]
                        [pr (ps-empty x x)]
-                       [es #f]
-                       [fh0 (syntax-patterns-fail x)])
+                       [es es0]
+                       [fh0 (syntax-patterns-fail
+                             (normalize-context 'define/syntax-parse
+                                                '|define/syntax-parse pattern|
+                                                x))])
                   (parameterize ((current-syntax-context x))
                     def ...
                     (#%expression
                      (with ([fail-handler fh0]
-                            [cut-prompt fh0])
+                            [cut-prompt fh0]
+                            [undo-stack null])
                            (parse:S x cx pattern pr es
                                     (list (attribute name) ...)))))))))))]))
 
@@ -251,17 +262,23 @@ Parsing protocols:
   pr, es are progress and expectstack, respectively
   rest-x, rest-cx, rest-pr are variable names to bind in context of success-expr
 
-(stxclass-parser x cx pr es fail-handler cut-prompt role success-proc arg ...) : Ans
+(stxclass-parser x cx pr es undos fail-handler cut-prompt role success-proc arg ...) : Ans
 
   success-proc:
-    for stxclass, is (fail-handler attr-value ... -> Ans)
-    for splicing-stxclass, is (fail-handler rest-x rest-cx rest-pr attr-value -> Ans)
-  fail-handler, cut-prompt : failure -> Ans
+    for stxclass, is (fail-handler undos attr-value ... -> Ans)
+    for splicing-stxclass, is (undos fail-handler rest-x rest-cx rest-pr attr-value -> Ans)
+  fail-handler, cut-prompt : undos failure -> Ans
 
 Fail-handler is normally represented with stxparam 'fail-handler', but must be
 threaded through stxclass calls (in through stxclass-parser, out through
 success-proc) to support backtracking. Cut-prompt is never changed within
 stxclass or within alternative, so no threading needed.
+
+The undo stack is normally represented with stxparam 'undo-stack', but must be
+threaded through stxclass calls (like fail-handler). A failure handler closes
+over a base undo stack and receives an extended current undo stack; the failure
+handler unwinds effects by performing every action in the difference between
+them and then restores the saved undo stack.
 
 Usually sub-patterns processed in tail position, but *can* do non-tail calls for:
   - ~commit
@@ -368,7 +385,7 @@ Conventions:
             (reorder-iattrs (wash-sattrs #'relsattrs)
                             (wash-iattrs #'iattrs))])
        (with-syntax ([(#s(attr name _ _) ...) reliattrs])
-         #'(success fail-handler also ... (attribute name) ...)))]))
+         #'(success fail-handler undo-stack also ... (attribute name) ...)))]))
 
 ;; ----
 
@@ -393,8 +410,11 @@ Conventions:
           (options-select-value chunks '#:context #:default #'x))
         (define colon-notation?
           (not (assq '#:disable-colon-notation chunks)))
+        (define track-literals?
+          (or (assq '#:track-literals chunks)
+              (eq? (syntax-e #'body-mode) 'one-template)))
         (define-values (decls0 defs)
-          (get-decls+defs chunks #t #:context #'ctx))
+          (get-decls+defs chunks #:context #'ctx))
         ;; for-clause : stx -> (values pattern stx (listof stx))
         (define (for-clause clause)
           (syntax-case clause ()
@@ -414,13 +434,16 @@ Conventions:
                            [_ (raise-syntax-error #f "expected exactly one template" #'ctx)]))
                         ((body-sequence)
                          (syntax-case rest ()
-                           [(e0 e ...) #'(let () e0 e ...)]
+                           [(e0 e ...)
+                            #'(let () e0 e ...)]
                            [_ (raise-syntax-error #f "expected non-empty clause body"
                                                   #'ctx clause)]))
                         (else
                          (raise-syntax-error #f "internal error: unknown body mode" #'ctx #'body-mode)))])
                  (values pattern body-expr defs2)))]
             [_ (raise-syntax-error #f "expected clause" #'ctx clause)]))
+        (define (wrap-track-literals stx)
+          (if track-literals? (quasisyntax/loc stx (track-literals '#,who #,stx)) stx))
         (unless (stx-list? clauses-stx)
           (raise-syntax-error #f "expected sequence of clauses" #'ctx))
         (define-values (patterns body-exprs defs2s)
@@ -435,25 +458,29 @@ Conventions:
                    [cx x]
                    [fh0 (syntax-patterns-fail ctx0)])
               def ...
-              (parameterize ((current-syntax-context (cadr ctx0)))
-                (with ([fail-handler fh0]
-                       [cut-prompt fh0])
-                  #,(cond [(pair? patterns)
-                           (with-syntax ([matrix
-                                          (optimize-matrix
-                                           (for/list ([pattern (in-list patterns)]
-                                                      [body-expr (in-list body-exprs)])
-                                             (pk1 (list pattern) body-expr)))])
-                             #'(parse:matrix ((x cx pr es)) matrix))
-                           #|
-                           (with-syntax ([(alternative ...)
-                                          (for/list ([pattern (in-list patterns)]
-                                                     [body-expr (in-list body-exprs)])
-                                            #`(parse:S x cx #,pattern pr es #,body-expr))])
-                             #`(try alternative ...))
-                           |#]
-                          [else
-                           #`(fail (failure* pr es))]))))))))]))
+              (parameterize ((current-syntax-context (cadr ctx0))
+                             (current-state '#hasheq())
+                             (current-state-writable? #f))
+                #,(wrap-track-literals
+                 #`(with ([fail-handler fh0]
+                          [cut-prompt fh0]
+                          [undo-stack null])
+                     #,(cond [(pair? patterns)
+                              (with-syntax ([matrix
+                                             (optimize-matrix
+                                              (for/list ([pattern (in-list patterns)]
+                                                         [body-expr (in-list body-exprs)])
+                                                (pk1 (list pattern) body-expr)))])
+                                #'(parse:matrix ((x cx pr es)) matrix))
+                              #|
+                              (with-syntax ([(alternative ...)
+                                             (for/list ([pattern (in-list patterns)]
+                                                        [body-expr (in-list body-exprs)])
+                                               #`(parse:S x cx #,pattern pr es #,body-expr))])
+                                #`(try alternative ...))
+                              |#]
+                             [else
+                              #`(fail (failure* pr es))])))))))))]))
 
 ;; ----
 
@@ -462,7 +489,7 @@ Conventions:
 ;; represents the matching matrix
 ;;   [_in1_..._inN_|____]
 ;;   [ P11 ... P1N | e1 ]
-;;   [  ⋮       ⋮  |  ⋮ ]
+;;   [  :       :  |  : ]
 ;;   [ PM1 ... PMN | eM ]
 
 (define-syntax (parse:matrix stx)
@@ -512,11 +539,8 @@ Conventions:
   (syntax-case stx ()
     [(parse:S x cx pattern0 pr es k)
      (syntax-case #'pattern0 ()
-       [#s(internal-rest-pattern rest-x rest-cx rest-pr)
-        #`(let ([rest-x x]
-                [rest-cx cx]
-                [rest-pr pr])
-            k)]
+       [#s(pat:seq-end)
+        #`(k x cx pr)]
        [#s(pat:any)
         #'k]
        [#s(pat:svar name)
@@ -531,26 +555,31 @@ Conventions:
                            #'())])
           (if (not (syntax-e #'commit?))
               ;; The normal protocol
-              #'(app-argu parser x cx pr es fail-handler cut-prompt role
-                          (lambda (fh av ...)
+              #'(app-argu parser x cx pr es undo-stack fail-handler cut-prompt role
+                          (lambda (fh undos av ...)
                             (let-attributes (name-attr ...)
                               (let-attributes* ((nested-a ...) (av ...))
-                                (with ([fail-handler fh])
+                                (with ([fail-handler fh] [undo-stack undos])
                                   k))))
                           argu)
               ;; The commit protocol
               ;; (Avoids putting k in procedure)
-              #'(let-values ([(fs av ...)
-                              (with ([fail-handler (lambda (fs) (values fs (let ([av #f]) av) ...))])
+              #'(let-values ([(fs undos av ...)
+                              (with ([fail-handler
+                                      (lambda (undos fs)
+                                        (unwind-to undos undo-stack)
+                                        (values fs undo-stack (let ([av #f]) av) ...))])
                                 (with ([cut-prompt fail-handler])
-                                  (app-argu parser x cx pr es fail-handler cut-prompt role
-                                            (lambda (fh av ...) (values #f av ...))
+                                  (app-argu parser x cx pr es undo-stack
+                                            fail-handler cut-prompt role
+                                            (lambda (fh undos av ...) (values #f undos av ...))
                                             argu)))])
                   (if fs
                       (fail fs)
                       (let-attributes (name-attr ...)
                         (let-attributes* ((nested-a ...) (av ...))
-                          k))))))]
+                          (with ([undo-stack undos])
+                            k)))))))]
        [#s(pat:reflect obj argu attr-decls name (nested-a ...))
         (with-syntax ([(name-attr ...)
                        (if (identifier? #'name)
@@ -558,11 +587,11 @@ Conventions:
                            #'())])
           (with-syntax ([arity (arguments->arity (syntax->datum #'argu))])
             #'(let ([parser (reflect-parser obj 'arity 'attr-decls #f)])
-                (app-argu parser x cx pr es fail-handler cut-prompt #f
-                          (lambda (fh . result)
+                (app-argu parser x cx pr es undo-stack fail-handler cut-prompt #f
+                          (lambda (fh undos . result)
                             (let-attributes (name-attr ...)
                               (let/unpack ((nested-a ...) result)
-                                (with ([fail-handler fh])
+                                (with ([fail-handler fh] [undo-stack undos])
                                   k))))
                           argu))))]
        [#s(pat:datum datum)
@@ -577,7 +606,9 @@ Conventions:
        [#s(pat:literal literal input-phase lit-phase)
         #`(if (and (identifier? x)
                    (free-identifier=? x (quote-syntax literal) input-phase lit-phase))
-              k
+              (with ([undo-stack (cons (current-state) undo-stack)])
+                (state-cons! 'literals x)
+                k)
               (fail (failure* pr (es-add-literal (quote-syntax literal) es))))]
        [#s(pat:action action subpattern)
         #'(parse:A x cx action pr es (parse:S x cx subpattern pr es k))]
@@ -592,9 +623,9 @@ Conventions:
        [#s(pat:or (a ...) (subpattern ...) (subattrs ...))
         (with-syntax ([(#s(attr id _ _) ...) #'(a ...)])
           #`(let ([success
-                   (lambda (fh id ...)
+                   (lambda (fh undos id ...)
                      (let-attributes ([a id] ...)
-                       (with ([fail-handler fh])
+                       (with ([fail-handler fh] [undo-stack undos])
                          k)))])
               (try (parse:S x cx subpattern pr es
                             (disjunct subattrs success () (id ...)))
@@ -604,14 +635,14 @@ Conventions:
                  [pr0 pr]
                  [es0 es]
                  [fail-to-succeed
-                  (lambda (fs) k)])
+                  (lambda (undos fs) (unwind-to undos undo-stack) k)])
             ;; ~not implicitly prompts to be safe,
             ;; but ~! not allowed within ~not (unless within ~delimit-cut, etc)
             ;; (statically checked!)
             (with ([fail-handler fail-to-succeed]
                    [cut-prompt fail-to-succeed]) ;; to be safe
               (parse:S x cx subpattern pr es
-                       (fh0 (failure* pr0 es0)))))]
+                       (fh0 undo-stack (failure* pr0 es0)))))]
        [#s(pat:pair head tail)
         #`(let ([datum (if (syntax? x) (syntax-e x) x)]
                 [cx (if (syntax? x) x cx)])  ;; FIXME: shadowing cx?!
@@ -681,7 +712,8 @@ Conventions:
               (if (predicate x*)
                   (let-attributes (name-attr ...) k)
                   (let ([es* (es-add-thing pr 'description #t role es)])
-                    (fail (failure* pr es*))))))])]))
+                    (fail (failure* pr es*))))))]
+       [_ (wrong-syntax stx "internal error: bad S pattern: ~e" #'pattern0)])]))
 
 ;; (first-desc:S S-pattern) : expr[FirstDesc]
 (define-syntax (first-desc:S stx)
@@ -717,6 +749,7 @@ Conventions:
   (syntax-case stx ()
     [(fdh hpat)
      (syntax-case #'hpat ()
+       [#s(hpat:single sp) #'(first-desc:S sp)]
        [#s(hpat:var/p _ _ _ _ _ #s(scopts _ _ _ desc)) #'(quote desc)]
        [#s(hpat:seq lp) #'(first-desc:L lp)]
        [#s(hpat:describe _hp desc _t? _r)
@@ -725,7 +758,7 @@ Conventions:
        [#s(hpat:commit hp) #'(first-desc:H hp)]
        [#s(hpat:ord hp _ _) #'(first-desc:H hp)]
        [#s(hpat:post hp) #'(first-desc:H hp)]
-       [_ #'(first-desc:S hpat)])]))
+       [_ #'#f])]))
 
 (define-syntax (first-desc:L stx)
   (syntax-case stx ()
@@ -742,7 +775,7 @@ Conventions:
        #`(let ([alt-sub-id (attribute sub-id)] ...)
            (let ([id #f] ...)
              (let ([sub-id alt-sub-id] ...)
-               (success fail-handler pre ... id ...)))))]))
+               (success fail-handler undo-stack pre ... id ...)))))]))
 
 ;; (parse:A x cx A-pattern pr es k) : expr[Ans]
 ;; In k: attrs(A-pattern) are bound.
@@ -770,34 +803,23 @@ Conventions:
                  [pr* (ps-add-stx pr y)])
             (parse:S y cy pattern pr* es k))]
        [#s(action:do (stmt ...))
-        #'(let () (no-shadow stmt) ... (#%expression k))]
+        #'(parameterize ((current-state-writable? #t))
+            (let ([init-state (current-state)])
+              (no-shadow stmt) ...
+              (parameterize ((current-state-writable? #f))
+                (with ([undo-stack (maybe-add-state-undo init-state (current-state) undo-stack)])
+                  (#%expression k)))))]
+       [#s(action:undo (stmt ...))
+        #'(with ([undo-stack (cons (lambda () stmt ... (void)) undo-stack)]
+                 [cut-prompt illegal-cut-error])
+            k)]
        [#s(action:ord pattern group index)
         #'(let ([pr* (ps-add pr '#s(ord group index))])
             (parse:A x cx pattern pr* es k))]
        [#s(action:post pattern)
         #'(let ([pr* (ps-add-post pr)])
-            (parse:A x cx pattern pr* es k))])]))
-
-(begin-for-syntax
- ;; convert-list-pattern : ListPattern id -> SinglePattern
- ;; Converts '() datum pattern at end of list to bind (cons stx index)
- ;; to rest-var.
- (define (convert-list-pattern pattern end-pattern)
-   (syntax-case pattern ()
-     [#s(pat:datum ())
-      end-pattern]
-     [#s(pat:action action tail)
-      (with-syntax ([tail (convert-list-pattern #'tail end-pattern)])
-        #'#s(pat:action action tail))]
-     [#s(pat:head head tail)
-      (with-syntax ([tail (convert-list-pattern #'tail end-pattern)])
-        #'#s(pat:head head tail))]
-     [#s(pat:dots head tail)
-      (with-syntax ([tail (convert-list-pattern #'tail end-pattern)])
-        #'#s(pat:dots head tail))]
-     [#s(pat:pair head-part tail-part)
-      (with-syntax ([tail-part (convert-list-pattern #'tail-part end-pattern)])
-        #'#s(pat:pair head-part tail-part))])))
+            (parse:A x cx pattern pr* es k))]
+       [_ (wrong-syntax stx "internal error: bad A pattern: ~e" #'pattern0)])]))
 
 ;; (parse:H x cx rest-x rest-cx rest-pr H-pattern pr es k)
 ;; In k: rest, rest-pr, attrs(H-pattern) are bound.
@@ -805,6 +827,11 @@ Conventions:
   (syntax-case stx ()
     [(parse:H x cx rest-x rest-cx rest-pr head pr es k)
      (syntax-case #'head ()
+       [#s(hpat:single pattern)
+        #'(parse:S x cx
+                   ;; FIXME: consider proper-list-pattern? (yes is consistent with ~seq)
+                   #s(pat:pair pattern #s(pat:seq-end))
+                   pr es (lambda (rest-x rest-cx rest-pr) k))]
        [#s(hpat:describe pattern description transparent? role)
         #`(let ([es* (es-add-thing pr description transparent? role es)]
                 [pr* (if 'transparent? pr (ps-add-opaque pr))])
@@ -821,27 +848,32 @@ Conventions:
                            #'())])
           (if (not (syntax-e #'commit?))
               ;; The normal protocol
-              #`(app-argu parser x cx pr es fail-handler cut-prompt role
-                          (lambda (fh rest-x rest-cx rest-pr av ...)
+              #`(app-argu parser x cx pr es undo-stack fail-handler cut-prompt role
+                          (lambda (fh undos rest-x rest-cx rest-pr av ...)
                             (let-attributes (name-attr ...)
                               (let-attributes* ((nested-a ...) (av ...))
-                                (with ([fail-handler fh])
+                                (with ([fail-handler fh] [undo-stack undos])
                                   k))))
                           argu)
               ;; The commit protocol
               ;; (Avoids putting k in procedure)
-              #'(let-values ([(fs rest-x rest-cx rest-pr av ...)
-                              (with ([fail-handler (lambda (fs) (values fs #f #f #f (let ([av #f]) av) ...))])
+              #'(let-values ([(fs undos rest-x rest-cx rest-pr av ...)
+                              (with ([fail-handler
+                                      (lambda (undos fs)
+                                        (unwind-to undos undo-stack)
+                                        (values fs undo-stack #f #f #f (let ([av #f]) av) ...))])
                                 (with ([cut-prompt fail-handler])
-                                  (app-argu parser x cx pr es fail-handler cut-prompt role
-                                            (lambda (fh rest-x rest-cx rest-pr av ...)
-                                              (values #f rest-x rest-cx rest-pr av ...))
+                                  (app-argu parser x cx pr es undo-stack
+                                            fail-handler cut-prompt role
+                                            (lambda (fh undos rest-x rest-cx rest-pr av ...)
+                                              (values #f undos rest-x rest-cx rest-pr av ...))
                                             argu)))])
                   (if fs
                       (fail fs)
                       (let-attributes (name-attr ...)
                         (let-attributes* ((nested-a ...) (av ...))
-                          k))))))]
+                          (with ([undo-stack undos])
+                            k)))))))]
        [#s(hpat:reflect obj argu attr-decls name (nested-a ...))
         (with-syntax ([(name-attr ...)
                        (if (identifier? #'name)
@@ -850,11 +882,11 @@ Conventions:
                            #'())])
           (with-syntax ([arity (arguments->arity (syntax->datum #'argu))])
             #'(let ([parser (reflect-parser obj 'arity 'attr-decls #t)])
-                (app-argu parser x cx pr es fail-handler cut-prompt #f
-                          (lambda (fh rest-x rest-cx rest-pr . result)
+                (app-argu parser x cx pr es undo-stack fail-handler cut-prompt #f
+                          (lambda (fh undos rest-x rest-cx rest-pr . result)
                             (let-attributes (name-attr ...)
                               (let/unpack ((nested-a ...) result)
-                                 (with ([fail-handler fh])
+                                 (with ([fail-handler fh] [undo-stack undos])
                                    k))))
                           argu))))]
        [#s(hpat:and head single)
@@ -865,19 +897,15 @@ Conventions:
        [#s(hpat:or (a ...) (subpattern ...) (subattrs ...))
         (with-syntax ([(#s(attr id _ _) ...) #'(a ...)])
           #`(let ([success
-                   (lambda (fh rest-x rest-cx rest-pr id ...)
+                   (lambda (fh undos rest-x rest-cx rest-pr id ...)
                      (let-attributes ([a id] ...)
-                       (with ([fail-handler fh])
+                       (with ([fail-handler fh] [undo-stack undos])
                          k)))])
               (try (parse:H x cx rest-x rest-cx rest-pr subpattern pr es
                             (disjunct subattrs success (rest-x rest-cx rest-pr) (id ...)))
                    ...)))]
        [#s(hpat:seq pattern)
-        (with-syntax ([pattern
-                       (convert-list-pattern
-                        #'pattern
-                        #'#s(internal-rest-pattern rest-x rest-cx rest-pr))])
-          #'(parse:S x cx pattern pr es k))]
+        #'(parse:S x cx pattern pr es (lambda (rest-x rest-cx rest-pr) k))]
        [#s(hpat:action action subpattern)
         #'(parse:A x cx action pr es (parse:H x cx rest-x rest-cx rest-pr subpattern pr es k))]
        [#s(hpat:delimit pattern)
@@ -911,7 +939,8 @@ Conventions:
                  [pr0 pr]
                  [es0 es]
                  [fail-to-succeed
-                  (lambda (fs)
+                  (lambda (undos fs)
+                    (unwind-to undos undo-stack)
                     (let ([rest-x x]
                           [rest-cx cx]
                           [rest-pr pr])
@@ -922,12 +951,8 @@ Conventions:
             (with ([fail-handler fail-to-succeed]
                    [cut-prompt fail-to-succeed]) ;; to be safe
               (parse:H x cx rest-x rest-cx rest-pr subpattern pr es
-                       (fh0 (failure* pr0 es0)))))]
-       [_
-        #'(parse:S x cx
-                   ;; FIXME: consider proper-list-pattern? (yes is consistent with ~seq)
-                   #s(pat:pair head #s(internal-rest-pattern rest-x rest-cx rest-pr))
-                   pr es k)])]))
+                       (fh0 undo-stack (failure* pr0 es0)))))]
+       [_ (wrong-syntax stx "internal error: bad H pattern: ~e" #'head)])]))
 
 ;; (parse:dots x cx EH-pattern S-pattern pr es k) : expr[Ans]
 ;; In k: attrs(EH-pattern, S-pattern) are bound.
@@ -935,14 +960,14 @@ Conventions:
   (syntax-case stx ()
     ;; == Specialized cases
     ;; -- (x ... . ())
-    [(parse:dots x cx (#s(ehpat (attr0) #s(pat:svar name) #f #f))
+    [(parse:dots x cx (#s(ehpat (attr0) #s(hpat:single #s(pat:svar name)) #f #f))
                  #s(pat:datum ()) pr es k)
      #'(let-values ([(status result) (predicate-ellipsis-parser x cx pr es void #f #f)])
          (case status
            ((ok) (let-attributes ([attr0 result]) k))
            (else (fail result))))]
     ;; -- (x:sc ... . ()) where sc is an integrable stxclass like id or expr
-    [(parse:dots x cx (#s(ehpat (attr0) #s(pat:integrated _name pred? desc role) #f #f))
+    [(parse:dots x cx (#s(ehpat (attr0) #s(hpat:single #s(pat:integrated _name pred? desc role)) #f #f))
                  #s(pat:datum ()) pr es k)
      #'(let-values ([(status result) (predicate-ellipsis-parser x cx pr es pred? desc role)])
          (case status
@@ -989,11 +1014,11 @@ Conventions:
                       tail-pattern-is-null?])
          (define/with-syntax alt-map #'((id . alt-id) ...))
          (define/with-syntax loop-k
-           #'(dots-loop dx* dcx* loop-pr* fail-handler rel-rep ... alt-id ...))
+           #'(dots-loop dx* dcx* loop-pr* undo-stack fail-handler rel-rep ... alt-id ...))
          #`(let ()
              ;; dots-loop : stx progress rel-rep ... alt-id ... -> Ans
-             (define (dots-loop dx dcx loop-pr fh rel-rep ... alt-id ...)
-               (with ([fail-handler fh])
+             (define (dots-loop dx dcx loop-pr undos fh rel-rep ... alt-id ...)
+               (with ([fail-handler fh] [undo-stack undos])
                  (try-or-pair/null-check do-pair/null? dx dcx loop-pr es
                    (try (parse:EH dx dcx loop-pr head-attrs check-null? head-repc dx* dcx* loop-pr* 
                                   alt-map head-rep head es loop-k)
@@ -1007,7 +1032,7 @@ Conventions:
                             (parse:S dx dcx tail loop-pr es k))]))))
              (let ([rel-rep 0] ...
                    [alt-id (rep:initial-value attr-repc)] ...)
-               (dots-loop x cx pr fail-handler rel-rep ... alt-id ...)))))]))
+               (dots-loop x cx pr undo-stack fail-handler rel-rep ... alt-id ...)))))]))
 
 ;; (try-or-pair/null-check bool x cx es pr pair-alt maybe-null-alt)
 (define-syntax try-or-pair/null-check
@@ -1138,20 +1163,22 @@ Conventions:
               [ehpat+hstx-list
                (apply append
                       (for/list ([alt (in-list alts)])
-                        (parse*-ellipsis-head-pattern alt decls #t #:context stx)))]
+                        (parse-EH-variant alt decls #t #:context stx)))]
               [eh-alt+defs-list
                (for/list ([ehpat+hstx (in-list ehpat+hstx-list)])
                  (let ([ehpat (car ehpat+hstx)]
                        [hstx (cadr ehpat+hstx)])
                    (cond [(syntax? hstx)
-                          (with-syntax ([(parser) (generate-temporaries '(eh-alt-parser))])
-                            (let ([attrs (iattrs->sattrs (pattern-attrs (ehpat-head ehpat)))])
-                              (list (eh-alternative (ehpat-repc ehpat) attrs #'parser)
-                                    (list #`(define parser
-                                              (parser/rhs parser () #,attrs
-                                                          [#:description #f (pattern #,hstx)]
-                                                          #t
-                                                          #,stx))))))]
+                          (define the-pattern (ehpat-head ehpat))
+                          (define attrs (iattrs->sattrs (pattern-attrs the-pattern)))
+                          (define the-variant (variant hstx attrs the-pattern null))
+                          (define the-rhs (rhs attrs #t #f (list the-variant) null #f #f))
+                          (with-syntax ([(parser) (generate-temporaries '(eh-alt-parser))]
+                                        [the-rhs-expr (datum->expression the-rhs)])
+                            (list (eh-alternative (ehpat-repc ehpat) attrs #'parser)
+                                  (list #`(define parser
+                                            (parser/rhs parser () #,attrs
+                                                        the-rhs-expr #t #,stx)))))]
                          [(eh-alternative? hstx)
                           (list hstx null)]
                          [else
@@ -1163,26 +1190,7 @@ Conventions:
                        [(alt-expr ...)
                         (for/list ([alt (in-list eh-alts)])
                           (with-syntax ([repc-expr
-                                         ;; repc structs are prefab; recreate using prefab
-                                         ;; quasiquote exprs to avoid moving constructors
-                                         ;; to residual module
-                                         (syntax-case (eh-alternative-repc alt) ()
-                                           [#f
-                                            #''#f]
-                                           [#s(rep:once n u o)
-                                            #'`#s(rep:once ,(quote-syntax n)
-                                                           ,(quote-syntax u)
-                                                           ,(quote-syntax o))]
-                                           [#s(rep:optional n o d)
-                                            #'`#s(rep:optional ,(quote-syntax n)
-                                                               ,(quote-syntax o)
-                                                               ,(quote-syntax d))]
-                                           [#s(rep:bounds min max n u o)
-                                            #'`#s(rep:bounds ,(quote min)
-                                                             ,(quote max)
-                                                             ,(quote-syntax n)
-                                                             ,(quote-syntax u)
-                                                             ,(quote-syntax o))])]
+                                         (datum->expression (eh-alternative-repc alt))]
                                         [attrs-expr
                                          #`(quote #,(eh-alternative-attrs alt))]
                                         [parser-expr

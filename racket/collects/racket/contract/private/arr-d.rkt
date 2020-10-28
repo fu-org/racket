@@ -545,7 +545,7 @@
       (if (base-->d-rest-ctc ctc)
           (check-procedure/more val mtd? dom-length mandatory-kwds optional-kwds #f #f)
           (check-procedure val mtd? dom-length optionals mandatory-kwds optional-kwds #f #f)))))
-(define (->d-stronger? this that) (eq? this that))
+(define (->d-equivalent? this that) (eq? this that))
 
 ;; in the struct type descriptions "d???" refers to the arguments (domain) of the function that
 ;; is under the contract, and "dr???" refers to the arguments & the results of the function that 
@@ -577,7 +577,9 @@
   #:property prop:custom-write custom-write-property-proc
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:late-neg-projection (late-neg-->d-proj impersonate-procedure)
    #:name (->d-name #|print-as-method-if-method?|# #t)
    #:first-order ->d-first-order
-   #:stronger ->d-stronger?))
+   #:equivalent ->d-equivalent?
+   #:stronger ->d-equivalent?))

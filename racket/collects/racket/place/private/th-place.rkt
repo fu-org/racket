@@ -1,7 +1,8 @@
 #lang racket/base
 (require (prefix-in pl- '#%place)
          '#%boot
-         (only-in '#%paramz parameterization-key make-custodian-from-main)
+         (only-in '#%paramz parameterization-key)
+         (only-in '#%unsafe unsafe-make-custodian-at-root)
          '#%place-struct
          racket/fixnum
          racket/flonum
@@ -11,7 +12,6 @@
 
 (provide th-dynamic-place
          ;th-dynamic-place*
-         th-place-sleep
          th-place-wait
          th-place-kill
          th-place-break
@@ -48,38 +48,39 @@
   (unless (symbol? funcname)
     (raise-argument-error 'dynamic-place "symbol?" 1 mod funcname))
   (define-values (pch cch) (th-place-channel))
-  (define cust (make-custodian-from-main))
+  (define cust (unsafe-make-custodian-at-root))
   (define cust-box (make-custodian-box cust #t))
   (define result-box (box 0))
   (define plumber (make-plumber))
   (define done? #f)
-  (define th (thread
-              (lambda ()
-                (with-continuation-mark
-                    parameterization-key
-                    orig-paramz
-                  (parameterize ([current-namespace (make-base-namespace)]
-                                 [current-custodian cust]
-                                 [exit-handler (lambda (v)
-                                                 (plumber-flush-all plumber)
-                                                 (set-box! result-box (if (byte? v) v 0))
-                                                 (custodian-shutdown-all cust))]
-                                 [current-plumber plumber])
-                    (dynamic-wind
-                     void
-                     (lambda ()
-                       ((dynamic-require mod funcname) cch)
-                       (plumber-flush-all plumber)
-                       (set! done? #t))
-                     (lambda ()
-                       (unless done?
-                         (set-box! result-box 1)))))))))
+  (define th
+    (parameterize ([current-custodian cust])
+      (thread
+       (lambda ()
+         (with-continuation-mark
+          parameterization-key
+          (get-original-parameterization)
+          (parameterize ([current-namespace (make-base-namespace)]
+                         [current-custodian cust]
+                         [exit-handler (lambda (v)
+                                         (plumber-flush-all plumber)
+                                         (set-box! result-box (if (byte? v) v 0))
+                                         (custodian-shutdown-all cust))]
+                         [current-plumber plumber])
+            (dynamic-wind
+             void
+             (lambda ()
+               ((dynamic-require mod funcname) cch)
+               (plumber-flush-all plumber)
+               (set! done? #t))
+             (lambda ()
+               (unless done?
+                 (set-box! result-box 1))))))))))
   (parameterize ([current-custodian cust])
     ;; When main thread ends, all threads, etc., should end:
     (thread (lambda () (thread-wait th) (custodian-shutdown-all cust))))
   (TH-place th pch cust cust-box result-box))
 
-(define (th-place-sleep n) (sleep n))
 (define (th-place-wait pl) (sync (TH-place-cust-box pl)) (unbox (TH-place-result-box pl)))
 (define (th-place-kill pl) (set-box! (TH-place-result-box pl) 1) (custodian-shutdown-all (TH-place-cust pl)))
 (define (th-place-break pl kind) (break-thread (TH-place-th pl) kind))

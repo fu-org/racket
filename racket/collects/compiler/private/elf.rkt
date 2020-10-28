@@ -48,7 +48,7 @@
                        sh-offset sh-esize sh-ecount
                        class format sh-str-index)
   #:transparent)
-(struct section (name-offset addr offset size type)
+(struct section (name-offset addr offset size type alloc?)
   #:transparent)
 (struct program (offset vaddr paddr size)
   #:transparent)
@@ -206,7 +206,8 @@
                              [info (read-word)]
                              [align (read-xword)]
                              [esize (read-xword)])
-                         (section name-offset addr offset size type)))])
+			 (define alloc? (bitwise-bit-set? flags 1))
+                         (section name-offset addr offset size type alloc?)))])
                 ;; Read program headers ------------------------
                 (let ([programs
                        (for/list ([i (in-range ph-ecount)])
@@ -253,11 +254,20 @@
 
 (define (find-section-by-offset offset sections)
   (for/or ([s (in-list sections)])
-    (and (offset . >= . (section-offset s))
+    (and (section-alloc? s)
+         (offset . >= . (section-offset s))
          (offset . < . (+ (section-offset s)
                           (section-size s)))
          s)))
 
+;; The `get-data` function takes an offset and must return
+;;  (values bytes any1 any2)
+;; The result of `add-racket-section` is either
+;;  (values #f #f #f #f) ; => not an ELF file
+;; or
+;;  (values start-pos end-pos any1 any2)
+;; where `any1` and `any2` are return through
+;; from `get-data`.
 (define (add-racket-section src-file dest-file section-name get-data)
   (call-with-input-file* 
    src-file 
@@ -275,7 +285,7 @@
                       void)))))))
 
 (define (expand-elf in dest-file
-                    ;; Current state parted from `in`:
+                    ;; Current state parsed from `in`:
                     elf sections programs str-section strs total-size
                     ;; New state:
                     section-name ; #f or name of new section

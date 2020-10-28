@@ -5,6 +5,8 @@
          "prop.rkt"
          "rand.rkt"
          "generate-base.rkt"
+         "collapsible-common.rkt"
+         (submod "collapsible-common.rkt" properties)
          "../../private/math-predicates.rkt"
          racket/pretty
          racket/list
@@ -22,13 +24,16 @@
          build-compound-type-name
          
          contract-stronger?
+         contract-equivalent?
          list-contract?
-         
+                  
          contract-first-order
          contract-first-order-passes?
          
          prop:contracted prop:blame
-         impersonator-prop:contracted impersonator-prop:blame
+         impersonator-prop:contracted
+         impersonator-prop:blame
+
          has-contract? value-contract
          has-blame? value-blame
          
@@ -56,8 +61,9 @@
          
          contract-continuation-mark-key
          with-contract-continuation-mark
+         collapsible-contract-continuation-mark-key
+         with-collapsible-contract-continuation-mark
          
-         (struct-out wrapped-extra-arg-arrow)
          contract-custom-write-property-proc
          (rename-out [contract-custom-write-property-proc custom-write-property-proc])
 
@@ -66,6 +72,7 @@
          contract-late-neg-projection   ;; might return #f (if none)
          get/build-val-first-projection ;; builds one if necc., using contract-projection
          get/build-late-neg-projection
+         get/build-collapsible-late-neg-projection
          warn-about-val-first?
 
          contract-name
@@ -82,9 +89,15 @@
          raise-predicate-blame-error-failure
 
          n->th
+         nth-argument-of
+         nth-element-of
+         nth-case-of
 
          false/c-contract
-         true/c-contract)
+         true/c-contract
+
+         contract-pos/neg-doubling
+         contract-pos/neg-doubling.2)
 
 (define (contract-custom-write-property-proc stct port mode)
   (define (write-prefix)
@@ -123,9 +136,7 @@
   (or (simple-flat-contract? x)
       (let ([c (coerce-contract/f x)])
         (and c
-             (or (chaperone-contract-struct? c)
-                 (and (prop:opt-chaperone-contract? c)
-                      ((prop:opt-chaperone-contract-get-test c) c)))))))
+             (chaperone-contract-struct? c)))))
   
 (define (simple-flat-contract? x)
   (or (and (procedure? x) (procedure-arity-includes? x 1))
@@ -149,7 +160,9 @@
 
 (define (has-contract? v)
   (or (has-prop:contracted? v)
-      (has-impersonator-prop:contracted? v)))
+      (has-impersonator-prop:contracted? v)
+      ;; TODO: I think this is the right check, but I'm not positive
+      (has-impersonator-prop:collapsible? v)))
 
 (define (value-contract v)
   (cond
@@ -157,11 +170,17 @@
      (get-prop:contracted v)]
     [(has-impersonator-prop:contracted? v)
      (get-impersonator-prop:contracted v)]
+    [(get-impersonator-prop:collapsible v #f)
+     =>
+     (λ (p)
+       (collapsible-ho/c-latest-ctc (collapsible-property-c-c p)))]
     [else #f]))
 
 (define (has-blame? v)
   (or (has-prop:blame? v)
-      (has-impersonator-prop:blame? v)))
+      (has-impersonator-prop:blame? v)
+      ;; TODO: I think this check is ok, but I'm not sure ...
+      (has-impersonator-prop:collapsible? v)))
 
 (define (value-blame v)
   (define bv
@@ -170,6 +189,13 @@
        (get-prop:blame v)]
       [(has-impersonator-prop:blame? v)
        (get-impersonator-prop:blame v)]
+      [(get-impersonator-prop:collapsible v #f)
+       =>
+       (λ (p)
+         (define c-c (collapsible-property-c-c p))
+         (cons
+          (collapsible-ho/c-latest-blame c-c)
+          (or (collapsible-ho/c-missing-party c-c) (collapsible-property-neg-party p))))]
       [else #f]))
   (cond
     [(and (pair? bv) (blame? (car bv)))
@@ -228,6 +254,10 @@
 (define (contract-stronger? a b)
   (contract-struct-stronger? (coerce-contract 'contract-stronger? a)
                              (coerce-contract 'contract-stronger? b)))
+
+(define (contract-equivalent? a b)
+  (contract-struct-equivalent? (coerce-contract 'contract-equivalent? a)
+                               (coerce-contract 'contract-equivalent? b)))
 
 ;; coerce-flat-contract : symbol any/c -> contract
 (define (coerce-flat-contract name x)
@@ -296,8 +326,6 @@
              xs))
     ctc))
 
-;; coerce-contract/f : any -> (or/c #f contract?)
-;; returns #f if the argument could not be coerced to a contract
 (define-values (name-default name-default?)
   (let ()
     (struct name-default ())
@@ -318,13 +346,13 @@
   (set! listof-any l)
   (set! consc-anyany p)
   (set! list/c-empty mt))
-(define between/c-inf+inf #f)
+(define between/c-inf+inf-as-real? #f)
 (define renamed-between/c #f)
 (define between/c-s? #f)
 (define between/c-s-low #f)
 (define between/c-s-high #f)
 (define (set-some-basic-misc-contracts! b r-b b/c-s? b/c-s-l b/c-s-h)
-  (set! between/c-inf+inf b)
+  (set! between/c-inf+inf-as-real? b)
   (set! renamed-between/c r-b)
   (set! between/c-s? b/c-s?)
   (set! between/c-s-low b/c-s-l)
@@ -339,6 +367,8 @@
   (set! integer-in-0f 0f)
   (set! integer-in-1f 1f))
 
+;; coerce-contract/f : any -> (or/c #f contract?)
+;; returns #f if the argument could not be coerced to a contract
 (define (coerce-contract/f x [name name-default])
   (cond
     [(coerce-simple-value name x) => values]
@@ -358,20 +388,22 @@
     [(and (procedure? x) (procedure-arity-includes? x 1))
      (cond
        [(chaperone-of? x null?) list/c-empty]
+       [(chaperone-of? x empty?) list/c-empty]
        [(chaperone-of? x list?)
         (unless listof-any
           (error 'coerce-contract/f::listof-any "too soon!"))
         listof-any]
        [(chaperone-of? x boolean?) boolean?/c]
-       [(chaperone-of? x pair?)
+       [(or (chaperone-of? x pair?)
+            (chaperone-of? x cons?))
         (unless consc-anyany
           (error 'coerce-contract/f::consc-anyany "too soon!"))
         consc-anyany]
        [(chaperone-of? x real?)
-        (unless between/c-inf+inf
+        (unless between/c-inf+inf-as-real?
           (error 'coerce-contract/f::between/c-inf+inf "too soon!"))
         (if (name-default? name)
-            between/c-inf+inf
+            between/c-inf+inf-as-real?
             (renamed-between/c -inf.0 +inf.0 name))]
        [(chaperone-of? x exact-positive-integer?)
         (if (name-default? name) integer-in-1f (renamed-integer-in 1 #f name))]
@@ -387,7 +419,8 @@
                                      name)
                                  x
                                  #f
-                                 (memq x the-known-good-contracts))])]
+                                 (or (struct-predicate-procedure? x)
+                                     (memq x the-known-good-contracts)))])]
     [(null? x)
      (unless list/c-empty
        (error 'coerce-contract/f::list/c-empty "too soon!"))
@@ -403,7 +436,7 @@
                                x)
                            name))]
     [(char? x) (make-char-in/c x x)]
-    [(or (bytes? x) (string? x) (equal? +nan.0 x) (equal? +nan.f x))
+    [(or (bytes? x) (string? x) (and (real? x) (nan? x)))
      (make-equal-contract x (if (name-default? name) x name))]
     [(number? x)
      (make-=-contract x (if (name-default? name) x name))]
@@ -413,9 +446,6 @@
 (define the-known-good-contracts
   (let-syntax ([m (λ (x) #`(list #,@(known-good-contracts)))])
     (m)))
-
-(struct wrapped-extra-arg-arrow (real-func extra-neg-party-argument)
-  #:property prop:procedure 0)
 
 (define-syntax (define/final-prop stx)
   (syntax-case stx ()
@@ -543,6 +573,7 @@
   #:property prop:custom-write contract-custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:first-order (λ (ctc) (λ (x) (eq? (eq-contract-val ctc) x)))
    #:name (λ (ctc) (eq-contract-name ctc))
    #:generate
@@ -557,6 +588,11 @@
          (and (predicate-contract? that)
               (predicate-contract-sane? that)
               ((predicate-contract-pred that) this-val))))
+   #:equivalent
+   (λ (this that)
+     (define this-val (eq-contract-val this))
+     (and (eq-contract? that)
+          (eq? this-val (eq-contract-val that))))
    #:list-contract? (λ (c) (null? (eq-contract-val c)))))
 
 (define false/c-contract (make-eq-contract #f #f))
@@ -566,6 +602,7 @@
   #:property prop:custom-write contract-custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:first-order (λ (ctc) (λ (x) (equal? (equal-contract-val ctc) x)))
    #:name (λ (ctc) (equal-contract-name ctc))
    #:stronger
@@ -576,6 +613,11 @@
          (and (predicate-contract? that)
               (predicate-contract-sane? that)
               ((predicate-contract-pred that) this-val))))
+   #:equivalent
+   (λ (this that)
+     (define this-val (equal-contract-val this))
+     (and (equal-contract? that)
+          (equal? this-val (equal-contract-val that))))
    #:generate
    (λ (ctc) 
      (define v (equal-contract-val ctc))
@@ -585,6 +627,7 @@
   #:property prop:custom-write contract-custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:first-order (λ (ctc) (λ (x) (and (number? x) (= (=-contract-val ctc) x))))
    #:name (λ (ctc) (=-contract-name ctc))
    #:stronger
@@ -597,6 +640,13 @@
          (and (predicate-contract? that)
               (predicate-contract-sane? that)
               ((predicate-contract-pred that) this-val))))
+   #:equivalent
+   (λ (this that)
+     (define this-val (=-contract-val this))
+     (or (and (=-contract? that)
+              (= this-val (=-contract-val that)))
+         (and (between/c-s? that)
+              (= (between/c-s-low that) this-val (between/c-s-high that)))))
    #:generate
    (λ (ctc) 
      (define v (=-contract-val ctc))
@@ -605,21 +655,17 @@
          [(zero? v)
           ;; zero has a whole bunch of different numbers that
           ;; it could be, so just pick one of them at random
-          (λ ()
-            (oneof '(0
-                     -0.0 0.0 0.0f0 -0.0f0
-                     0.0+0.0i 0.0f0+0.0f0i 0+0.0i 0.0+0i)))]
+          (λ () (oneof all-zeros))]
          [else
           (λ ()
             (case (random 10)
               [(0)
-               (define inf/nan '(+inf.0 -inf.0 +inf.f -inf.f +nan.0 +nan.f))
                ;; try the inexact/exact variant (if there is one)
                (cond
                  [(exact? v)
                   (define iv (exact->inexact v))
                   (if (= iv v) iv v)]
-                 [(and (inexact? v) (not (memv v inf/nan)))
+                 [(and (inexact? v) (not (infinite? v)) (not (nan? v)))
                   (define ev (inexact->exact v))
                   (if (= ev v) ev v)]
                  [else v])]
@@ -635,6 +681,7 @@
   #:property prop:custom-write contract-custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:first-order
    (λ (ctc)
      (define low (char-in/c-low ctc))
@@ -659,6 +706,17 @@
         (and (char<=? that-low this-low)
              (char<=? this-high that-high))]
        [else #f]))
+   #:equivalent
+   (λ (this that)
+     (cond
+       [(char-in/c? that)
+        (define this-low (char-in/c-low this))
+        (define this-high (char-in/c-high this))
+        (define that-low (char-in/c-low that))
+        (define that-high (char-in/c-high that))
+        (and (char=? that-low this-low)
+             (char=? this-high that-high))]
+       [else #f]))
    #:generate
    (λ (ctc)
      (define low (char->integer (char-in/c-low ctc)))
@@ -668,10 +726,15 @@
        (λ ()
          (integer->char (+ low (random delta))))))))
 
+(define (regexp/c-equivalent this that)
+  (and (regexp/c? that)
+       (equal? (regexp/c-reg this) (regexp/c-reg that))))
+
 (define-struct regexp/c (reg name)
   #:property prop:custom-write contract-custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:first-order
    (λ (ctc)
      (define reg (regexp/c-reg ctc))
@@ -679,9 +742,13 @@
          (and (or (string? x) (bytes? x))
               (regexp-match? reg x))))
    #:name (λ (ctc) (regexp/c-reg ctc))
-   #:stronger
-   (λ (this that)
-      (and (regexp/c? that) (equal? (regexp/c-reg this) (regexp/c-reg that))))))
+   #:stronger regexp/c-equivalent
+   #:equivalent regexp/c-equivalent))
+
+(define (predicate-contract-equivalent this that)
+  (and (predicate-contract? that)
+       (procedure-closure-contents-eq? (predicate-contract-pred this)
+                                       (predicate-contract-pred that))))
 
 ;; sane? : boolean -- indicates if we know that the predicate is well behaved
 ;; (for now, basically amounts to trusting primitive procedures)
@@ -689,11 +756,9 @@
   #:property prop:custom-write contract-custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
-   #:stronger
-   (λ (this that) 
-     (and (predicate-contract? that)
-          (procedure-closure-contents-eq? (predicate-contract-pred this)
-                                          (predicate-contract-pred that))))
+   #:trusted trust-me
+   #:stronger predicate-contract-equivalent
+   #:equivalent predicate-contract-equivalent
    #:name (λ (ctc) (predicate-contract-name ctc))
    #:first-order (λ (ctc) (predicate-contract-pred ctc))
    #:late-neg-projection
@@ -749,12 +814,27 @@
 
 (define-logger racket/contract)
 
+(define (get/build-collapsible-late-neg-projection ctc)
+  (cond
+    [(contract-struct-collapsible-late-neg-projection ctc) => values]
+    [else
+     (define lnp (get/build-late-neg-projection ctc))
+     (λ (blame)
+       (define proj (lnp blame))
+       (values proj
+               (build-collapsible-leaf proj ctc blame)))]))
+
 (define (get/build-late-neg-projection ctc)
   (cond
     [(contract-struct-late-neg-projection ctc) => values]
     [else
      (log-racket/contract-info "no late-neg-projection for ~s" ctc)
      (cond
+       [(contract-struct-collapsible-late-neg-projection ctc) =>
+        (lambda (f)
+          (lambda (blame)
+            (define-values (proj _) (f blame))
+            proj))]
        [(contract-struct-projection ctc)
         =>
         (λ (projection)
@@ -766,7 +846,7 @@
        [else
         (first-order->late-neg-projection (contract-struct-first-order ctc)
                                           (contract-struct-name ctc))])]))
-
+     
 (define (projection->late-neg-projection proj)
   (λ (b)
     (λ (x neg-party)
@@ -871,11 +951,82 @@
     (with-continuation-mark contract-continuation-mark-key payload
                             (let () code ...))))
 
+(define collapsible-contract-continuation-mark-key
+  (make-continuation-mark-key 'collapsible-contract))
+
+(define-syntax-rule (with-collapsible-contract-continuation-mark code ...)
+  (with-continuation-mark collapsible-contract-continuation-mark-key #t
+    (let () code ...)))
+  
 (define (n->th n)
   (string-append 
    (number->string n)
-   (case (modulo n 10)
-     [(1) "st"]
-     [(2) "nd"]
-     [(3) "rd"]
-     [else "th"])))
+   (case (remainder n 100)
+     [(11 12 13) "th"]
+     [else
+      (case (modulo n 10)
+        [(1) "st"]
+        [(2) "nd"]
+        [(3) "rd"]
+        [else "th"])])))
+
+(define (nth-element-of/alloc n)
+  (format "the ~a element of" (n->th n)))
+(define (nth-argument-of/alloc n)
+  (format "the ~a argument of" (n->th n)))
+(define (nth-case-of/alloc n)
+  (format "the ~a case of" (n->th n)))
+
+(define-syntax (define-precompute/simple stx)
+  (syntax-case stx ()
+    [(_ fn fn/alloc lower-bound-stx upper-bound-stx)
+     (let ()
+       (define lower-bound (syntax-e #'lower-bound-stx))
+       (define upper-bound (syntax-e #'upper-bound-stx))
+       (define (n->id n)
+         (string->symbol (format "precomputed-~a" n)))
+     #`(begin
+         #,@(for/list ([i (in-range lower-bound (+ upper-bound 1))])
+              #`(define #,(n->id i) (fn/alloc #,i)))
+         (define (fn n)
+           (case n
+             #,@(for/list ([i (in-range lower-bound (+ upper-bound 1))])
+                  #`[(#,i) #,(n->id i)])
+             [else (fn/alloc n)]))))]))
+
+(define-precompute/simple nth-element-of nth-element-of/alloc 0 10)
+(define-precompute/simple nth-argument-of nth-argument-of/alloc 1 7)
+(define-precompute/simple nth-case-of nth-case-of/alloc 1 2)
+
+(define-syntax-rule
+  (contract-pos/neg-doubling e1 e2)
+  (contract-pos/neg-doubling/proc (λ () e1) (λ () e2)))
+(define-syntax-rule
+  (contract-pos/neg-doubling.2 e1 e2)
+  (contract-pos/neg-doubling.2/proc (λ () e1) (λ () e2)))
+(define doubling-cm-key (gensym 'racket/contract-doubling-mark))
+(define (contract-pos/neg-doubling/proc t1 t2)
+  (define depth
+    (or (continuation-mark-set-first (current-continuation-marks)
+                                     doubling-cm-key)
+        0))
+  (cond
+    [(> depth 5)
+     (values #f t1 t2)]
+    [else
+     (with-continuation-mark doubling-cm-key (+ depth 1)
+       (values #t (t1) (t2)))]))
+(define (contract-pos/neg-doubling.2/proc t1 t2)
+  (define depth
+    (or (continuation-mark-set-first (current-continuation-marks)
+                                     doubling-cm-key)
+        0))
+  (cond
+    [(> depth 5)
+     (values #f t1 #f t2 #f)]
+    [else
+     (with-continuation-mark doubling-cm-key (+ depth 1)
+       (let ()
+         (define-values (t11 t12) (t1))
+         (define-values (t21 t22) (t2))
+         (values #t t11 t12 t21 t22)))]))

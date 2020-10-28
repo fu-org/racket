@@ -5,10 +5,78 @@
 
 (require racket/hash)
 
+;; ----------------------------------------
+;; Hash-key sorting:
+
+(let ([u/apple (string->uninterned-symbol "apple")]
+      [u/banana (string->uninterned-symbol "banana")]
+      [u/coconut (string->uninterned-symbol "coconut")]
+      [apple (string->unreadable-symbol "apple")]
+      [banana (string->unreadable-symbol "banana")]
+      [coconut (string->unreadable-symbol "coconut")])
+  (test (list #f #t
+              #\a #\b #\c #\u3BB
+              (- (expt 2 79))
+              -3 -2 -1
+              0
+              1/2 0.75 8.5f-1
+              1 2 3
+              (expt 2 79)
+              u/apple u/banana u/coconut
+              apple banana coconut
+              'apple 'banana 'coconut 'coconut+
+              '#:apple '#:banana '#:coconut
+              "Apple"
+              "apple" "banana" "coconut"
+              #"Apple"
+              #"apple" #"banana" #"coconut"
+              null
+              (void)
+              eof)
+        'ordered
+        (hash-map (hash #t 'x
+                        #f 'x
+                        #\a 'a #\b 'b #\c 'c #\u3BB 'lam
+                        1 'a 2 'b 3 'c
+                        1/2 'n 0.75 'n 8.5f-1 'n
+                        0 'z
+                        -1 'a -2 'b -3 'c
+                        (expt 2 79) 'b
+                        (- (expt 2 79)) 'b
+                        "Apple" 'a
+                        "apple" 'a "banana" 'b "coconut" 'c
+                        #"Apple" 'a
+                        #"apple" 'a #"banana" 'b #"coconut" 'c
+                        u/apple 'a u/banana 'b u/coconut 'c
+                        apple 'a banana 'b coconut 'c
+                        'apple 'a 'banana 'b 'coconut 'c 'coconut+ '+
+                        '#:apple 'a '#:banana 'b '#:coconut 'c
+                        null 'one
+                        (void) 'one
+                        eof 'one)
+                  (lambda (k v) k)
+                  #t)))
+
+;; ----------------------------------------
+
 (test #hash([4 . four] [3 . three] [1 . one] [2 . two])
       hash-union #hash([1 . one] [2 . two]) #hash([3 . three] [4 . four]))
 (test #hash([four . 4] [three . 3] [one . 1] [two . 2])
       hash-union #hash([one . 1] [two . 1]) #hash([three . 3] [four . 4] [two . 1])
+      #:combine +)
+
+(test #hash((a . 5) (b . 7))
+      hash-intersect #hash((a . 1) (b . 2) (c . 3)) #hash((a . 4) (b . 5))
+      #:combine +)
+(test #hash((a . 5) (b . -3))
+      hash-intersect #hash((a . 1) (b . 2) (c . 3)) #hash((a . 4) (b . 5))
+      #:combine/key
+      (lambda (k v1 v2) (if (eq? k 'a) (+ v1 v2) (- v1 v2))))
+
+;; Does hash-intersect preserve the kind of the hash?
+(test (hasheq "a" 11)
+      hash-intersect (hasheq "a" 1 (string #\a) 2 (string #\a) 3)
+      (hasheq "a" 10 (string #\a) 20)
       #:combine +)
 
 (let ()
@@ -34,6 +102,59 @@
         (hash-copy
          #hash([one . 1] [two . 2] [three . 3] [four . 4]))
         h))
+
+(let ()
+  (struct a (n m)
+          #:property
+          prop:equal+hash
+          (list (lambda (a b eql) (and (= (a-n a) (a-n b))
+                                  (= (a-m a) (a-m b))))
+                (lambda (a hc) (a-n a))
+                (lambda (a hc) (a-n a))))
+
+  (define ht0 (hash (a 1 0) #t))
+  ;; A hash table with two keys that have the same hash code
+  (define ht1 (hash (a 1 0) #t
+                    (a 1 2) #t))
+  ;; Another hash table with the same two keys, plus another
+  ;; with an extra key whose hash code is different but the
+  ;; same in the last 5 bits:
+  (define ht2 (hash (a 1 0) #t
+                    (a 1 2) #t
+                    (a 33 0) #t))
+  ;; A hash table with no collision, but the same last
+  ;; 5 bits for both keys:
+  (define ht3 (hash (a 1 0) #t
+                    (a 33 0) #t))
+  ;; A hash with the same (colliding) keys as h1 but
+  ;; different values:
+  (define ht4 (hash (a 1 0) #f
+                    (a 1 2) #f))
+
+  ;; Subset must compare a collision node with a subtree node (that
+  ;; contains a collision node):
+  (test #t hash-keys-subset? ht1 ht2)
+
+  (test #t hash-keys-subset? ht3 ht2)
+  (test #t hash-keys-subset? ht0 ht3)
+
+  (test #t hash-keys-subset? ht0 ht2)
+  (test #t hash-keys-subset? ht0 ht1)
+  (test #f hash-keys-subset? ht2 ht1)
+  (test #f hash-keys-subset? ht2 ht0)
+  (test #f hash-keys-subset? ht1 ht0)
+  (test #f hash-keys-subset? ht1 ht3)
+
+  ;; Equality of collision nodes:
+  (test #f equal? ht1 ht4)
+  (let ([ht4a (hash-set ht4 (a 1 0) #t)]
+        [ht4b (hash-set ht4 (a 1 2) #t)]
+        [ht5 (hash-set* ht4
+                        (a 1 0) #t
+                        (a 1 2) #t)])
+    (test #f equal? ht1 ht4a)
+    (test #f equal? ht1 ht4b)
+    (test #t equal? ht1 ht5)))
 
 (let ()
   (define-syntax (define-hash-iterations-tester stx)
@@ -214,7 +335,7 @@
 
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Use keys that are a multile of a power of 2 to
+; Use keys that are a multiple of a power of 2 to
 ; get "almost" collisions that force the hash table
 ; to use a deeper tree.
 
@@ -257,16 +378,17 @@
     (test #t equal? 
           (call-with-values (lambda () (hash-iterate-key+value ht i)) cons)
           '((1 2 3 4 5 6 7 8 9 10) . val))
-    (test #t boolean? (hash-iterate-next ht i))
+    (test #f hash-iterate-next ht i)
 
-    ;; collect key, everything should error
-    (collect-garbage)(collect-garbage)(collect-garbage)
-    (test #t boolean? (hash-iterate-first ht))
-    (err/rt-test (hash-iterate-key ht i) exn:fail:contract? err-msg)
-    (err/rt-test (hash-iterate-value ht i) exn:fail:contract? err-msg)
-    (err/rt-test (hash-iterate-pair ht i) exn:fail:contract? err-msg)
-    (err/rt-test (hash-iterate-key+value ht i) exn:fail:contract? err-msg)
-    (err/rt-test (hash-iterate-next ht i) exn:fail:contract? err-msg))    
+    (unless (eq? 'cgc (system-type 'gc))
+      ;; collect key, everything should error
+      (collect-garbage)
+      (test #t boolean? (hash-iterate-first ht))
+      (err/rt-test (hash-iterate-key ht i) exn:fail:contract? err-msg)
+      (err/rt-test (hash-iterate-value ht i) exn:fail:contract? err-msg)
+      (err/rt-test (hash-iterate-pair ht i) exn:fail:contract? err-msg)
+      (err/rt-test (hash-iterate-key+value ht i) exn:fail:contract? err-msg)
+      (test #f hash-iterate-next ht i)))
 
 ;; Check that unsafe mutable hash table operations do not segfault
 ;; after getting valid index from unsafe-mutable-hash-iterate-first and -next.
@@ -293,7 +415,7 @@
     (err/rt-test (hash-iterate-value ht i) exn:fail:contract? err-msg)
     (err/rt-test (hash-iterate-pair ht i) exn:fail:contract? err-msg)
     (err/rt-test (hash-iterate-key+value ht i) exn:fail:contract? err-msg)
-    (err/rt-test (hash-iterate-next ht i) exn:fail:contract? err-msg))    
+    (test #f hash-iterate-next ht i))
     
 
   (let ()
@@ -318,6 +440,192 @@
     (err/rt-test (hash-iterate-value ht i) exn:fail:contract?)
     (err/rt-test (hash-iterate-pair ht i) exn:fail:contract?)
     (err/rt-test (hash-iterate-key+value ht i) exn:fail:contract?)
-    (err/rt-test (hash-iterate-next ht i) exn:fail:contract?)))
+    (test #f hash-iterate-next ht i)))
+
+;; ----------------------------------------
+
+(define-syntax-rule (hash-remove-iterate-test make-hash (X ...) in-hash-X sel)
+  (let ([ht (make-hash)])
+    (arity-test in-hash-X 1 2)
+    (test 'in-hash-X object-name in-hash-X)
+    (define keys (for/list ([k (in-range 10)])
+                   (gensym)))
+    (define (add-keys!)
+      (for ([k (in-list keys)]
+            [i (in-naturals)])
+        (hash-set! ht k i)))
+    (add-keys!)
+    (test 5 '(remove-during-loop make-hash in-hash-X)
+          (for/sum ([(X ...) (in-hash-X ht #f)]
+                    [i (in-naturals)])
+            (when (= i 4)
+              (for ([k (in-list keys)])
+                (hash-remove! ht k)))
+            (if (sel X ...) 1 0)))
+    (add-keys!)
+    (test 'ok '(remove-during-loop make-hash in-hash-X)
+          (for/fold ([v 'ok]) ([(X ...) (in-hash-X ht #f)]
+                               [i (in-naturals)])
+            (when (= i 4)
+              (set! keys #f)
+              (collect-garbage))
+            v))))
+
+(define-syntax-rule (hash-remove-iterate-test* [make-hash ...] (X ...) in-hash-X in-Y-hash-X sel)
+  (begin
+    (hash-remove-iterate-test make-hash (X ...) in-hash-X sel) ...
+    (hash-remove-iterate-test make-hash (X ...) in-Y-hash-X sel) ...))
+
+(hash-remove-iterate-test* [make-hash make-hasheq make-hasheqv]
+                          (k v) in-hash in-mutable-hash and)
+(hash-remove-iterate-test* [make-hash make-hasheq make-hasheqv]
+                          (k) in-hash-keys in-mutable-hash-keys values)
+(hash-remove-iterate-test* [make-hash make-hasheq make-hasheqv]
+                          (v) in-hash-values in-mutable-hash-values values)
+(hash-remove-iterate-test* [make-hash make-hasheq make-hasheqv]
+                           (p) in-hash-pairs in-mutable-hash-pairs car)
+
+(hash-remove-iterate-test* [make-weak-hash make-weak-hasheq make-weak-hasheqv]
+                          (k v) in-hash in-weak-hash and)
+(hash-remove-iterate-test* [make-weak-hash make-weak-hasheq make-weak-hasheqv]
+                          (k) in-hash-keys in-weak-hash-keys values)
+(hash-remove-iterate-test* [make-weak-hash make-weak-hasheq make-weak-hasheqv]
+                          (v) in-hash-values in-weak-hash-values values)
+(hash-remove-iterate-test* [make-weak-hash make-weak-hasheq make-weak-hasheqv]
+                           (p) in-hash-pairs in-weak-hash-pairs car)
+
+;; ----------------------------------------
+;; hash-ref-key
+
+(let ()
+  (arity-test hash-ref-key 2 3)
+
+  (define (test-hash-ref-key ht eql? expected-retained-key expected-excised-key)
+    (define actual-retained-key (hash-ref-key ht expected-excised-key))
+    (define non-key (gensym 'nope))
+    (test #t eql? expected-retained-key expected-excised-key)
+    (test #t eq? actual-retained-key expected-retained-key)
+    (test (eq? eql? eq?) eq? actual-retained-key expected-excised-key)
+    (test #t eq? (hash-ref-key ht non-key 'absent) 'absent)
+    (test #t eq? (hash-ref-key ht non-key (lambda () 'absent)) 'absent)
+    (err/rt-test (hash-ref-key ht non-key) exn:fail:contract?))
+
+  (define (test-hash-ref-key/mut ht eql? expected-retained-key expected-excised-key)
+    (hash-set! ht expected-retained-key 'here)
+    (hash-set! ht expected-excised-key 'there)
+    (test-hash-ref-key ht eql? expected-retained-key expected-excised-key))
+
+  (define (test-hash-ref-key/immut ht eql? expected-retained-key expected-excised-key)
+    (define ht1 (hash-set (hash-set ht expected-excised-key 'here)
+                          expected-retained-key
+                          'there))
+    (test-hash-ref-key ht1 eql? expected-retained-key expected-excised-key))
+
+  ;; equal?-based hashes
+  (let* ([k1 "hello"]
+         [k2 (substring k1 0)])
+    (test-hash-ref-key/mut (make-hash) equal? k1 k2)
+    (test-hash-ref-key/mut (make-weak-hash) equal? k1 k2)
+    (test-hash-ref-key/immut (hash) equal? k1 k2))
+
+  ;; eqv?-based hashes
+  (let ([k1 (expt 2 64)]
+        [k2 (expt 2 64)])
+    (test-hash-ref-key/mut (make-hasheqv) eqv? k1 k2)
+    (test-hash-ref-key/mut (make-weak-hasheqv) eqv? k1 k2)
+    (test-hash-ref-key/immut (hasheqv) eqv? k1 k2))
+
+  ;; eq?-based hashes
+  (test-hash-ref-key/mut (make-hasheqv) eq? 'foo 'foo)
+  (test-hash-ref-key/mut (make-weak-hasheqv) eq? 'foo 'foo)
+  (test-hash-ref-key/immut (hasheqv) eq? 'foo 'foo))
+
+;; ----------------------------------------
+;; Run a GC concurrent to `hash-for-each` or `hash-map`
+;; to make sure a disappearing key doesn't break the
+;; iteration
+
+(define (check-concurrent-gc-of-keys hash-iterate)
+  (define gc-thread
+    (thread
+     (lambda ()
+       (let loop ([n 10])
+         (unless (zero? n)
+           (collect-garbage)
+           (sleep)
+           (loop (sub1 n)))))))
+
+  (let loop ()
+    (unless (thread-dead? gc-thread)
+      (let ([ls (for/list ([i 100])
+                  (gensym))])
+        (define ht (make-weak-hasheq))
+        (for ([e (in-list ls)])
+          (hash-set! ht e 0))
+        ;; `ls` is unreferenced here here on
+        (define counter 0)
+        (hash-iterate
+         ht
+         (lambda (k v)
+           (set! counter (add1 counter))
+           'ok))
+        '(printf "~s @ ~a\n" counter j))
+      (loop))))
+
+(check-concurrent-gc-of-keys hash-for-each)
+(check-concurrent-gc-of-keys hash-map)
+(check-concurrent-gc-of-keys (lambda (ht proc)
+                               (equal? ht (hash-copy ht))))
+(check-concurrent-gc-of-keys (lambda (ht proc)
+                               (equal-hash-code ht)))
+
+;; ----------------------------------------
+;; Make sure a new `equal?`-based key is used when the "new" value is
+;; `eq?` to the old one:
+
+(let ()
+  (define ht (hash))
+  (define f (string-copy "apple"))
+  (define g (string-copy "apple"))
+  (define ht2 (hash-set (hash-set ht f 1) g 1))
+  (test 1 hash-count ht2)
+  (test #t eq? (car (hash-keys ht2)) g))
+
+;; ----------------------------------------
+;; Regression test to make sure all elements are still
+;; reachable by iteration in a copy of a mutable hash table:
+
+(let ([ht (make-hash)])
+  (for ([i 113])
+    (hash-set! ht i 1))
+  
+  (define new-ht (hash-copy ht))
+
+  (test (hash-count ht) hash-count new-ht)
+  (test (for/sum ([k (in-hash-keys ht)])
+          k)
+        'sum
+        (for/sum ([k (in-hash-keys new-ht)])
+          k))
+  (test (hash-count ht)
+        'count
+        (for/sum ([v (in-hash-values new-ht)])
+          v)))
+
+;; ----------------------------------------
+;; Make sure hash-table iteration can call an applicable struct
+
+(let ()
+  (struct proc (f) #:property prop:procedure (struct-field-index f))
+
+  (test '(2) hash-map (hash 'one 1) (proc (lambda (k v) (add1 v))))
+  (test '(2) hash-map (hasheq 'one 1) (proc (lambda (k v) (add1 v))))
+  (test '(2) hash-map (hasheqv 'one 1) (proc (lambda (k v) (add1 v))))
+
+  (test (void) hash-for-each (hash 'one 1) (proc void))
+  (test (void) hash-for-each (hasheq 'one 1) (proc void))
+  (test (void) hash-for-each (hasheqv 'one 1) (proc void)))
+
+;; ----------------------------------------
 
 (report-errs)

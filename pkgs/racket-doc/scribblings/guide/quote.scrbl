@@ -1,7 +1,7 @@
 #lang scribble/doc
 @(require scribble/manual scribble/eval "guide-utils.rkt")
 
-@title[#:tag "quote"]{Quoting: @racket[quote] and @racketvalfont{@literal{'}}}
+@title[#:tag "quote"]{Quoting: @racket[quote] and @racketvalfont{'}}
 
 @refalso["quote"]{@racket[quote]}
 
@@ -55,7 +55,7 @@ and this shorthand is almost always used instead of
 @racket[quote]. The shorthand applies even within the @racket[_datum],
 so it can produce a list containing @racket[quote].
 
-@refdetails["parse-quote"]{the @racketvalfont{'} shorthand}
+@refdetails["parse-quote"]{the @racketvalfont{@literal{'}} shorthand}
 
 @examples[
 'apple

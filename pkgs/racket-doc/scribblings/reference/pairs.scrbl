@@ -265,7 +265,7 @@ The @racket[lst] argument need not actually be a list; @racket[lst]
 must merely start with a chain of at least @racket[pos] pairs.
 
 @mz-examples[
-  (list-tail (list 1 2 3 4) 2)
+  (list-tail (list 1 2 3 4 5) 2)
   (list-tail (cons 1 2) 1)
   (eval:error (list-tail (cons 1 2) 2))
   (list-tail 'not-a-pair 0)]}
@@ -667,8 +667,8 @@ Like @racket[assoc], but finds an element using @racket[eq?].
   (assq 'c (list (list 'a 'b) (list 'c 'd) (list 'e 'f)))]}
 
 
-@defproc[(assf [proc procedure?] [lst list?])
-         (or/c list? #f)]{
+@defproc[(assf [proc procedure?] [lst (listof pair?)])
+         (or/c pair? #f)]{
 
 Like @racket[assoc], but finds an element using the predicate
 @racket[proc]; an element is found when @racket[proc] applied to the
@@ -952,7 +952,7 @@ The @racket[lst] argument need not actually be a list; @racket[lst]
 must merely start with a chain of at least @racket[pos] pairs.
 
 @mz-examples[#:eval list-eval
-  (take '(1 2 3 4) 2)
+  (take '(1 2 3 4 5) 2)
   (take 'non-list 0)]}
 
 
@@ -1021,7 +1021,7 @@ The @racket[lst] argument need not actually be a list; @racket[lst]
 must merely end with a chain of at least @racket[pos] pairs.
 
 @mz-examples[#:eval list-eval
-  (take-right '(1 2 3 4) 2)
+  (take-right '(1 2 3 4 5) 2)
   (take-right 'non-list 0)]}
 
 
@@ -1036,7 +1036,7 @@ The @racket[lst] argument need not actually be a list; @racket[lst] must
 merely end with a chain of at least @racket[pos] pairs.
 
 @mz-examples[#:eval list-eval
-  (drop-right '(1 2 3 4) 2)
+  (drop-right '(1 2 3 4 5) 2)
   (drop-right 'non-list 0)]}
 
 
@@ -1055,8 +1055,8 @@ except that it can be faster.
 
 
 @deftogether[(
-  @defproc[(takef-right [lst any/c] [pred procedure?]) list?]
-  @defproc[(dropf-right [lst any/c] [pred procedure?]) any/c]
+  @defproc[(takef-right [lst any/c] [pred procedure?]) any/c]
+  @defproc[(dropf-right [lst any/c] [pred procedure?]) list?]
   @defproc[(splitf-at-right [lst any/c] [pred procedure?]) (values list? any/c)]
 )]{
 
@@ -1173,12 +1173,25 @@ traversal.
 
 @defproc[(check-duplicates [lst list?]
                            [same? (any/c any/c . -> . any/c) equal?]
-                           [#:key extract-key (-> any/c any/c) (lambda (x) x)])
-         (or/c any/c #f)]{
+                           [#:key extract-key (-> any/c any/c) (lambda (x) x)]
+                           [#:default failure-result failure-result/c (lambda () #f)])
+         any]{
 
 Returns the first duplicate item in @racket[lst]. More precisely, it
 returns the first @racket[_x] such that there was a previous
 @racket[_y] where @racket[(same? (extract-key _x) (extract-key _y))].
+
+If no duplicate is found, then @racket[failure-result] determines the 
+result:
+
+@itemize[
+
+ @item{If @racket[failure-result] is a procedure, it is called
+       (through a tail call) with no arguments to produce the result.}
+
+ @item{Otherwise, @racket[failure-result] is returned as the result.}
+
+]
 
 The @racket[same?] argument should be an equivalence predicate such as
 @racket[equal?] or @racket[eqv?] or a dictionary.
@@ -1191,9 +1204,11 @@ use a dictionary for speed.
 (check-duplicates '((a 1) (b 2) (a 3)) #:key car)
 (check-duplicates '(1 2 3 4 5 6)
                   (lambda (x y) (equal? (modulo x 3) (modulo y 3))))
+(check-duplicates '(1 2 3 4) #:default "no duplicates")
 ]
-@history[#:added "6.3"]{}
-}
+
+@history[#:added "6.3"
+         #:changed "6.11.0.2" @elem{Added the @racket[#:default] optional argument.}]}
 
 @defproc[(remove-duplicates [lst list?]
                             [same? (any/c any/c . -> . any/c) equal?]
@@ -1220,11 +1235,15 @@ key value from each list element, so two items are considered equal if
 @defproc[(filter-map [proc procedure?] [lst list?] ...+)
          list?]{
 
-Returns @racket[(filter (lambda (x) x) (map proc lst ...))], but without
+Like @racket[(map proc lst ...)], except that, if @racket[proc]
+returns @racket[#false], that element is omitted from the resulting list. 
+In other words, @racket[filter-map] is equivalent to 
+@racket[(filter (lambda (x) x) (map proc lst ...))], but more efficient, 
+because @racket[filter-map] avoids
 building the intermediate list.
 
 @mz-examples[#:eval list-eval
-  (filter-map (lambda (x) (and (positive? x) x)) '(1 2 3 -2 8))]}
+  (filter-map (lambda (x) (and (negative? x) (abs x))) '(1 2 -3 -4 8))]}
 
 
 @defproc[(count [proc procedure?] [lst list?] ...+)
@@ -1337,9 +1356,10 @@ Builds combinations one-by-one instead of all at once.
 @defproc[(permutations [lst list?])
          list?]{
 
-Returns a list of all permutations of the input list.  Note that this
+@index["rearrangements"]{Returns} a list of all permutations of the input list.  Note that this
 function works without inspecting the elements, and therefore it ignores
 repeated elements (which will result in repeated permutations).
+Raises an error if the input list contains more than 256 elements.
 
 @mz-examples[#:eval list-eval
   (permutations '(1 2 3))
@@ -1349,9 +1369,10 @@ repeated elements (which will result in repeated permutations).
 @defproc[(in-permutations [lst list?])
          sequence?]{
 
-Returns a sequence of all permutations of the input list.  It is
+@index["in-rearrangements"]{Returns} a sequence of all permutations of the input list.  It is
 equivalent to @racket[(in-list (permutations l))] but much faster since
-it builds the permutations one-by-one on each iteration}
+it builds the permutations one-by-one on each iteration
+Raises an error if the input list contains more than 256 elements.}
 
 
 @defproc[(argmin [proc (-> any/c real?)] [lst (and/c pair? list?)])

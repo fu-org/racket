@@ -1,5 +1,5 @@
 #lang scribble/doc
-@(require "mz.rkt")
+@(require "mz.rkt" scribble/example)
 
 @title[#:tag "pathutils" #:style 'toc]{Paths}
 
@@ -214,7 +214,9 @@ reassembling the result with @racket[bytes->path-element] and
 
 Returns @racket[#t] if the arguments are sorted, where the comparison
 for each pair of paths is the same as using
-@racket[path->bytes] and @racket[bytes<?].}
+@racket[path->bytes] and @racket[bytes<?].
+
+@history/arity[]}
 
 
 @defproc[(path-convention-type [path path-for-some-system?])
@@ -302,7 +304,7 @@ Windows examples.
 Like @racket[build-path], except a path convention type is specified
 explicitly.}
 
-@defproc[(absolute-path? [path (or/c path-string? path-for-some-system?)]) boolean?]{
+@defproc[(absolute-path? [path (or/c path? string? path-for-some-system?)]) boolean?]{
 
 Returns @racket[#t] if @racket[path] is an absolute path, @racket[#f]
 otherwise. The @racket[path] argument can be a path for any
@@ -311,7 +313,7 @@ contains a nul character), @racket[#f] is returned. This procedure
 does not access the filesystem.}
 
 
-@defproc[(relative-path? [path (or/c path-string? path-for-some-system?)]) boolean?]{
+@defproc[(relative-path? [path (or/c path? string? path-for-some-system?)]) boolean?]{
 
 Returns @racket[#t] if @racket[path] is a relative path, @racket[#f]
 otherwise. The @racket[path] argument can be a path for any
@@ -320,7 +322,7 @@ contains a nul character), @racket[#f] is returned. This procedure
 does not access the filesystem.}
 
 
-@defproc[(complete-path? [path (or/c path-string? path-for-some-system?)]) boolean?]{
+@defproc[(complete-path? [path (or/c path? string? path-for-some-system?)]) boolean?]{
 
 Returns @racket[#t] if @racket[path] is a @deftech{complete}ly determined path
 (@italic{not} relative to a directory or drive), @racket[#f]
@@ -372,7 +374,7 @@ same file or directory as @racket[path]. If
 @racket[path] is a soft link to another path, then the referenced path
 is returned (this may be a relative path with respect to the directory
 owning @racket[path]), otherwise @racket[path] is returned (after
-expansion).
+cleansing).
 
 On Windows, the path for a link should be simplified syntactically, so
 that an up-directory indicator removes a preceding path element
@@ -387,7 +389,12 @@ see @secref["windowspaths"] for more information.
          path-for-some-system?]{
 
 @techlink{Cleanse}s @racket[path] (as described at the beginning of
-this chapter) without consulting the filesystem.}
+this chapter) without consulting the filesystem.
+
+@examples[#:eval (make-base-eval '(require racket/path))
+  (let ([p (string->some-system-path "tiny//dancer" 'unix)])
+    (cleanse-path p))
+]}
 
 
 @defproc[(expand-user-path [path path-string?]) path?]{
@@ -415,12 +422,13 @@ and (on Windows) without changing the case of letters within the
 path.  If @racket[path] syntactically refers to a directory, the
 result ends with a directory separator.
 
-When @racket[path] is simplified and @racket[use-filesystem?] is true
+When @racket[path] is simplified other than just converting slashes
+to backslashes and @racket[use-filesystem?] is true
 (the default), a complete path is returned. If @racket[path] is
 relative, it is resolved with respect to the current directory.
 On @|AllUnix|, up-directory indicators are removed taking into account soft links (so
 that the resulting path refers to the same directory as before);
-on Windows, up-directory indicators are removed by by deleting a
+on Windows, up-directory indicators are removed by deleting a
 preceding @tech{path element}.
 
 When @racket[use-filesystem?] is @racket[#f], up-directory indicators
@@ -444,7 +452,12 @@ still involve a cycle of links if the cycle did not inhibit the
 simplification).
 
 See @secref["unixpaths"] and @secref["windowspaths"] for more
-information on simplifying paths.}
+information on simplifying paths.
+
+@examples[#:eval (make-base-eval '(require racket/path))
+  (let ([p (string->some-system-path "tiny//in/my/head/../../../dancer" 'unix)])
+    (simplify-path p #f))
+]}
  
 
 @defproc[(normal-case-path [path (or/c path-string? path-for-some-system?)])
@@ -695,19 +708,25 @@ no extension, @racket[#f] is returned.}
 @defproc[(find-relative-path [base (or/c path-string? path-for-some-system?)]
                              [path (or/c path-string?  path-for-some-system?)]
                              [#:more-than-root? more-than-root? any/c #f]
+                             [#:more-than-same? more-than-same? any/c #t]
                              [#:normalize-case? normalize-case? any/c #t])
-         path-for-some-system?]{
+         (or/c path-for-some-system? path-string?)]{
 
 Finds a relative pathname with respect to @racket[base] that names the
 same file or directory as @racket[path]. Both @racket[base] and
 @racket[path] must be simplified in the sense of
-@racket[simple-form-path].  If @racket[path] shares no subpath in
+@racket[simple-form-path]. If @racket[path] shares no subpath in
 common with @racket[base], @racket[path] is returned.
 
 If @racket[more-than-root?] is true, if @racket[base] and
 @racket[path] share only a Unix root in common, and if neither
 @racket[base] nor @racket[path] is just a root path, then
 @racket[path] is returned.
+
+If @racket[path] is the same as @racket[base], then
+@racket[(build-path 'same)] is returned only if
+@racket[more-than-same?] is true. Otherwise, @racket[path] is
+returned when @racket[path] is the same as @racket[base].
 
 If @racket[normalize-case?] is true (the default), then pairs of path
 elements to be compared are first converted via
@@ -716,10 +735,17 @@ comparsed case-insentively on Windows. If @racket[normalize-case?] is
 @racket[#f], then path elements and the path roots match only if they
 have the same case.
 
+The result is normally a @tech{path} in the sense of @racket[path?].
+The result is a string only if @racket[path] is provided a string and
+also returned as the result.
+
 @history[#:changed "6.8.0.3" @elem{Made path elements case-normalized
                                    for comparison by default, and
                                    added the @racket[#:normalize-case?]
-                                   argument.}]}
+                                   argument.}
+         #:changed "6.90.0.21" @elem{Added the @racket[#:more-than-same?]
+                                     argument.}]}
+
 
 @defproc[(normalize-path [path path-string?]
                          [wrt (and/c path-string? complete-path?)
@@ -744,7 +770,11 @@ directory (i.e., the comparison may produce false negatives).
 
 An error is signaled by @racket[normalize-path] if the input
 path contains an embedded path for a non-existent directory,
-or if an infinite cycle of soft links is detected.}
+or if an infinite cycle of soft links is detected.
+
+@examples[#:eval (make-base-eval '(require racket/path))
+  (equal? (current-directory) (normalize-path "."))
+]}
 
 
 @defproc[(path-element? [path any/c]) boolean?]{

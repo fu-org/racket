@@ -39,56 +39,56 @@
      
      (mytest (match "hello"
                ((pregexp (pregexp "hello")) #t)
-               (else #f))
+               (_ #f))
              #t)
      
      (mytest (match 123
                ((pregexp "123") #t)
-               (else #f))
+               (_ #f))
              #f)
      (mytest (match 123
                ((regexp "123") #t)
-               (else #f))
+               (_ #f))
              #f)
      (mytest (match 123
                ((pregexp "123" (list a ...)) #t)
-               (else #f))
+               (_ #f))
              #f)
      (mytest (match 123
                ((regexp "123" (list a ...)) #t)
-               (else #f))
+               (_ #f))
              #f)
      
      (mytest (match "hello"
                ((regexp "hello") #t)
-               (else #f))
+               (_ #f))
              #t)
      
      (mytest (match "frank"
                ((regexp "hello") #t)
                ((regexp "frank") 2)
-               (else #f))
+               (_ #f))
              2)
      
      (mytest (match "frank"
                ((pregexp "hello") #t)
                ((pregexp "frank") 2)
-               (else #f))
+               (_ #f))
              2)
      
      (mytest (match "frank"
                ((regexp "hello") #t)
-               (else #f))
+               (_ #f))
              #f)
      
      (mytest (match "hello"
                ((regexp "(hel)lo" (list whol a rest ...)) a)
-               (else #f))
+               (_ #f))
              "hel")
      
      (mytest (match "hello"
                ((pregexp "(hel)lo" (list whole a rest ...)) a)
-               (else #f))
+               (_ #f))
              "hel")
      
      (mytest (match-let*
@@ -117,28 +117,28 @@
                [(list 'case-> types ...) 1]
                [(list '->) 2]
                [(list '-> types ...) 3]
-               [else 4])
+               [_ 4])
              1)
      
      (mytest (match '(->)
                [(list 'case-> types ...) 1]
                [(list '->) 2]
                [(list '-> types ...) 3]
-               [else 4])
+               [_ 4])
              2)
      
      (mytest (match '(-> a b)
                [(list 'case-> types ...) 1]
                [(list '->) 2]
                [(list '-> types ...) 3]
-               [else 4])
+               [_ 4])
              3)
      
      (mytest (match 'x
                [(list 'case-> types ...) 1]
                [(list '->) 2]
                [(list '-> types ...) 3]
-               [else 4])
+               [_ 4])
              4)
      
      (mytest (match '((r a)) 
@@ -320,6 +320,14 @@
      (mytest (match (hash-table)
                ((hash-table) 5))
              5)
+     (mytest (match #hash((1 . 2))
+           [(hash-table) "empty"]
+           [_ "non-empty"])
+             "non-empty")
+     (mytest (match #hash()
+           [(hash-table) "empty"]
+           [_ "non-empty"])
+             "empty")
      
      ; These cases work but I need a better way of testing them.
      ; (mytest (match (hash-table ('a "hey") ('b "sup") ('c "sup") ('d "sup") ('e "down") ('f "dat"))

@@ -1,5 +1,6 @@
 #lang racket/base
 (require racket/class
+         ffi/file
          ffi/unsafe
          ffi/unsafe/atomic
          ffi/unsafe/custodian
@@ -10,7 +11,14 @@
          "ffi.rkt"
          "dbsystem.rkt")
 (provide connection%
-         handle-status*)
+         handle-status*
+         (protect-out unsafe-load-extension
+                      unsafe-create-function
+                      unsafe-create-aggregate))
+
+(define-local-member-name unsafe-load-extension)
+(define-local-member-name unsafe-create-function)
+(define-local-member-name unsafe-create-aggregate)
 
 ;; == Connection
 
@@ -23,6 +31,7 @@
 
     (define -db db)
     (define saved-tx-status #f) ;; set by with-lock, only valid while locked
+    (define creg #f) ;; custodian registration
 
     (sqlite3_extended_result_codes db #t)
 
@@ -50,11 +59,12 @@
     ;; Custodian shutdown can cause disconnect even in the middle of
     ;; operation (with lock held). So use (A _) around any FFI calls,
     ;; check still connected.
+    ;; Optimization: use faster {start,end}-atomic instead of call-as-atomic;
+    ;; but must not raise exn within (A _)!
     (define-syntax-rule (A e ...)
-      (call-as-atomic
-       (lambda ()
-         (unless -db (error/disconnect-in-lock 'sqlite3))
-         e ...)))
+      (begin (start-atomic)
+             (unless -db (end-atomic) (error/disconnect-in-lock 'sqlite3))
+             (begin0 (let () e ...) (end-atomic))))
 
     (define/private (get-db fsym)
       (or -db (error/not-connected fsym)))
@@ -107,17 +117,26 @@
                    (cursor-result info pst (box #f))]
                   [else
                    (simple-result
-                    (let ([last-insert-rowid (A (sqlite3_last_insert_rowid db))]
-                          [total-changes (A (sqlite3_total_changes db))])
+                    (let ([last-insert-rowid (A (sqlite3_last_insert_rowid db))])
                       ;; Not all statements clear last_insert_rowid, changes; so
                       ;; extra guards to make sure results are relevant.
+                      (define changes? (> (A (sqlite3_total_changes db)) saved-total-changes))
                       `((insert-id
-                         . ,(and (not (= last-insert-rowid saved-last-insert-rowid))
+                         ;; We want to report insert-id if statement was a *successful* INSERT,
+                         ;; but we can't check that directly. Instead, check if either
+                         ;; - last_insert_rowid changed (but this check might fail, if the inserted
+                         ;;   row happens to have the same rowid was the last INSERT; for example,
+                         ;;   because the last INSERT was to a different table); or
+                         ;; - the statement looked like an INSERT and the db reports changes
+                         ;;   (but this check misses WITH...INSERT statements).
+                         ;; Note that we can't use the errno approach of setting last_insert_rowid
+                         ;; to a known unused value, because there are no unused values (if an
+                         ;; INTEGER PRIMARY KEY field exists, that is the rowid) and because the
+                         ;; last_insert_rowid is visible to SQL statements.
+                         . ,(and (or (not (= last-insert-rowid saved-last-insert-rowid))
+                                     (and changes? (eq? (send pst get-stmt-type) 'insert)))
                                  last-insert-rowid))
-                        (affected-rows
-                         . ,(if (> total-changes saved-total-changes)
-                                (A (sqlite3_changes db))
-                                0)))))])))))
+                        (affected-rows . ,(if changes? (A (sqlite3_changes db)) 0)))))])))))
 
     (define/public (fetch/cursor fsym cursor fetch-size)
       (let ([pst (cursor-result-pst cursor)]
@@ -208,16 +227,20 @@
       (let*-values ([(db) (get-db fsym)]
                     [(prep-status stmt)
                      (HANDLE fsym
-                      ;; Do not allow break/kill between prepare and
-                      ;; entry of stmt in table.
-                      (A (let-values ([(prep-status stmt tail?)
-                                       (sqlite3_prepare_v2 db sql)])
-                           (when tail?
-                             (when stmt (sqlite3_finalize stmt))
-                             (error* fsym "multiple statements given"
-                                     '("given" value) sql))
-                           (when stmt (hash-set! stmt-table stmt #t))
-                           (values prep-status stmt))))])
+                       ;; Do not allow break/kill between prepare and
+                       ;; entry of stmt in table.
+                       ((A (let-values ([(prep-status stmt tail?)
+                                         (sqlite3_prepare_v2 db sql)])
+                             (cond [(not (zero? prep-status))
+                                    (when stmt (sqlite3_finalize stmt))
+                                    (lambda () (values prep-status #f))]
+                                   [tail?
+                                    (when stmt (sqlite3_finalize stmt))
+                                    (lambda () ;; escape atomic mode (see A)
+                                      (error fsym "multiple statements given\n  value: ~e" sql))]
+                                   [else
+                                    (when stmt (hash-set! stmt-table stmt #t))
+                                    (lambda () (values prep-status stmt))])))))])
         (when DEBUG?
           (dprintf "  << prepared statement #x~x\n" (cast stmt _pointer _uintptr)))
         (unless stmt (error* fsym "SQL syntax error" '("given" value) sql))
@@ -239,11 +262,17 @@
 
     (define/override (disconnect* _politely?)
       (super disconnect* _politely?)
+      (real-disconnect #f))
+
+    (define/public (real-disconnect from-custodian?)
       (call-as-atomic
        (lambda ()
          (let ([db -db])
            (when db
              (set! -db #f)
+             ;; Unregister custodian shutdown, unless called from custodian.
+             (unless from-custodian? (unregister-custodian-shutdown this creg))
+             (set! creg #f)
              ;; Free all of connection's prepared statements. This will leave
              ;; pst objects with dangling foreign objects, so don't try to free
              ;; them again---check that -db is not-#f.
@@ -334,7 +363,7 @@
         (set! name-counter (add1 name-counter))
         (format "λmz_~a" n)))
 
-    ;; Reflection
+    ;; == Reflection
 
     (define/public (list-tables fsym schema)
       (let ([stmt
@@ -345,7 +374,41 @@
           (for/list ([row (in-list (rows-result-rows result))])
             (vector-ref row 0)))))
 
-    ;; ----
+    ;; == Load Extension
+
+    (define/public (unsafe-load-extension who lib)
+      (define lib-path (cleanse-path (path->complete-path lib)))
+      (security-guard-check-file who lib-path '(read execute))
+      (call-with-lock who
+        (lambda ()
+          (HANDLE who (A (sqlite3_enable_load_extension -db 1)))
+          (HANDLE who (A (sqlite3_load_extension -db lib-path)))
+          (HANDLE who (A (sqlite3_enable_load_extension -db 0)))
+          (void))))
+
+    ;; == Create Function
+
+    (define dont-gc null)
+
+    (define/public (unsafe-create-function who name arity proc)
+      (define wrapped (wrap-fun name proc))
+      (call-with-lock who
+       (lambda ()
+         (set! dont-gc (cons wrapped dont-gc))
+         (HANDLE who (A (sqlite3_create_function_v2 -db name (or arity -1) wrapped))))))
+
+    (define/public (unsafe-create-aggregate who name arity step final [init #f])
+      (define aggbox (box init))
+      (define wrapped-step (wrap-agg-step name step aggbox init))
+      (define wrapped-final (wrap-agg-final name final aggbox init))
+      (call-with-lock who
+       (lambda ()
+         (set! dont-gc (list* wrapped-step wrapped-final dont-gc))
+         (HANDLE who
+                 (A (sqlite3_create_aggregate -db name (or arity -1)
+                                              wrapped-step wrapped-final))))))
+
+    ;; == Error handling
 
     (define-syntax HANDLE
       (syntax-rules ()
@@ -384,15 +447,16 @@
 
     ;; ----
     (super-new)
-    (register-finalizer-and-custodian-shutdown
-     this
-     ;; Keep a reference to the class to keep all FFI callout objects
-     ;; (eg, sqlite3_close) used by its methods from being finalized.
-     (let ([dont-gc this%])
-       (lambda (obj)
-         (send obj disconnect* #f)
-         ;; Dummy result to prevent reference from being optimized away
-         dont-gc)))))
+    (let ([shutdown
+           ;; Keep a reference to the class to keep all FFI callout objects
+           ;; (eg, sqlite3_close) used by its methods from being finalized.
+           (let ([dont-gc this%])
+             (lambda (obj)
+               (send obj real-disconnect #t)
+               ;; Dummy result to prevent reference from being optimized away
+               dont-gc))])
+      (register-finalizer this shutdown)
+      (set! creg (register-custodian-shutdown this shutdown)))))
 
 ;; ----------------------------------------
 

@@ -2,7 +2,7 @@
 
 (define collection 'multi)
 
-(define deps '("base"))
+(define deps '("base" "icons"))
 
 (define pkg-desc "tests for \"compiler-lib\"")
 
@@ -16,5 +16,7 @@
                      "gui-lib"
                      "htdp-lib"
                      "plai-lib"
-                     "rackunit-lib"))
+                     "rackunit-lib"
+		     "dynext-lib"
+		     "mzscheme-lib"))
 (define update-implies '("compiler-lib"))

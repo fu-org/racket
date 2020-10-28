@@ -2,7 +2,8 @@
 @(require "mz.rkt" (for-label racket/generic))
 
 @(define dict-eval (make-base-eval))
-@examples[#:hidden #:eval dict-eval (require racket/dict racket/generic racket/contract)]
+@examples[#:hidden #:eval dict-eval
+          (require racket/dict racket/generic racket/contract racket/string)]
 
 @title[#:tag "dicts"]{Dictionaries}
 
@@ -15,13 +16,19 @@ values. The following datatypes are all dictionaries:
 
  @item{@techlink{vectors} (using only exact integers as keys);}
 
- @item{@techlink{lists} of @techlink{pairs} (an @deftech{association
-       list} using @racket[equal?] to compare keys); and}
+ @item{@techlink{lists} of @techlink{pairs} as an @deftech{association
+       list} using @racket[equal?] to compare keys, which must be distinct; and}
 
  @item{@techlink{structures} whose types implement the @racket[gen:dict]
        @tech{generic interface}.}
 
 ]
+
+When list of pairs is used as @tech{association list} but does not
+have distinct keys (so it's not an association list), operations like
+@racket[dict-ref] and @racket[dict-remove] operate on the first
+instance of the key, while operations like @racket[dict-map] and
+@racket[dict-keys] produce an element for every instance of the key.
 
 @note-lib[racket/dict]
 
@@ -167,9 +174,10 @@ be used to implement any of the methods documented as
 }
 
 @defthing[prop:dict struct-type-property?]{
-  A deprecated structure type property used to define custom extensions
-  to the dictionary API. Use @racket[gen:dict] instead. Accepts a vector
-  of 10 method implementations:
+  A structure type property used to define custom extensions
+  to the dictionary API. Using the @racket[prop:dict] property is
+  discouraged; use the @racket[gen:dict] @tech{generic interface}
+  instead. Accepts a vector of 10 method implementations:
 
   @itemize[
            @item{@racket[dict-ref]}
@@ -192,13 +200,13 @@ only supported for dictionary types that directly implement them.
 
 @defproc[(dict-ref [dict dict?]
                    [key any/c]
-                   [failure-result (failure-result/c any/c)
+                   [failure-result failure-result/c
                                    (lambda () (raise (make-exn:fail ....)))])
          any]{
 
 Returns the value for @racket[key] in @racket[dict]. If no value
 is found for @racket[key], then @racket[failure-result] determines the
-result: 
+result:
 
 @itemize[
 
@@ -484,12 +492,12 @@ Supported for any @racket[dict] that implements @racket[dict-ref] and
 @defproc[(dict-update! [dict (and/c dict? (not/c immutable?))]
                        [key any/c]
                        [updater (any/c . -> . any/c)]
-                       [failure-result (failure-result/c any/c)
+                       [failure-result failure-result/c
                                        (lambda () (raise (make-exn:fail ....)))]) void?]{
 
 Composes @racket[dict-ref] and @racket[dict-set!] to update an
 existing mapping in @racket[dict], where the optional @racket[failure-result]
-argument is used as in @racket[dict-ref] when no mapping exists for 
+argument is used as in @racket[dict-ref] when no mapping exists for
 @racket[key] already.
 
 Supported for any @racket[dict] that implements @racket[dict-ref] and
@@ -510,13 +518,13 @@ v
 @defproc[(dict-update [dict dict?]
                       [key any/c]
                       [updater (any/c . -> . any/c)]
-                      [failure-result (failure-result/c any/c)
+                      [failure-result failure-result/c
                                       (lambda () (raise (make-exn:fail ....)))])
           (and/c dict? immutable?)]{
 
 Composes @racket[dict-ref] and @racket[dict-set] to functionally
 update an existing mapping in @racket[dict], where the optional @racket[failure-result]
-argument is used as in @racket[dict-ref] when no mapping exists for 
+argument is used as in @racket[dict-ref] when no mapping exists for
 @racket[key] already.
 
 Supported for any @racket[dict] that implements @racket[dict-ref] and
@@ -563,7 +571,7 @@ Supported for any @racket[dict] that implements @racket[dict-iterate-first],
 
 @examples[
 #:eval dict-eval
-(dict-for-each #hash((a . "apple") (b . "banana")) 
+(dict-for-each #hash((a . "apple") (b . "banana"))
                (lambda (k v)
                  (printf "~a = ~s\n" k v)))
 ]}
@@ -656,7 +664,7 @@ table
 
 }
 
-@defproc[(dict-keys [dict dict?]) list?]{ 
+@defproc[(dict-keys [dict dict?]) list?]{
 Returns a list of the keys from
 @racket[dict] in an unspecified order.
 
@@ -669,7 +677,7 @@ Supported for any @racket[dict] that implements @racket[dict-iterate-first],
 (dict-keys h)
 ]}
 
-@defproc[(dict-values [dict dict?]) list?]{ 
+@defproc[(dict-values [dict dict?]) list?]{
 Returns a list of the values from
 @racket[dict] in an unspecified order.
 
@@ -682,7 +690,7 @@ Supported for any @racket[dict] that implements @racket[dict-iterate-first],
 (dict-values h)
 ]}
 
-@defproc[(dict->list [dict dict?]) list?]{ 
+@defproc[(dict->list [dict dict?]) list?]{
 Returns a list of the associations from
 @racket[dict] in an unspecified order.
 
@@ -794,7 +802,7 @@ iterators, respectively, if @racket[d] implements the
 
 @section{Custom Hash Tables}
 
-@defform[(define-custom-hash-types name 
+@defform[(define-custom-hash-types name
                                    optional-predicate
                                    comparison-expr
                                    optional-hash-functions)
@@ -938,7 +946,7 @@ See @racket[define-custom-hash-types] for an example.
            (or/c (any/c . -> . exact-integer?)
                  (any/c (any/c . -> . exact-integer?) . -> . exact-integer?))
            (const 1)]
-          [#:key? key? (any/c . -> . boolean?) (const #true)])
+          [#:key? key? (any/c . -> . boolean?) (λ (x) #true)])
          dict?]
 @defproc[(make-weak-custom-hash
           [eql?
@@ -952,7 +960,7 @@ See @racket[define-custom-hash-types] for an example.
            (or/c (any/c . -> . exact-integer?)
                  (any/c (any/c . -> . exact-integer?) . -> . exact-integer?))
            (const 1)]
-          [#:key? key? (any/c . -> . boolean?) (const #true)])
+          [#:key? key? (any/c . -> . boolean?) (λ (x) #true)])
          dict?]
 @defproc[(make-immutable-custom-hash
           [eql?
@@ -966,16 +974,93 @@ See @racket[define-custom-hash-types] for an example.
            (or/c (any/c . -> . exact-integer?)
                  (any/c (any/c . -> . exact-integer?) . -> . exact-integer?))
            (const 1)]
-          [#:key? key? (any/c . -> . boolean?) (const #true)])
+          [#:key? key? (any/c . -> . boolean?) (λ (x) #true)])
          dict?]
 )]{
 
-Constructs an instance of a new dictionary type based on the given comparison
-function @racket[eql?], hash functions @racket[hash1] and @racket[hash2], and
-key predicate @racket[key?].
+ Creates an instance of a new dictionary type, implemented
+ in terms of a hash table where keys are compared with
+ @racket[eql?], hashed with @racket[hash1] and
+ @racket[hash2], and where the key predicate is
+ @racket[key?]. See @racket[gen:equal+hash] for information
+ on suitable equality and hashing functions.
 
-These procedures are deprecated; use @racket[define-custom-hash-types] instead.
+The @racket[make-custom-hash] and @racket[make-weak-custom-hash]
+functions create a mutable dictionary that does not support functional
+update, while @racket[make-immutable-custom-hash] creates an immutable
+dictionary that supports functional update. The dictionary created by
+@racket[make-weak-custom-hash] retains its keys weakly, like the result
+of @racket[make-weak-hash].
+
+Dictionaries created by @racket[make-custom-hash] and company are
+@racket[equal?] when they have the same mutability and key strength,
+the associated procedures are @racket[equal?], and the key--value
+mappings are the same when keys and values are compared with
+@racket[equal?].
+
+See also @racket[define-custom-hash-types].
+
+@examples[
+#:eval dict-eval
+(define h (make-custom-hash (lambda (a b)
+                              (string=? (format "~a" a)
+                                        (format "~a" b)))
+                            (lambda (a)
+                              (equal-hash-code
+                               (format "~a" a)))))
+(dict-set! h 1 'one)
+(dict-ref h "1")
+]
+
 
 }
+
+@section{Passing keyword arguments in dictionaries}
+
+@defproc[
+ (keyword-apply/dict [proc procedure?]
+                     [kw-dict dict?] ; (dict/c keyword? any/c)
+                     [pos-arg any/c] ...
+                     [pos-args (listof any/c)]
+                     [#:<kw> kw-arg any/c] ...)
+ any]{
+Applies the @racket[proc] using the positional arguments
+from @racket[(list* pos-arg ... pos-args)], and the keyword
+arguments from @racket[kw-dict] in addition to the directly
+supplied keyword arguments in the @racket[#:<kw> kw-arg]
+ sequence.
+
+All the keys in @racket[kw-dict] must be keywords.
+The keywords in the @racket[kw-dict] do not have to be
+sorted. However, the keywords in @racket[kw-dict] and the
+directly supplied @racket[#:<kw>] keywords must not overlap.
+The given @racket[proc] must accept all of the keywords in
+@racket[kw-dict] plus the @racket[#:<kw>]s.
+
+@examples[
+#:eval dict-eval
+(define (sundae #:ice-cream [ice-cream '("vanilla")]
+                #:toppings [toppings '("brownie-bits")]
+                #:sprinkles [sprinkles "chocolate"]
+                #:syrup [syrup "caramel"])
+  (format "A sundae with ~a ice cream, ~a, ~a sprinkles, and ~a syrup."
+          (string-join ice-cream #:before-last " and ")
+          (string-join toppings #:before-last " and ")
+          sprinkles
+          syrup))
+(keyword-apply/dict sundae '((#:ice-cream . ("chocolate"))) '())
+(keyword-apply/dict sundae
+                    (hash '#:toppings '("cookie-dough")
+                          '#:sprinkles "rainbow"
+                          '#:syrup "chocolate")
+                    '())
+(keyword-apply/dict sundae
+                    #:sprinkles "rainbow"
+                    (hash '#:toppings '("cookie-dough")
+                          '#:syrup "chocolate")
+                    '())
+]
+@history[#:added "7.9"]}
+
 
 @close-eval[dict-eval]

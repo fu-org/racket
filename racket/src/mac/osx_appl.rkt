@@ -3,7 +3,7 @@
 # OS X pre-make script
 # builds resource files, makes template Starter.app and GRacket.app
 #
-# the script must be run from the gracket build directory,
+# The script must be run from the gracket build directory,
 # and srcdir must be provided as the first argument
 
 |#
@@ -113,6 +113,7 @@
 		       ,(version))
 	   (assoc-pair "NSPrincipalClass" "NSApplicationMain")
            (assoc-pair "NSHighResolutionCapable" (true))
+	   (assoc-pair "NSRequiresAquaSystemAppearance" (false))
 	   (assoc-pair "NSSupportsAutomaticGraphicsSwitching" (true))))
 
     (create-app (build-path (current-directory) (if for-3m? 'up 'same))

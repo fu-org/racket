@@ -49,6 +49,13 @@
      [(null? lst) null]
      [(keyword? (syntax-e (car lst))) lst]
      [else (at-next-keyword (cdr lst))]))
+  (define (check-ok-flag flag)
+    (unless (regexp-match? #rx"^([-+][^-+]$|(--|[+][+])[^-+])" (syntax-e flag))
+      (serror "bad flag string" flag))
+    (when (regexp-match? #rx"^[-+][0-9]$" (syntax-e flag))
+      (serror "number flag not allowed" flag))
+    (when (regexp-match? #rx"^(-h|--help)$" (syntax-e flag))
+      (serror "pre-defined flag not allowed" flag)))
   (let ([lst (syntax->list stx)])
     (unless lst
       (raise-syntax-error #f "bad syntax (misuse of `.')" stx))
@@ -99,17 +106,22 @@
                                                                ([flags 
                                                                  (syntax-case (car sublines) ()
                                                                    [((flag ...) . rest)
-                                                                    (begin
+                                                                    (let ([flags (syntax->list #'(flag ...))])
                                                                       (unless (andmap 
                                                                                (lambda (x) (string? (syntax-e x)))
-                                                                               (syntax->list #'(flag ...)))
+                                                                               flags)
                                                                         (serror 
-                                                                         "flag specification is not a string or sequence of strings" 
-                                                                         #'(flag ...)))
+                                                                         "flag specification is not a string or sequence of strings"
+                                                                         (syntax-case (car sublines) ()
+                                                                           [(flags . rest)
+                                                                            #'flags])))
+                                                                      (for-each check-ok-flag flags)
                                                                       #'(flag ...))]
                                                                    [(flag . rest)
                                                                     (string? (syntax-e #'flag))
-                                                                    #'(flag)]
+                                                                    (begin
+                                                                      (check-ok-flag #'flag)
+                                                                      #'(flag))]
                                                                    [else
                                                                     (serror "clause does not start with flags")])])
                                                              (syntax-case* (car sublines) (=>) id=?
@@ -260,7 +272,7 @@
           (bad-table "~a line must be a string: ~e" (car spec) line))
         (begin
           (unless (and (list? line) (= (length line) 3))
-            (bad-table "spec-line must be a list of at three or four items: ~e" line))
+            (bad-table "spec-line must be a list of three items: ~e" line))
           (unless (list? (car line))
             (bad-table "flags part of a spec-line must be a list: ~e" (car line)))
           (for ([flag (in-list (car line))])

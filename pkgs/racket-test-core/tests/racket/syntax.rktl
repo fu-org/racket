@@ -3,6 +3,9 @@
 
 (Section 'syntax)
 
+(require syntax/srcloc
+         syntax/strip-context)
+
 ;; ----------------------------------------
 
 (test 0 'with-handlers (with-handlers () 0))
@@ -79,6 +82,9 @@
 (syntax-test #'(+ 3 . 4))
 (syntax-test #'(apply + 1 . 2))
 
+(test 'ok 'check-literal-quote-syntax-as-test (if (quote-syntax yes) 'ok 'bug!))
+(test 'ok2 'check-literal-quote-syntax-as-test (if (quote-syntax #f) 'ok2 'bug!))
+
 (test 8 (lambda (x) (+ x x)) 4)
 (define reverse-subtract
   (lambda (x y) (- y x)))
@@ -116,8 +122,8 @@
 (module check-wrong-arity-many-arguments racket/base
     ((lambda (a b c d e f g h i j k l m n o p q r s t u v w x y)
        1)))
-(err/rt-test (dynamic-require ''check-wrong-arity-many-arguments #f)
-             exn:fail:contract:arity?)
+(err/rt-test/once (dynamic-require ''check-wrong-arity-many-arguments #f)
+                  exn:fail:contract:arity?)
 
 (err/rt-test (letrec ([not-ready not-ready]) 5)
              (lambda (exn)
@@ -712,6 +718,7 @@
 (test 5 'let* (let* ([x 4][x 5]) x))
 (error-test-let #'(() (define x 10)))
 (error-test-let #'(() (define x 10) (define y 20)))
+(error-test-let #'(() 8 (define-syntax-rule (m) 10)))
 
 (define (do-error-test-let-values/no-* expr syntax-test)
   (syntax-test (datum->syntax #f (cons 'let-values expr) #f))
@@ -868,7 +875,29 @@
 
 (test 5 'implicit-begin (let () (begin) 10 5))
 
-(error-test #'(begin (define foo (let/cc k k)) (foo 10)) exn:application:type?) ; not exn:application:continuation?
+;; Check that expansion-introduced `let-values` is not mentioned in
+;; the error message
+(define (exn:begin-possibly-implicit? x)
+  (and (exn? x)
+       (regexp-match? #rx"begin .possibly implicit." (exn-message x))))
+(error-test #'(let () (define x 0)) exn:begin-possibly-implicit?)
+(error-test #'(let () (struct a ())) exn:begin-possibly-implicit?)
+(error-test #'(cond [#t (define x 0)]) exn:begin-possibly-implicit?)
+
+;; Weird test: check that `eval` does not wrap its last argument
+;; in a prompt, which means that `(foo 10)` replaces the continuation
+;; that would check for an error
+(error-test #'(begin (define foo (let/cc k k)) (foo 10)) (lambda (x) #f))
+
+;; Check that `eval` does wrap a prompt around non-tail expressions
+(test 10
+      (lambda (e) (call-with-continuation-prompt (lambda () (eval e))))
+      #'(begin (define foo (let/cc k k)) (foo 10) foo))
+
+;; Check that `eval` doesn't add a prompt around definitions:
+(eval #'(define foo (let/cc k k)))
+(eval #'(define never-gets-defined (eval #'(foo 9))))
+(err/rt-test (eval #'never-gets-defined) exn:fail:contract:variable?)
 
 (define f-check #t)
 (define f (delay (begin (set! f-check #f) 5)))
@@ -893,6 +922,14 @@
   (test 12 values v)
   (test (void) sync p)
   (test (list (void)) sync (wrap-evt p list)))
+
+(let ()
+  (define pr (delay/sync 'done))
+  (test #f promise-forced? pr)
+  (test #f sync/timeout 0 pr)
+  (test 'done force pr)
+  (test #t promise-forced? pr)
+  (test (void) sync/timeout 0 pr))
 
 (test '(list 3 4) 'quasiquote `(list ,(+ 1 2) 4))
 (test '(list a (quote a)) 'quasiquote (let ((name 'a)) `(list ,name ',name)))
@@ -1234,6 +1271,24 @@
 (error-test #'(parameterize ([(lambda () 10) 10]) 8))
 (error-test #'(parameterize ([(lambda (a) 10) 10]) 8))
 (error-test #'(parameterize ([(lambda (a b) 10) 10]) 8))
+
+;; Check documented order of evaluation
+(let ([str (let ([o (open-output-string)])
+             (define p1 (make-parameter 1 (λ (x) (displayln "p1" o) x)))
+             (define p2 (make-parameter 2 (λ (x) (displayln "p2" o) x)))
+             (parameterize ([(begin (displayln "b1" o) p1) (begin (displayln "a1" o) 4)]
+                            [(begin (displayln "b2" o) p2) (begin (displayln "a2" o) 5)])
+               3)
+             (get-output-string o))])
+  (test "b1\na1\nb2\na2\np1\np2\n" values str))
+(let ([str (let ([o (open-output-string)])
+             (define p1 (make-parameter 1 (λ (x) (displayln "p1" o) x)))
+             (err/rt-test/once
+              (parameterize ([(begin (displayln "b1" o) p1) (begin (displayln "a1" o) 4)]
+                             [(begin (displayln "b2" o) 'no) (begin (displayln "a2" o) 5)])
+                3))
+             (get-output-string o))])
+  (test "b1\na1\nb2\na2\np1\n" values str))
 
 (test 1 'time (time 1))
 (test -1 'time (time (cons 1 2) -1))
@@ -1660,6 +1715,54 @@
           (inspect-prop (splicing-let ()
                           (define-syntaxes/prop [] (values)))))))
 
+(test 42 'splicing-parameterize
+      (let ([param (make-parameter #f)])
+        (splicing-parameterize ([param 42])
+          (param))))
+
+(test 42 'splicing-parameterize
+      (let ([param (make-parameter #f)])
+        (splicing-parameterize ([param 42])
+          (define x (param)))
+        x))
+
+(test #f 'splicing-parameterize
+      (let ([param (make-parameter #f)])
+        (splicing-parameterize ([param 42])
+          (define (f) (param)))
+        (f)))
+
+(test #t 'splicing-parameterize
+      (let ([param (make-parameter #f)])
+        (splicing-parameterize ([param 42])
+          (param #t)
+          (define x (param)))
+        x))
+
+(test #f 'splicing-parameterize
+      (let-syntax ([deflocal (lambda (stx)
+                               (syntax-case stx ()
+                                 [(_ id rhs)
+                                  #`(define #,(syntax-property #'id 'definition-intended-as-local #t)
+                                      rhs)]))])
+        (let ([param (make-parameter #f)])
+          (define x (param))
+          (splicing-parameterize ([param 42])
+            (deflocal x (param)))
+          x)))
+
+(test 42 'splicing-parameterize
+      (let-syntax ([deflocal (lambda (stx)
+                               (syntax-case stx ()
+                                 [(_ id rhs)
+                                  #`(define #,(syntax-property #'id 'definition-intended-as-local #t)
+                                      rhs)]))])
+        (let ([param (make-parameter #f)])
+          (define x (param))
+          (splicing-parameterize ([param 42])
+            (deflocal x (param))
+            x))))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check keyword & optionals for define-syntax 
 ;; and define-syntax-for-values:
@@ -1741,7 +1844,7 @@
                                   (q)))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; check that the compiler is not too agressive with `letrec' -> `let*'
+;; check that the compiler is not too aggressive with `letrec' -> `let*'
 
 (test "<undefined>\nready\n"
       get-output-string
@@ -1986,6 +2089,244 @@
   (write (compile '(begin-for-syntax
                     (require racket/match)))
          (open-output-bytes)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(module provide-transformer-set!-and-broken-module-begin racket
+  (provide
+   (for-syntax set!)
+   (rename-out (defined-begin #%module-begin)))
+
+  (define-syntax (defined-begin stx)
+    (syntax-case stx ()
+      [(_ e ...)
+       #`(#%plain-module-begin #,@(map expand (syntax->list #'(e ...))))])))
+
+(err/rt-test (eval '(module m 'provide-transformer-set!-and-broken-module-begin (set! x 1)))
+             exn:fail:syntax?)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check disappeared-uses for cond
+
+(define (jumble->list v)
+  (cond
+    [(list? v) (append-map jumble->list v)]
+    [(pair? v) (append (jumble->list (car v)) (jumble->list (cdr v)))]
+    [else (list v)]))
+
+(define (collect-property-jumble stx key)
+  (let loop ([stx stx])
+    (let ([outer-val (syntax-property stx key)]
+          [inner-vals (syntax-case stx ()
+                        [(a . b)
+                         (append (loop #'a) (loop #'b))]
+                        [#(a ...)
+                         (append-map loop (syntax->list #'(a ...)))]
+                        [#&a
+                         (loop #'a)]
+                        [_
+                         (prefab-struct-key (syntax-e stx))
+                         (append-map loop (vector->list (struct->vector (syntax-e stx))))]
+                        [_
+                         (hash? (syntax-e stx))
+                         (append-map loop (hash-values (syntax-e stx)))]
+                        [_ '()])])
+      (if outer-val
+          (append (jumble->list outer-val) inner-vals)
+          inner-vals))))
+
+(define (srclocs-equal? a b)
+  (equal? (build-source-location a)
+          (build-source-location b)))
+
+(define (all-srclocs-equal? as bs)
+  (and (= (length as) (length bs))
+       (andmap srclocs-equal? as bs)))
+
+(with-syntax ([=>1 #'=>] [=>2 #'=>] [else1 #'else])
+  (test
+   #t
+   all-srclocs-equal?
+   (collect-property-jumble
+    (parameterize ([current-namespace (make-base-namespace)])
+      (expand (strip-context #'(cond [#t =>1 values] [#f =>2 not] [else1 #f]))))
+    'disappeared-use)
+   (list #'=>1 #'=>2 #'else1)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check origin for internal definitions includes define-syntax itself
+
+(define (all-srclocs-included? as bs)
+  (and (for/and ([a (in-list as)])
+         (member a bs srclocs-equal?))
+       #t))
+
+(with-syntax ([define-syntax1 #'define-syntax])
+  (define expanded-stx
+    (parameterize ([current-namespace (make-base-namespace)])
+      (expand (strip-context #'(let ()
+                                 (define-syntax1 foo (syntax-rules ()))
+                                 (void))))))
+  (define expanded-body-stx
+    (syntax-case expanded-stx (let-values)
+      [(let-values _ form) #'form]))
+  (test
+   #t
+   all-srclocs-included?
+   (list #'define-syntax1)
+   (syntax-property expanded-body-stx 'origin)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that `strip-context` works on prefabs, hash tables, etc.
+
+(let ()
+  (define (same? a b)
+    (cond
+      [(syntax? a)
+       (and (syntax? b)
+            (equal? (for/hash ([k (in-list (hash-ref (syntax-debug-info a) 'context))])
+                      (values k #t))
+                    (for/hash ([k (in-list (hash-ref (syntax-debug-info b) 'context))])
+                      (values k #t)))
+            (same? (syntax-e a) (syntax-e b)))]
+      [(pair? a) (and (pair? b)
+                      (same? (car a) (car b))
+                      (same? (cdr a) (cdr b)))]
+      [(box? a) (and (box? b)
+                     (same? (unbox a) (unbox b)))]
+      [(vector? a) (and (vector? b)
+                        (= (vector-length a) (vector-length b))
+                        (for/and ([a (in-vector a)]
+                                  [b (in-vector b)])
+                          (same? a b)))]
+      [(hash? a) (and (eq? (hash-eq? a) (hash-eq? b))
+                      (eq? (hash-eqv? a) (hash-eqv? b))
+                      (eq? (hash-equal? a) (hash-equal? b))
+                      (for/and ([(ak av) (in-hash a)])
+                        (same? av (hash-ref b ak #f))))]
+      [(prefab-struct-key a)
+       => (lambda (ak)
+            (and (equal? ak (prefab-struct-key b))
+                 (same? (struct->vector a) (struct->vector b))))]
+      [else (eqv? a b)]))
+
+  (define (check v)
+    (same? (datum->syntax #f v)
+           (strip-context (datum->syntax #'here v))))
+
+  (test #t check '(a b))
+  (test #t check '#(a b #hash((c . 9))))
+  (test #t check '(#hasheqv((10 . 11) (12 . 13)) #&"str" #s(color r G #b0)))
+  (test #t check '(#hasheq((x . 11) (y . 13) (z . #f)) (1 . 2))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(module tries-to-use-foo-before-defined racket/base
+  (provide result)
+  (define-syntax-rule (go result)
+    ;; `foo` will be macro-introduced
+    (begin
+      (define result
+        (with-handlers ([exn:fail:contract:variable? values])
+          (foo "bar")))
+      (define foo 5)))
+  (go result))
+
+(let ([v (dynamic-require ''tries-to-use-foo-before-defined 'result)])
+  (test #t exn? v)
+  (test #t symbol? (exn:fail:contract:variable-id v))
+  (test #t regexp-match? #rx"^foo:" (exn-message v))
+  (test 5 eval (exn:fail:contract:variable-id v) (module->namespace ''tries-to-use-foo-before-defined)))
+
+;; A top-level `cons` is renamed internally to something like `1/cons`
+;; to avoid shadowing a primitive, but the variable name is still
+;; `cons` and an exception should contain 'cons
+(let ([e (with-handlers ([exn:fail:contract:variable? values])
+           (define ns (make-base-empty-namespace))
+           (namespace-require `(all-except racket/base cons) ns)
+           (eval 'cons ns))])
+  (test #t exn? e)
+  (test #t exn:fail:contract:variable? e)
+  (test 'cons exn:fail:contract:variable-id e)
+  (test #t regexp-match? #rx"^cons: " (exn-message e)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check immutability after saving and restoring quoted constants
+
+(let ([m `(module defines-immutable-objects racket/base
+            (provide objs)
+            (define objs
+              '(#"x"
+                "x"
+                #()
+                #(1)
+                #(#:x)
+                #(#"x")
+                #&1
+                #&#:x
+                #&#"x"
+                #hasheq((a . b)))))])
+  (define c (compile m))
+  (eval c)
+  (test #t andmap immutable? (dynamic-require ''defines-immutable-objects 'objs))
+  (define-values (i o) (make-pipe))
+  (write c o)
+  (close-output-port o)
+  (parameterize ([current-namespace (make-base-namespace)])
+    (eval (parameterize ([read-accept-compiled #t])
+            (read i)))
+    (test #t andmap immutable? (dynamic-require ''defines-immutable-objects 'objs))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; `splicing-parameterize` + `begin`
+
+(test #t 'splicing-parameterize
+      (let ([param (make-parameter #f)])
+        (splicing-parameterize ([param #t])
+          (begin
+            (define x (param))))
+        x))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; check interpreted `begin0`, 0 results, and
+;; non-0 results along the way
+
+;; This is a regression test for a bug that caused a crash
+(let ()
+  (define f
+    (impersonate-procedure
+     (λ (x) #f)
+     (λ (x) (values (λ (x) x) x))))
+
+  (call-with-values
+   (λ ()
+     (begin0
+       ((lambda (pos)
+          (set! pos pos)
+          (values))
+        0)
+       (f #f)))
+   (λ args (void))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that `compile` works on non-serializable
+
+(let ([c (compile (let ([c #f])
+                    (lambda (v)
+                      (begin0 c (set! c v)))))])
+  (test #t values (compiled-expression? c))
+  (test #t procedure? (eval c))
+  (err/rt-test (write c (open-output-bytes))
+               exn:fail?))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test to make sure `(set! ...)` on a local variable
+;; in the first position of ` begin0` is not miscompiled
+
+(test (void) (let ([i 0])
+               (λ () (begin0
+                       (set! i (add1 i))
+                       (+ i 1)))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

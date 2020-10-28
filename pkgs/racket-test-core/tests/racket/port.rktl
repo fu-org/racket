@@ -95,6 +95,51 @@
 (test #t string-port? (open-output-bytes))
 (test #t string-port? (open-output-string))
 
+;; concurrent close on input fails
+(let ()
+  (define-values (i o) (make-pipe))
+  (thread (lambda ()
+            (sync (system-idle-evt))
+            (close-input-port i)))
+  (err/rt-test
+   (peek-bytes-avail! (make-bytes 10) 0 #f i)
+   exn:fail?))
+
+;; concurrent close on input triggers progress
+(let ()
+  (define-values (i o) (make-pipe))
+  (thread (lambda ()
+            (sync (system-idle-evt))
+            (close-input-port i)))
+  (test 0 peek-bytes-avail! (make-bytes 10) 0 (port-progress-evt i) i))
+
+;; concurrent close on output fails
+(let ()
+  (define-values (i o) (make-pipe 4096))
+  (thread (lambda ()
+            (sync (system-idle-evt))
+            (close-output-port o)))
+  (err/rt-test
+   (let loop ()
+     (write-bytes #"hello" o)
+     (loop))
+   exn:fail?))
+
+;; concurrent close of input unblocks limited output
+(let ()
+  (define-values (i o) (make-pipe 4096))
+  (define done? #f)
+  (thread (lambda ()
+            (sync (system-idle-evt))
+            (set! done? #t)
+            (close-input-port i)))
+
+  ;; Shouldn't get stuck:
+  (let loop ()
+    (write-bytes #"hello" o)
+    (unless done?
+      (loop))))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Based on the Racket manual...
 
@@ -150,6 +195,7 @@
 ;; This port produces 0, 1, 2, 0, 1, 2, etc,
 ;;  but it is not thread-safe, because multiple
 ;;  threads might read and change n
+(define mod3-peeked? #f)
 (define mod3-cycle/one-thread
   (let* ([n 2]
 	 [mod! (lambda (s delta)
@@ -157,14 +203,16 @@
                  1)])
     (make-input-port
      'mod3-cycle/not-thread-safe
-     (lambda (s) 
+     (lambda (s)
        (set! n (modulo (add1 n) 3))
        (mod! s 0))
-     (lambda (s skip progress-evt) 
-       (mod! s skip))
+     (lambda (s skip progress-evt)
+       (set! mod3-peeked? #t)
+       (mod! s (add1 skip)))
      void)))
 (test "01201" read-string 5 mod3-cycle/one-thread)
-(test "20120" peek-string 5 (expt 2 5000) mod3-cycle/one-thread)
+(test #f values mod3-peeked?)
+(test "20120" peek-string 5 (sub1 (expt 2 5000)) mod3-cycle/one-thread)
 
 ;; Same thing, but thread-safe and kill-safe, and with progress
 ;; events. Only the server thread touches the stateful part
@@ -365,6 +413,15 @@
 (err/rt-test (read-char infinite-voids) exn:application:mismatch?)
 (test 'void read-byte-or-special infinite-voids)
 (test 'void read-char-or-special infinite-voids)
+(test 'void peek-char-or-special infinite-voids 0)
+(test 'special peek-char-or-special infinite-voids 0 'special)
+(let ([p (make-input-port
+          'voids
+          (lambda (s) (lambda args 'void))
+          (lambda (skip s progress-evt) (lambda args (error "oops")))
+          void)])
+  (test 'special peek-char-or-special infinite-voids 0 'special)
+  (test 'void read-char-or-special infinite-voids))
 (let ([go
        (lambda (get-avail!)
 	 (define (get)
@@ -503,6 +560,35 @@
 (test 3 sync (write-bytes-avail-evt #"Bye" cap-port))
 (test "HELLOBYE" get-output-string orig-port)
 
+;; Make sure output ports get immutable byte strings
+(let ()
+  (define i? #f)
+  (define p (make-output-port
+             'test
+             always-evt
+             (lambda (bstr start end buffer? enable-break?)
+               (set! i? (immutable? bstr))
+               (- end start))
+             void
+             (lambda (v buffer? enable-break?)
+               1)
+             (lambda (bstr start end)
+               (set! i? (immutable? bstr))
+               (wrap-evt always-evt (lambda (v) (- end start))))
+             (lambda (v)
+               (wrap-evt always-evt (lambda (v) 1)))))
+  (test 5 write-bytes (bytes-copy #"hello") p)
+  (test #t values i?)
+  (set! i? #f)
+  (test 5 write-bytes #"hello" p)
+  (test #t values i?)
+  (set! i? #f)
+  (test #t evt? (write-bytes-avail-evt #"hello" p))
+  (test #t values i?)
+  (set! i? #f)
+  (test #t evt? (write-bytes-avail-evt (bytes-copy #"hello") p))
+  (test #t values i?))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Peeking in a limited pipe extends the limit:
 
@@ -520,7 +606,12 @@
   (let ([s (make-bytes 6 (char->integer #\-))])
     (test 5 read-bytes-avail! s in)
     (test #"12311-" values s))
-  (test 3 write-bytes-avail #"1234" out))
+  (test 3 values
+        (let loop ([n 0])
+          (define v (write-bytes-avail* #"1234" out))
+          (if (zero? v)
+              n
+              (loop (+ n v))))))
 
 ;; Further test of peeking in a limited pipe (shouldn't get stuck):
 (let-values ([(i o) (make-pipe 50)]
@@ -621,6 +712,21 @@
       (test 0 syntax-column stx)
       (test 1026 syntax-position stx))))
 
+;; Test provided by @wcs4217
+(let ([p (open-input-bytes #"\rx\ny")])
+  (port-count-lines! p)
+  (test-values '(1 0 1) (lambda () (port-next-location p)))
+  (test #\return read-char p)
+  (test-values '(2 0 2) (lambda () (port-next-location p)))
+  (test #\x read-char p)
+  (test-values '(2 1 3) (lambda () (port-next-location p)))
+  (test #\newline read-char p)
+  (test-values '(3 0 4) (lambda () (port-next-location p)))
+  (test #\y read-char p)
+  (test-values '(3 1 5) (lambda () (port-next-location p)))
+  (test eof read-char p)
+  (test-values '(3 1 5) (lambda () (port-next-location p))))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;  Check that if the initial commit thread is killed, then
 ;;  another commit thread is broken, that the second doesn't
@@ -633,11 +739,13 @@
   (peek-byte r)
   (let ([t (thread (lambda ()
 		     (port-commit-peeked 1 (port-progress-evt r) ch r)))])
-    (sleep 0.01)
+    (sync (system-idle-evt))
     (let ([t2
 	   (thread (lambda ()
 		     (port-commit-peeked 1 (port-progress-evt r) ch r)))])
-      (sleep 0.01)
+      (sync (system-idle-evt))
+      (test #t thread-running? t)
+      (test #t thread-running? t2)
       (thread-suspend t2)
       (break-thread t2)
       (kill-thread t)
@@ -657,9 +765,9 @@
 		   void)])
 	   (let ([t (thread (lambda () (with-handlers ([exn:break? void])
 					 (read-char p))))])
-	     (sleep 0.1)
+	     (sync (system-idle-evt))
 	     (break-thread t)
-	     (sleep 0.1)
+	     (sync (system-idle-evt))
 	     (test #f thread-running? t))))])
   (try sync)
   (try sync/enable-break)
@@ -860,14 +968,23 @@
   (test #f file-position* p2)
   (err/rt-test (file-position p2) exn:fail:filesystem?))
 
+(let ([i (open-input-bytes #"")])
+  (test i sync/timeout 0 i)
+  (test i sync/timeout #f i)
+  (test #t byte-ready? i)
+  (test #t char-ready? i))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Text mode, file positions, and buffers
 
 (let ()
-  (define path (build-path (find-system-path 'temp-dir) "test.txt"))
+  (define path (make-temporary-file "test~a.txt"))
 
   (define ofile (open-output-file path #:mode 'text #:exists 'replace))
   (fprintf ofile "abc\ndef\nghi\n")
+  (test 'block file-stream-buffer-mode ofile)
+  (test (void) file-stream-buffer-mode ofile 'line)
+  (test 'line file-stream-buffer-mode ofile)
   (close-output-port ofile)
 
   (let ()
@@ -901,6 +1018,21 @@
 	 (test bs bytes-append a b)))
 
   (delete-file path))
+
+;; Check `file-position`, OS-level pipes, and peek
+(when (and (memq (system-type) '(unix macosx))
+           (file-exists? "/bin/cat"))
+  (define-values (sp stdout-in stdin-out stderr-in) (subprocess #f #f #f "/bin/cat"))
+  (write-bytes #"abcd\n" stdin-out)
+  (close-output-port stdin-out)
+  (test 0 file-position stdout-in)
+  (test #"abc" peek-bytes 3 0 stdout-in)
+  (test 0 file-position stdout-in)
+  (test #\a read-char stdout-in)
+  (test 1 file-position stdout-in)
+  (close-input-port stdout-in)
+  (close-input-port stderr-in)
+  (subprocess-wait sp))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check reader error-message formatting for a struct port
@@ -967,6 +1099,44 @@
   (check-srcloc #f 3 29)
   (check-srcloc #f 3 #f)
   (check-srcloc 1 3 29))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test for interaction of `read-line`, "\r\n", and
+;; input buffering
+
+(let ()
+  (define f1 (make-temporary-file "line-feed1~a.txt"))
+  (define f2 (make-temporary-file "line-feed2~a.txt"))
+
+  (define p1 (open-output-file f1 #:exists 'truncate))
+  (define p2 (open-output-file f2 #:exists 'truncate))
+
+  (define (write-prefix p)
+    (for ([i 1364])
+      (write-bytes #"x\r\n" p)))
+
+  (write-prefix p1)
+  (write-prefix p2)
+  (write-bytes #"\r\ny\r\ny\r\n" p1)
+  (write-bytes #"y\r\ny\r\ny\r\n" p2)
+
+  (close-output-port p1)
+  (close-output-port p2)
+
+  (define (count f)
+    (call-with-input-file f
+                          (lambda (in)
+                            (let loop ()
+                              (define v (read-line in 'any))
+                              (if (eof-object? v)
+                                  0
+                                  (add1 (loop)))))))
+
+  (test 1367 count f1)
+  (test 1367 count f2)
+
+  (delete-file f1)
+  (delete-file f2))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

@@ -13,23 +13,32 @@
 
 (require setup/main-collects
          racket/struct-info
-         (for-template racket/base))
+         (only-in racket/private/list-predicates empty? cons?)
+         (for-template racket/base
+                       (only-in racket/private/list-predicates
+                                empty? cons?)))
 
 (define (update-loc stx loc)
   (datum->syntax stx (syntax-e stx) loc))
 
-;; lookup-struct-info : syntax -> (union #f (list syntax syntax (listof syntax) ...))
+;; lookup-struct-info : syntax -> struct-info?
 (define (lookup-struct-info stx provide-stx)
-  (let ([id (syntax-case stx ()
-              [(a b) (syntax a)]
-              [_ stx])])
-    (let ([v (syntax-local-value id (λ () #f))])
-      (if (struct-info? v)
-          (extract-struct-info v)
-          (raise-syntax-error 'provide/contract
-                              "expected a struct name" 
-                              provide-stx
-                              id)))))
+  (define id (syntax-case stx ()
+               [(a b) (syntax a)]
+               [_ stx]))
+  (define v (syntax-local-value id (λ () #f)))
+  (define error-name
+    (syntax-case provide-stx ()
+      [(x . y)
+       (identifier? #'x)
+       (syntax-e #'x)]
+      [_ 'provide/contract]))
+  (if (struct-info? v)
+      v
+      (raise-syntax-error error-name
+                          "expected a struct name"
+                          provide-stx
+                          id)))
 
 
 (define (add-name-prop name stx)
@@ -188,6 +197,8 @@
        (sort known-good-syms
              string<=?
              #:key symbol->string)))
+
+-- also add empty? and cons? to the above
 
 |#
 
@@ -365,7 +376,10 @@
          (void? . #t)
          (weak-box? . #t)
          (will-executor? . #t)
-         (zero? . #t)))
+         (zero? . #t)
+         ;; from racket/private/list-predicates
+         (empty? . #t)
+         (cons? . #t)))
 
 (define (known-good-contract? id)
   (define r-id (syntax-e id))

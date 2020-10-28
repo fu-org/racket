@@ -10,13 +10,6 @@ compilation of Racket from source to bytecode, the allocation and
 reclamation of memory used during evaluation, and the scheduling of
 concurrent threads and parallel tasks.
 
-Much of the language provided by @racketmodname[racket/base] is
-implemented in a more primitive dialect of Racket that is provided by
-the run-time system. Future versions of Racket are likely to move
-macro expansion, compilation, and many ``primitive'' functions into
-such Racket-implemented libraries, instead of having them built into
-the run-time system.
-
 @section{``Scheme'' versus ``Racket''}
 
 The old name for Racket was ``PLT Scheme,'' and the core compiler and
@@ -24,28 +17,6 @@ run-time system used to be called ``MzScheme.'' The old names are
 entrenched in Racket internals, to the point that most C bindings
 defined in this manual start with @cpp{scheme_}. In principle, they
 all should be renamed to start @cpp{racket_}.
-
-@; ----------------------------------------------------------------------
-
-@section{Building Racket from Source}
-
-The normal Racket distribution includes @filepath{.rkt} sources for
-collection-based libraries. After modifying library files, run
-@exec{raco setup} (see @secref[#:doc '(lib
-"scribblings/raco/raco.scrbl") "setup"]) to rebuild installed
-libraries.
-
-The normal Racket distribution does not include the C sources for
-Racket's run-time system. To build Racket from scratch, download a
-source distribution from @url{http://download.racket-lang.org};
-detailed build instructions are in the @filepath{README} file in the
-top-level @filepath{src} directory. You can also get the latest
-sources from the @tt{git} repository at
-@url{https://github.com/racket/racket}, but beware that the repository is
-one step away from a normal source distribution, and it provides build
-modes that are more suitable for developing Racket itself; see
-@filepath{INSTALL.txt} in the @tt{git} repository for more
-information.
 
 @; ----------------------------------------------------------------------
 
@@ -100,7 +71,7 @@ to call the library.
 
 @; ----------------------------------------------------------------------
 
-@section[#:tag "places"]{Racket and Places}
+@section[#:tag "places"]{Racket BC and Places}
 
 Each Racket @|tech-place| corresponds to a separate OS-implemented
 thread. Each place has its own memory manager. Pointers to GC-managed
@@ -125,15 +96,13 @@ for the original place.
 
 @; ----------------------------------------------------------------------
 
-@section{Racket and Threads}
+@section{Racket BC and Threads}
 
 Racket implements threads for Racket programs without aid from the
 operating system, so that Racket threads are cooperative from the
-perspective of C code. On Unix, stand-alone Racket uses a single
-OS-implemented thread. On Windows and Mac OS, stand-alone
-Racket uses a few private OS-implemented threads for background
-tasks, but these OS-implemented threads are never exposed by the
-Racket API.
+perspective of C code. Stand-alone Racket may uses a few private
+OS-implemented threads for background tasks, but these OS-implemented
+threads are never exposed by the Racket API.
 
 Racket can co-exist with additional OS-implemented threads, but the
 additional OS threads must not call any @cpp{scheme_} function.  Only
@@ -153,7 +122,7 @@ and embedding C code.
 
 @; ----------------------------------------------------------------------
 
-@section[#:tag "im:unicode"]{Racket, Unicode, Characters, and Strings}
+@section[#:tag "im:unicode"]{Racket BC, Unicode, Characters, and Strings}
 
 A character in Racket is a Unicode code point. In C, a character
 value has type @cppi{mzchar}, which is an alias for @cpp{unsigned} ---
@@ -170,7 +139,7 @@ See also @secref["im:strings"] and @secref["im:encodings"].
 
 @; ----------------------------------------------------------------------
 
-@section[#:tag "im:intsize"]{Integers}
+@section[#:tag "im:intsize"]{Racket BC Integers}
 
 Racket expects to be compiled in a mode where @cppi{short} is a
 16-bit integer, @cppi{int} is a 32-bit integer, and @cppi{intptr_t} has

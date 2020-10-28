@@ -35,7 +35,8 @@
                           #:merge? [merge? #f]
                           #:force? [force? #f]
                           #:override? [override? #f]
-                          #:relative-sources? [relative-sources? #f])
+                          #:relative-sources? [relative-sources? #f]
+                          #:include-only [include-names #f])
   (define src-paths
     (for/list ([src (in-list (append srcs
                                      (if from-config?
@@ -82,6 +83,11 @@
                      "  path: ~a")
                  dest-path)))
 
+  (define include-table
+    (and include-names
+         (for/hash ([name (in-list include-names)])
+           (values name #t))))
+
   (define absolute-details
     (let ([src-paths (if (and merge?
                               (or (file-exists? dest-path)
@@ -98,10 +104,17 @@
                                                 src-path))])
         (get-all-pkg-details-from-catalogs))))
   (define details
-    (if relative-sources?
-        (for/hash ([(k ht) (in-hash absolute-details)])
-          (values k (source->relative-source dest-dir ht)))
-        absolute-details))
+    (cond
+      [relative-sources?
+       (for/hash ([(k ht) (in-hash absolute-details)]
+                  #:when (hash-ref include-table k #f))
+         (values k (source->relative-source dest-dir ht)))]
+      [include-table
+       (for/hash ([(k ht) (in-hash absolute-details)]
+                  #:when (hash-ref include-table k #f))
+         (values k ht))]
+      [else
+       absolute-details]))
 
   (when (and force? (not merge?))
     (cond
@@ -121,28 +134,34 @@
       (for/hash ([(k v) (in-hash details)])
         (values k (select-info-version v))))
     (parameterize ([db:current-pkg-catalog-file dest-path])
-      (db:set-catalogs! '("local"))
-      (db:set-pkgs! "local"
-                    (for/list ([(k v) (in-hash vers-details)])
-                      (db:pkg k "local"
-                              (hash-ref v 'author "")
-                              (hash-ref v 'source "")
-                              (hash-ref v 'checksum "")
-                              (hash-ref v 'description ""))))
-      (for ([(k v) (in-hash vers-details)])
-        (define t (hash-ref v 'tags '()))
-        (unless (null? t)
-          (db:set-pkg-tags! k "local" t)))
-      (for ([(k v) (in-hash vers-details)])
-        (define mods (hash-ref v 'modules '()))
-        (unless (null? mods)
-          (define cs (hash-ref v 'checksum ""))
-          (db:set-pkg-modules! k "local" cs mods)))
-      (for ([(k v) (in-hash vers-details)])
-        (define deps (hash-ref v 'dependencies '()))
-        (unless (null? deps)
-          (define cs (hash-ref v 'checksum ""))
-          (db:set-pkg-dependencies! k "local" cs deps))))]
+      (db:call-with-pkgs-transaction
+       (lambda ()
+         (db:set-catalogs! '("local"))
+         (db:set-pkgs! "local"
+                       (for/list ([(k v) (in-hash vers-details)])
+                         (db:pkg k "local"
+                                 (hash-ref v 'author "")
+                                 (hash-ref v 'source "")
+                                 (hash-ref v 'checksum "")
+                                 (hash-ref v 'description ""))))
+         (for ([(k v) (in-hash vers-details)])
+           (define t (hash-ref v 'tags '()))
+           (unless (null? t)
+             (db:set-pkg-tags! k "local" t)))
+         (for ([(k v) (in-hash vers-details)])
+           (define mods (hash-ref v 'modules '()))
+           (unless (null? mods)
+             (define cs (hash-ref v 'checksum ""))
+             (db:set-pkg-modules! k "local" cs mods)))
+         (for ([(k v) (in-hash vers-details)])
+           (define deps (hash-ref v 'dependencies '()))
+           (unless (null? deps)
+             (define cs (hash-ref v 'checksum ""))
+             (db:set-pkg-dependencies! k "local" cs deps)))
+         (for ([(k v) (in-hash vers-details)])
+           (define ring (hash-ref v 'ring #f))
+           (when ring
+             (db:set-pkg-ring! k "local" ring))))))]
    [else
     (define pkg-path (build-path dest-path "pkg"))
     (make-directory* pkg-path)
@@ -159,4 +178,3 @@
      #:exists 'truncate/replace
      (build-path dest-path "pkgs-all")
      (lambda (o) (write details o)))]))
-

@@ -3,8 +3,8 @@
 
 (Section 'wills)
 
-(collect-garbage 'major)
-(collect-garbage 'minor)
+(test (void) collect-garbage 'major)
+(test (void) collect-garbage 'minor)
 (err/rt-test (collect-garbage 'other))
 
 (test #t exact-nonnegative-integer? (current-memory-use))
@@ -15,6 +15,9 @@
 (test #t will-executor? (make-will-executor))
 
 (define we (make-will-executor))
+
+(test #f will-try-execute we)
+(test 'no will-try-execute we 'no)
 
 ;; Never GC this one:
 (test (void) will-register we test (lambda (x) (error 'bad-will-call)))
@@ -61,7 +64,33 @@
 (arity-test will-executor? 1 1)
 (arity-test will-register 3 3)
 (arity-test will-execute 1 1)
-(arity-test will-try-execute 1 1)
+(arity-test will-try-execute 1 2)
+
+;; ----------------------------------------
+;; Will executors as events
+
+(let ([we (make-will-executor)])
+  (let loop ([n 10])
+    (unless (zero? n)
+      (will-register we (cons n null)
+                     (lambda (s)
+                       (set! counter (cons (car s) counter))
+                       12))
+      (loop (sub1 n))))
+  (collect-garbage)
+  (test we sync/timeout #f we)
+
+  (define evt-checked 0)
+  (define val-checked 0)
+  (test we sync/timeout #f (chaperone-evt we
+                                          (lambda (e)
+                                            (test #t eq? we e)
+                                            (set! evt-checked (add1 evt-checked))
+                                            (values e (lambda (val)
+                                                        (test #t eq? we e)
+                                                        (set! val-checked (add1 val-checked))
+                                                        val)))))
+  (test '(1 1) list evt-checked val-checked))
 
 ;; ----------------------------------------
 ;; Test custodian boxes
@@ -93,8 +122,9 @@
               (mk-finalized n)
               (loop (sub1 n))))
           (gc)
-          ;; finalize at least half?
-          (test #t > (length removed) 50)
+          (unless (eq? 'cgc (system-type 'gc))
+            ;; finalize at least half
+            (test #t > (length removed) 50))
           (test #f ormap symbol? removed)
           (test 12 custodian-box-value b1)
           (loop (sub1 m))))
@@ -106,7 +136,8 @@
       (test b1 sync/timeout 0 b1)
       (test #f ormap values (map custodian-box-value saved))
       (gc)
-      (test #t <= 5 (apply + (map (lambda (v) (if (symbol? v) 1 0)) removed))))))
+      (unless (eq? 'cgc (system-type 'gc))
+        (test #t <= 5 (apply + (map (lambda (v) (if (symbol? v) 1 0)) removed)))))))
 
 (when (custodian-memory-accounting-available?)
   ;; Check custodian boxes for accounting
@@ -122,9 +153,11 @@
                  c)])
     ;; Each custodian must be charged at least 100000 bytes:
     (collect-garbage)
-    (test #t andmap (lambda (c)
-                      ((current-memory-use c) . >= . 100000))
-          c)))
+    (test #t andmap (lambda (v)
+                      (v . >= . 100000))
+          (map current-memory-use c))
+    ;; Make sure boxes are retained:
+    (test #t andmap custodian-box? b)))
 
 (let ()
   (define c1 (make-custodian (current-custodian)))
@@ -142,6 +175,25 @@
       (test #t andmap (lambda (b) (number? (custodian-box-value b))) l)
       (custodian-shutdown-all c)
       (test #f ormap (lambda (b) (number? (custodian-box-value b))) l))))
+
+;; Check chain of unreachable custodians:
+(let ()
+  (define start-c (make-custodian))
+  (define wbs+cbs
+    (let loop ([i 20] [parent start-c])
+      (if (zero? i)
+          null
+          (let ([c (make-custodian parent)])
+            (cons (cons (make-weak-box c)
+                        (make-custodian-box c 'on))
+                  (loop (sub1 i) c))))))
+  (collect-garbage)
+  (test #t < 10 (for/sum ([wb+cb (in-list wbs+cbs)])
+                  (if (weak-box-value (car wb+cb)) 1 0)))
+  (custodian-shutdown-all start-c)
+  (test #t andmap
+        (lambda (wb+cb) (not (custodian-box-value (cdr wb+cb))))
+        wbs+cbs))
 
 ;; check synchronization again:
 (let ()
@@ -192,13 +244,17 @@
 ;; ----------------------------------------
 ;; Phantom bytes:
 
-(when (eq? '3m (system-type 'gc))
+(unless (eq? 'cgc (system-type 'gc))
   (define s (make-semaphore))
   (define c (make-custodian))
+  (define bits (let loop ([bits 29])
+                 (if (fixnum? (expt 2 bits))
+                     bits
+                     (loop (sub1 bits)))))
   (define t (parameterize ([current-custodian c])
               (thread (lambda ()
                         (semaphore-wait s)
-                        (define b (make-phantom-bytes (expt 2 29)))
+                        (define b (make-phantom-bytes (expt 2 bits)))
                         (test #t phantom-bytes? b)
                         (test #f phantom-bytes? 0)
                         (semaphore-wait s)
@@ -210,16 +266,16 @@
   (define mc (current-memory-use c))
   (semaphore-post s)
   (sync (system-idle-evt))
-  (test #t > (current-memory-use) (+ m (expt 2 28)))
+  (test #t > (current-memory-use) (+ m (expt 2 (sub1 bits))))
   (collect-garbage)
-  (test #t > (current-memory-use) (+ m (expt 2 28)))
-  (test #t > (current-memory-use c) (+ mc (expt 2 28)))
+  (test #t > (current-memory-use) (+ m (expt 2 (sub1 bits))))
+  (test #t > (current-memory-use c) (+ mc (expt 2 (sub1 bits))))
   (semaphore-post s)
   (sync (system-idle-evt))
-  (test #t < (current-memory-use) (+ m (expt 2 28)))
+  (test #t < (current-memory-use) (+ m (expt 2 (sub1 bits))))
   (collect-garbage)
-  (test #t < (current-memory-use) (+ m (expt 2 28)))
-  (test #t < (current-memory-use c) (+ mc (expt 2 28)))
+  (test #t < (current-memory-use) (+ m (expt 2 (sub1 bits))))
+  (test #t < (current-memory-use c) (+ mc (expt 2 (sub1 bits))))
   (semaphore-post s)
 
   (let ([done? #f])
@@ -238,7 +294,7 @@
 ;; Check that local variables are cleared for space safety
 ;; before a tail `sync' or `thread-wait':
 
-(when (eq? '3m (system-type 'gc))
+(unless (eq? 'cgc (system-type 'gc))
   (define weak-syms (make-weak-hash))
 
   (define thds
@@ -267,7 +323,7 @@
 ;; a reference can be important to the expansion to a call to a keyword-accepting
 ;; function.
 
-(when (eq? '3m (system-type 'gc))
+(unless (eq? 'cgc (system-type 'gc))
   (define (mk)
     (parameterize ([current-namespace (make-base-namespace)])
       (eval '(module module-with-unoptimized-varref-constant racket/base
@@ -320,7 +376,7 @@
   (provide go)
   
   (define (f x y)
-    (let ([z (make-vector 1024 x)]) ; problem if `z` is retained during non-tail `(y)`
+    (let ([z (make-vector 10240 x)]) ; problem if `z` is retained during non-tail `(y)`
       (let ([w (cons x x)])
         (if (pair? x)
             'ok ; SFS pass should clear `z` in or after this branch
@@ -330,31 +386,189 @@
   (set! f f)
   
   (define (go)
-    (let loop ([n 100000])
-      (f '(1 2) (lambda ()
-                  (if (zero? n)
-                      'done
-                      (unbox (loop (sub1 n)))))))))
+    (for ([i 100])
+      (let loop ([n 1000])
+        (f '(1 2) (lambda ()
+                    (if (zero? n)
+                        'done
+                        (unbox (loop (sub1 n))))))))))
 
-(let ([init-memory-use (current-memory-use)])
-  (define done? #f)
-  (define t (thread (lambda ()
-                      ((dynamic-require ''allocates-many-vectors 'go))
-                      (set! done? #t))))
-  (define watcher-t (thread
-                     (lambda ()
-                       (let loop ()
-                         (sleep 0.1)
-                         (define mu (current-memory-use))
-                         (printf "~s\n" mu)
-                         (cond
-                          [(mu . < . (+ init-memory-use (* 100 1024 1024)))
-                           (loop)]
-                          [else
-                           (kill-thread t)])))))
-  (sync t)
-  (kill-thread watcher-t)
-  (test #t 'many-vectors-in-reasonable-space? done?))
+(unless (eq? 'cgc (system-type 'gc))
+  (let ([init-memory-use (current-memory-use)])
+    (define done? #f)
+    (define t (thread (lambda ()
+                        ((dynamic-require ''allocates-many-vectors 'go))
+                        (set! done? #t))))
+    (define watcher-t (thread
+                       (lambda ()
+                         (let loop ()
+                           (sleep 0.1)
+                           (define mu (current-memory-use))
+                           (printf "~s\n" (- mu init-memory-use))
+                           (cond
+                             [(mu . < . (+ init-memory-use (* 100 1024 1024)))
+                              (loop)]
+                             [else
+                              (kill-thread t)])))))
+    (sync t)
+    (kill-thread watcher-t)
+    (test #t 'many-vectors-in-reasonable-space? done?)))
+
+;; ----------------------------------------
+;; Check that a thread that has a reference to
+;; module-level variables doesn't retain the
+;; namespace strongly
+
+(unless (eq? 'cgc (system-type 'gc))
+  (define-values (f w)
+    (parameterize ([current-namespace (make-base-namespace)])
+      (define g (gensym 'gensym-via-namespace))
+      (eval `(module n racket/base
+              ;; If the namespace is retained strongly, then
+              ;; the symbol is reachable through this definition:
+              (define anchor (quote ,g))))
+      (eval `(module m racket/base
+              (require 'n)
+              (provide f sema)
+              (define sema (make-semaphore))
+              (define (f)
+                (thread
+                 (lambda ()
+                   ;; Ideally, this loop retains only `loop`
+                   ;; and `sema`. If it retains everything referenced
+                   ;; or defined in the module, though, at least make
+                   ;; sure it doesn't retain the whole namespace
+                   (let loop () (sync sema) (loop)))))))
+      (namespace-require ''m)
+      (values (dynamic-require ''m 'f)
+              (make-weak-box g))))
+
+  (define t (f))
+  (sync (system-idle-evt))
+
+  (collect-garbage)
+  (test #f weak-box-value w)
+  (kill-thread t))
+
+;; ----------------------------------------
+;; Check that ephemeron chains do not lead
+;; to O(N^2) behavior with 3m
+
+(unless (eq? 'cgc (system-type 'gc))
+  (define (wrapper v) (list 1 2 3 4 5 v))
+
+  ;; Create a chain of ephemerons where we have all
+  ;; the the ephemerons immediately in a list,
+  ;; but we discover the keys one at a time
+  (define (mk n prev-key es)
+    (cond
+     [(zero? n)
+      (values prev-key es)]
+     [else
+      (define key (gensym))
+      (mk (sub1 n)
+          key
+          (cons (make-ephemeron key (wrapper prev-key))
+                es))]))
+
+  ;; Create a chain of ephemerons where we have all
+  ;; of the keys immediately in a list,
+  ;; but we discover the ephemerons one at a time
+  (define (mk* n prev-e keys)
+    (cond
+     [(zero? n)
+      (values prev-e keys)]
+     [else
+      (define key (gensym))
+      (mk* (sub1 n)
+           (make-ephemeron key (wrapper prev-e))
+           (cons key
+                 keys))]))
+
+  (define (measure-time n)
+    ;; Hang the discover-keys-one-at-a-time chain
+    ;; off the end of the discover-ephemerons-one-at-a-time
+    ;; chain, which is the most complex case for avoiding
+    ;; quadratic GC times
+    (define-values (key es) (mk n (gensym) null))
+    (define-values (root holds) (mk* n key es))
+
+    (define ITERS 5)
+    (define msecs
+      (/ (for/fold ([t 0]) ([i (in-range ITERS)])
+           (define start (current-inexact-milliseconds))
+           (collect-garbage)
+           (+ t (- (current-inexact-milliseconds) start)))
+         ITERS))
+    ;; Keep `key` and `es` live:
+    (if (zero? (random 1))
+        msecs
+        (list root holds)))
+
+  ;; Making a chain 10 times as long should not increase GC time by more
+  ;; than a factor of 10:
+  (test #t
+        'ephemeron-chain
+        (let loop ([attempts 5])
+          (or ((/ (measure-time 10000) (measure-time 1000)) . < . 11)
+              (and (attempts . > . 1)
+                   (loop (sub1 attempts)))))))
+
+;; ----------------------------------------
+;; Check that `apply` doesn't retain its argument
+
+(unless (eq? 'cgc (system-type 'gc))
+  
+  (define retained 0)
+
+  (define (f ignored b k)
+    (collect-garbage)
+    (when (weak-box-value b)
+      (set! retained (add1 retained)))
+    (k))
+  (set! f f)
+
+  (define (mk . args) args)
+  (set! mk mk)
+
+  ;; Tail version:
+  (let loop ([i 5])
+    (unless (zero? i)
+      (define val (gensym))
+      (apply f (mk val (make-weak-box val) (lambda () (loop (sub1 i)))))))
+
+  ;; Non-tail version:
+  (for ([i 5])
+    (define val (gensym))
+    (apply f (mk val (make-weak-box val) void)))
+  
+  (test #t < retained 3))
+
+;; ----------------------------------------
+;; Make sure that a weak box is not cleared before an associated
+;; will is run
+
+;; Put test in a `lambda` to make sure it's JITted:
+(define (check-weak-box-before-will)
+  (define v (gensym))
+  
+  (define w (make-will-executor))
+  (will-register w v (lambda (v) 'done))
+  
+  (define wb (make-weak-box v))
+  
+  (set! v #f)
+  (collect-garbage)
+  (let ([wv (weak-box-value wb)]
+        [we (will-try-execute w)])
+    (test 'done values we)
+    (test #t symbol? wv))
+  
+  (collect-garbage)
+  (test #f weak-box-value wb))
+
+(unless (eq? 'cgc (system-type 'gc))
+  (check-weak-box-before-will))
 
 ;; ----------------------------------------
 

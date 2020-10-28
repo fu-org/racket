@@ -39,13 +39,44 @@ matched before calling the failure procedure, otherwise the behavior
 of matching is unpredictable. See also @racket[failure-cont], which is
 a lower-level mechanism achieving the same ends.
 
+@examples[
+#:eval match-eval
+(define (m x)
+  (match x
+    [(list a b c)
+     #:when (= 6 (+ a b c))
+     'sum-is-six]
+    [(list a b c) 'sum-is-not-six]))
+
+(m '(1 2 3))
+(m '(2 3 4))
+]
+
 An optional @racket[(=> id)] between a @racket[pat] and the
-@racket[body]s is bound to a @defterm{failure procedure} of zero
+@racket[body]s is bound to a @deftech{failure procedure} of zero
 arguments.  If this procedure is invoked, it escapes back to the
 pattern matching expression, and resumes the matching process as if
 the pattern had failed to match.  The @racket[body]s must not mutate
 the object being matched before calling the failure procedure,
 otherwise the behavior of matching is unpredictable. 
+
+@examples[
+#:eval match-eval
+(define (m x)
+  (match x
+    [(list a b c)
+     (=> exit)
+     (f x exit)]
+    [(list a b c) 'sum-is-not-six]))
+
+(define (f x exit)
+  (if (= 6 (apply + x))
+      'sum-is-six
+      (exit)))
+
+(m '(1 2 3))
+(m '(2 3 4))
+]
 
 The grammar of @racket[pat] is as follows, where non-italicized
 identifiers are recognized symbolically (i.e., not by binding).
@@ -57,10 +88,12 @@ In more detail, patterns match as follows:
 @itemize[
 
  @item{@racket[_id] (excluding the reserved names @racketidfont{_},
-       @racketidfont{...}, @racketidfont{.._},
+       @racketidfont{...}, @racketidfont{___},
        @racketidfont{..}@racket[_k], and
-       @racketidfont{..}@racket[_k] for non-negative integers
-       @racket[_k]) or @racket[(var _id)] --- matches anything, and binds @racket[_id] to the
+       @racketidfont{__}@racket[_k] for non-negative integers
+       @racket[_k]) @margin-note{Unlike in @racket[cond] and @racket[case],
+       @racket[else] is not a keyword in @racket[match].} or @racket[(var _id)]
+       --- matches anything, and binds @racket[_id] to the
        matching values. If an @racket[_id] is used multiple times
        within a pattern, the corresponding matches must be the same
        according to @racket[(match-equality-test)], except that
@@ -76,6 +109,11 @@ In more detail, patterns match as follows:
        (match '(1 (x y z) 1)
          [(list a b a) (list a b)]
          [(list a b c) (list c b a)])
+       (match #f
+         [else
+          (cond
+            [#f 'not-evaluated]
+            [else 'also-not-evaluated])])
        ]}
 
  @item{@racketidfont{_} --- matches anything, without binding any
@@ -132,7 +170,8 @@ In more detail, patterns match as follows:
          [_ 'else])
        ]}
 
- @item{@racket[(#,(racketidfont "list-rest") _lvp ... _pat)] ---
+ @item{@racket[(#,(racketidfont "list-rest") _lvp ... _pat)]
+       or @racket[(#,(racketidfont "list*") _lvp ... _pat)] ---
        similar to a @racketidfont{list} pattern, but the final
        @racket[_pat] matches the ``rest'' of the list after the last
        @racket[_lvp]. In fact, the matched value can be a non-list
@@ -155,7 +194,13 @@ In more detail, patterns match as follows:
        #:eval match-eval
        (match '(1 2 3)
          [(list-no-order 3 2 x) x])
-       ]}
+       ]
+
+       @margin-note{
+         Unlike other patterns, @racketidfont{list-no-order} doesn't
+         allow duplicate identifiers between subpatterns. For example
+         the patterns @racket[(list-no-order x 1 x)] and
+         @racket[(list-no-order x 1 x ...)] both produce syntax errors.}}
 
  @item{@racket[(#,(racketidfont "list-no-order") _pat ... _lvp)] ---
        generalizes @racketidfont{list-no-order} to allow a pattern
@@ -282,7 +327,7 @@ In more detail, patterns match as follows:
        ]}
 
  @item{@racket[(#,(racketidfont "pregexp") _rx-expr)] or
-       @racket[(#,(racketidfont "regexp") _rx-expr _pat)] --- like the
+       @racket[(#,(racketidfont "pregexp") _rx-expr _pat)] --- like the
        @racketidfont{regexp} patterns, but if @racket[_rx-expr]
        produces a string, it is converted to a pattern using
        @racket[pregexp] instead of @racket[regexp].}
@@ -300,12 +345,8 @@ In more detail, patterns match as follows:
        ]}
 
  @item{@racket[(#,(racketidfont "or") _pat ...)] --- matches if any of
-       the @racket[_pat]s match. @bold{Beware}: the result expression
-       can be duplicated once for each @racket[_pat]! Identifiers in
-       @racket[_pat] are bound only in the corresponding copy of the
-       result expression; in a module context, if the result
-       expression refers to a binding, then all @racket[_pat]s
-       must include the binding.
+       the @racket[_pat]s match. Each @racket[_pat] must bind the same set
+       of identifiers.
 
        @examples[
        #:eval match-eval
@@ -327,15 +368,22 @@ In more detail, patterns match as follows:
        ]}
 
  @item{@racket[(#,(racketidfont "app") _expr _pats ...)] --- applies
-       @racket[_expr] to the value to be matched; the result of the
-       application is matched against @racket[_pats].
+       @racket[_expr] to the value to be matched; each result of the
+       application is matched against one of the @racket[_pats],
+       respectively.
 
        @examples[
        #:eval match-eval
        (match '(1 2)
         [(app length 2) 'yes])
+       (match "3.14"
+        [(app string->number (? number? pi))
+         `(I got ,pi)])
        (match '(1 2)
         [(app (lambda (v) (split-at v 1)) '(1) '(2)) 'yes])
+       (match '(1 2 3)
+        [(app (λ (ls) (apply values ls)) x y (? odd? z))
+         (list 'yes x y z)])
        ]}
 
  @item{@racket[(#,(racketidfont "?") _expr _pat ...)] --- applies
@@ -646,6 +694,30 @@ expander and @racket[len] always returns @racket[0].
   (len nil)
   (len (cons 1 nil))
   (len (cons 1 (cons 2 nil)))]
+
+Match expanders accept any syntax pair whose first element is an
+@racket[identifier?] bound to the expander. The following example
+shows a match expander which can be called with an improper syntax
+list of the form @racket[(expander a b . rest)].
+@examples[#:label #f
+  #:eval match-eval
+  (eval:no-prompt
+   (define-match-expander my-vector
+     (λ (stx)
+       (syntax-case stx ()
+         [(_ pat ...)
+          #'(vector pat ...)]
+         [(_ pat ... . rest-pat)
+          #'(app vector->list (list-rest pat ... rest-pat))]))))
+  (match #(1 2 3 4 5)
+   [(my-vector a b . rest)
+     (list->vector (append rest (list a b)))])]
+
+@history[
+ #:changed "7.7.0.2"
+ @elem{Match expanders now allowed any syntax pair whose first element is an 
+  @racket[identifier?] bound to the expander. The example above did not work
+  with previous versions.}]
 }
 
 @defthing[prop:match-expander struct-type-property?]{
@@ -689,8 +761,9 @@ properties.
 }
 
 @defproc[(syntax-local-match-introduce [stx syntax?]) syntax?]{
-Like @racket[syntax-local-introduce], but for match expanders.
-}
+For backward compatibility only; equivalent to @racket[syntax-local-introduce].
+
+@history[#:changed "6.90.0.29" @elem{Made equivalent to @racket[syntax-local-introduce].}]}
 
 
 @defparam[match-equality-test comp-proc (any/c any/c . -> . any)]{
@@ -735,6 +808,7 @@ not provided, it defaults to @racket[equal?].
  A @racket[match] pattern form that matches an instance of a structure
  type named @racket[struct-id], where the field @racket[field] in the
  instance matches the corresponding @racket[pat].
+ The fields do not include those from super types.
 
  Any field of @racket[struct-id] may be omitted, and such fields can
  occur in any order.
@@ -742,10 +816,15 @@ not provided, it defaults to @racket[equal?].
  @examples[
   #:eval match-eval
   (eval:no-prompt
-   (struct tree (val left right)))
+   (struct tree (val left right))
+   (struct tree* tree (val)))
   (match (tree 0 (tree 1 #f #f) #f)
     [(struct* tree ([val a]
                     [left (struct* tree ([right #f] [val b]))]))
+     (list a b)])
+  (match (tree* 0 #f #f 42)
+    [(and (struct* tree* ([val a]))
+          (struct* tree ([val b])))
      (list a b)])
  ]
  }

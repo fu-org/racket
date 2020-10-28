@@ -1,34 +1,51 @@
-[![Linux/Mac Build
-Status](https://travis-ci.org/racket/racket.svg?branch=master)](https://travis-ci.org/racket/racket)
-[![Windows build status](https://ci.appveyor.com/api/projects/status/hqir4eib0okk6xar?svg=true)](https://ci.appveyor.com/project/plt/racket)
+[Racket](https://racket-lang.org/) is a general-purpose programming
+language and an ecosystem for language-oriented programming.
 
-
-This is the source code for the core of Racket.  See
-"INSTALL.txt" for full information on building Racket.
-
-To build the full Racket distribution from this repository, run `make`
-in the top-level directory. To build the Minimal Racket, run `make
-base`.
-
-The rest of the Racket distribution source code is in other
-repositories under [the Racket GitHub
+This repository holds the source code for the core of Racket plus some
+related packages. The rest of the Racket distribution source code is
+in other repositories, mostly under [the Racket GitHub
 organization](https://github.com/racket).
 
-Contribute to Racket by submitting a pull request, joining the
+Quick Start
+-----------
+
+Pre-built versions of Racket for a variety of operating systems and
+architectures, as well as convenient source distributions are
+available at
+
+  [https://download.racket-lang.org](https://download.racket-lang.org)
+
+Racket comes with extensive documentation, including several tutorials.
+You can read all of this documentation, as well as documentation for
+third-party packages at
+
+  [https://docs.racket-lang.org](https://docs.racket-lang.org)
+
+Building from Source
+--------------------
+
+For information on building Racket from this repository, see the
+[Build Guide](build.md).
+
+Contributing
+------------
+
+Contribute to Racket by [submitting a pull request](https://github.com/racket/racket), joining the
 [development mailing list](https://lists.racket-lang.org), or visiting
-the IRC channel.
+the [IRC](https://botbot.me/freenode/racket/) or [Slack](https://racket-slack.herokuapp.com/) channels.
+
+By making a contribution, you are agreeing that your contribution is
+licensed under the LGPLv3, Apache 2.0, and MIT licenses. Those
+licenses are available in this repository in the files
+racket/src/LICENSE-LGPL.txt, racket/src/LICENSE-APACHE.txt, and
+racket/src/LICENSE-MIT.txt.
+
+See the [Racket Build Guide](build.md) for more guidance on
+contributing.
+
+The [Friendly Environment Policy](https://racket-lang.org/friendly.html) contains guidelines on expected behavior within the Racket community.
 
 License
 -------
 
-Racket
-Copyright (c) 2010-2017 PLT Design Inc.
-
-Racket is distributed under the GNU Lesser General Public License
-(LGPL).  This implies that you may link Racket into proprietary
-applications, provided you follow the rules stated in the LGPL.  You can
-also modify Racket; if you distribute a modified version, you must
-distribute it under the terms of the LGPL, which in particular states
-that you must release the source code for the modified software.  
-
-See racket/src/COPYING_LESSER.txt for more information.
+Racket is free software; see [LICENSE](LICENSE) for more details.

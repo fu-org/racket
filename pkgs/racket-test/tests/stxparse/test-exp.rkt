@@ -22,7 +22,7 @@
 
   (define r-nat> (reify-syntax-class nat>))
 
-  (tok (1 2 -3 -4 5) ((~or (~reflect yes (r-nat> 1) #:attributes (diff)) no) ...)
+  (tok (1 2 -3 -4 5) ((~alt (~reflect yes (r-nat> 1) #:attributes (diff)) no) ...)
        (and (s= (yes ...) '(2 5))
             (s= (yes.diff ...) '(1 4))
             (s= (no ...) '(1 -3 -4))))
@@ -32,7 +32,7 @@
 
   (define r-nat>1 (reified-syntax-class-curry r-nat> 1))
 
-  (tok (1 2 -3 -4 5) ((~or (~reflect yes (r-nat>1) #:attributes (diff)) no) ...)
+  (tok (1 2 -3 -4 5) ((~alt (~reflect yes (r-nat>1) #:attributes (diff)) no) ...)
        (and (s= (yes ...) '(2 5))
             (s= (yes.diff ...) '(1 4))
             (s= (no ...) '(1 -3 -4))))
@@ -79,6 +79,18 @@
             (s= ((x.c1 x.c2) ...) '((2 3) (4 5)))))
   (terx (#:c 1 2) ((~eh-var x extopts) ...)
         #rx"missing required occurrence of A option")
+
+  ;; from Alexis King (#2551) (3/2019)
+  (let ()
+    (define-eh-alternative-set opts
+      [pattern {~optional {~seq #:foo foo:expr}}])
+    (test-exn "eh-alts no spurious description"
+              (lambda (e)
+                (and (regexp-match? #rx"expected more terms" (exn-message e))
+                     (not (regexp-match? #rx"eh-alt-parser" (exn-message e)))))
+              (lambda ()
+                (syntax-parse #'(use-opts #:foo)
+                  [(_ {~eh-var o opts} ...) 'ok]))))
   )
 (require 'eh-alts)
 

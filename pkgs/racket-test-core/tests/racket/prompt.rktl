@@ -423,7 +423,10 @@
 ;;----------------------------------------
 ;; Check continuation sharing
 
-(let ()
+;; This check is useful for the traditional Racket VM, but it isn't as
+;; interesting on Chez Scheme --- where the sharing is more obvious in
+;; the implementation but not exposed as `eq?` continuations
+(when (eq? 'racket (system-type 'vm))
   (define (f x prev)
     (call/cc
      (lambda (k)
@@ -450,7 +453,7 @@
 ;; Check that a continuation doesn't retain the arguments
 ;; to the call to `call/cc` that created the continuation.
 
-(when (eq? '3m (system-type 'gc))
+(unless (eq? 'cgc (system-type 'gc))
   (let ([ht (make-weak-hasheq)])
     (define l
       (for/list ([i 100])
@@ -499,6 +502,187 @@
    (lambda ()
      (grab N M void 10))
    p))
+
+;; ----------------------------------------
+;; Check that a non-composable-continuation jump isn't
+;; fooled by a dynamic-wind frame that is common to the
+;; source and destination but not followed by all
+;; matching frames.
+
+(let ()
+  (define accum null)
+  (define (output! v) (set! accum (cons v accum)))
+  (define (check-output! expect)
+    (let ([got (reverse accum)])
+      (set! accum null)
+      (displayln got)
+      (test expect values got)))
+
+  ;; Make a composable continuation that holds one dynamic-wind frame
+  (define (make-composable-dw pre post)
+    (call-with-continuation-prompt
+     (lambda ()
+       (dynamic-wind
+        (lambda () (output! pre))
+        (lambda () ((call-with-composable-continuation
+                (lambda (k) (lambda () k)))))
+        (lambda () (output! post))))))
+
+  (define dw1 (make-composable-dw "+1" "-1"))
+  (check-output! '("+1" "-1"))
+
+  (define dw2 (make-composable-dw "+2" "-2"))
+  (check-output! '("+2" "-2"))
+
+  (define dw3 (make-composable-dw "+3" "-3"))
+  (check-output! '("+3" "-3"))
+
+  (define (compose-dw a-dw b-dw)
+    (lambda (f)
+      (a-dw (lambda () (b-dw f)))))
+
+  ;; compose dw1 and dw2, with "work" in the middle:
+  ((compose-dw dw1 dw2) (lambda () (output! "work")))
+  (check-output! '("+1" "+2" "work" "-2" "-1"))
+
+  ;; Compose two composable continuations, and capture the composition
+  ;; as non-composable:
+  (define (make-non-composable dw)
+    (call-with-continuation-prompt
+     (lambda ()
+       (dw
+        (lambda ()
+          ((call/cc
+            (lambda (k) (lambda () k)))))))))
+
+  (define dw2+dw1 (make-non-composable (compose-dw dw2 dw1)))
+  (check-output! '("+2" "+1" "-1" "-2"))
+
+  (define dw3+dw1 (make-non-composable (compose-dw dw3 dw1)))
+  (check-output! '("+3" "+1" "-1" "-3"))
+
+  (call-with-continuation-prompt
+   (lambda ()
+     (dw2+dw1 (lambda () (output! "inside")))))
+  (check-output! '("+2" "+1" "inside" "-1" "-2"))
+
+  (define dw3+dw2+dw1 (make-non-composable (compose-dw (compose-dw dw3 dw2) dw1)))
+  (check-output! '("+3" "+2" "+1" "-1" "-2" "-3"))
+
+  ;; From a dw3+dw2+d1 composition, jump to a dw2+dw1 composition;
+  ;; even though the sourec and destination both have dw2 and dw1
+  ;; innermost, the full chains are different, so the jump goes
+  ;; all the way out of dw3+dw2+dw1 and back into dw2+dw1
+  (call-with-continuation-prompt
+   (lambda ()
+     (dw3+dw2+dw1 (lambda () (dw2+dw1 (lambda () (output! "inside")))))))
+  (check-output! '("+3" "+2" "+1" "-1" "-2" "-3" "+2" "+1" "inside" "-1" "-2"))
+
+  ;; From a dw2+d1 composition, jump to a dw3+dw1 composition;
+  ;; this one should still jump all the way out and all the way
+  ;; back in:
+  (call-with-continuation-prompt
+   (lambda ()
+     (dw2+dw1 (lambda () (dw3+dw1 (lambda () (output! "inside")))))))
+  (check-output! '("+2" "+1" "-1" "-2" "+3" "+1" "inside" "-1" "-3")))
+
+;;----------------------------------------
+
+(let* ([t (make-continuation-prompt-tag 't)])
+  (test #t continuation-prompt-available? t
+        (call-with-continuation-prompt
+         (lambda ()
+           (call/cc (lambda (k) k)
+                    t))
+         t))
+  (test #f continuation-prompt-available? t
+        (call-with-continuation-prompt
+         (lambda ()
+           (call-with-composable-continuation
+            (lambda (k) k)
+            t))
+         t))
+  (let ([k (call-with-continuation-prompt
+            (lambda ()
+              ((call-with-composable-continuation
+                (lambda (k) (lambda () k))
+                t)))
+            t)])
+    (test #f continuation-prompt-available? t k)
+    (test #f values
+          (k (lambda ()
+               (continuation-prompt-available? t))))
+    (test #f continuation-prompt-available? (default-continuation-prompt-tag) k))
+  (let ([k (call-with-continuation-prompt
+            (lambda ()
+              ((call-with-current-continuation
+                (lambda (k) (lambda () k))
+                t)))
+            t)])
+    (test #t continuation-prompt-available? t k)
+    (test #t values
+          (call-with-continuation-prompt
+            (lambda ()
+              (k (lambda ()
+                   (continuation-prompt-available? t))))
+            t))
+    (test #f continuation-prompt-available? (default-continuation-prompt-tag) k))
+  (test #t continuation-prompt-available? t
+        (call-with-continuation-prompt
+         (lambda ()
+           (call-with-continuation-prompt
+            (lambda ()
+              (call-with-current-continuation
+               (lambda (k) k)))
+            t))))
+  (test #t continuation-prompt-available? t
+        (call-with-continuation-prompt
+         (lambda ()
+           (call-with-continuation-prompt
+            (lambda ()
+              (call-with-composable-continuation
+               (lambda (k) k)))
+            t))))
+  (test #t 'continuation-prompt-available?
+        (call-with-continuation-prompt
+         (lambda ()
+           (call-with-escape-continuation
+            (lambda (k) (continuation-prompt-available? t k))))
+         t))
+  (err/rt-test (continuation-prompt-available?
+                t
+                (call-with-continuation-prompt
+                 (lambda ()
+                   (call-with-escape-continuation
+                    (lambda (k) k)))
+                 t))
+               exn:fail:contract:continuation?))
+
+;;----------------------------------------
+;; Make sure prompt at top level can propagate multiple values
+
+(test '(1 2 3)
+      call-with-continuation-prompt
+      (lambda ()
+        (eval (quote (begin (abort-current-continuation (default-continuation-prompt-tag) 1 2 3) 10))))
+      (default-continuation-prompt-tag)
+      list)
+
+;;----------------------------------------
+;; Check error message as "result" or not
+
+(err/rt-test (call-with-continuation-prompt (lambda () (abort-current-continuation (default-continuation-prompt-tag))))
+             exn:fail:contract:arity?
+             #rx"result arity mismatch")
+(err/rt-test (call-with-continuation-prompt (lambda () (abort-current-continuation (default-continuation-prompt-tag)))
+                                            (default-continuation-prompt-tag))
+             exn:fail:contract:arity?
+             #rx"result arity mismatch")
+(err/rt-test (call-with-continuation-prompt (lambda () (abort-current-continuation (default-continuation-prompt-tag)))
+                                            (default-continuation-prompt-tag)
+                                            (lambda (x) x))
+             exn:fail:contract:arity?
+             #rx": arity mismatch")
 
 ;;----------------------------------------
 

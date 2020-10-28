@@ -5,14 +5,18 @@
          scribble/examples
          scribble/decode
          racket/contract
+         racket/contract/collapsible
          "../icons.rkt")
 
 (provide (all-from-out scribble/manual)
          (all-from-out scribble/examples)
-         (all-from-out racket/contract))
+         (all-from-out racket/contract)
+         (all-from-out racket/contract/collapsible))
 
 (require (for-label racket))
 (provide (for-label (all-from-out racket)))
+(require (for-label racket/contract/collapsible))
+(provide (for-label (all-from-out racket/contract/collapsible)))
 
 (provide mz-examples)
 (define mz-eval (make-base-eval))
@@ -151,3 +155,13 @@
                          " of a " x " is the " x " itself")))
 (define (ResultItself x) (esultItself "T" x))
 (define (resultItself x) (esultItself "t" x))
+
+;; The arity of many functions changed in 7.0.0.13:
+(provide history/arity)
+(define-syntax-rule (history/arity arg ...)
+  (history #:changed "7.0.0.13" @elem{Allow one argument, in addition to allowing two or more.}
+           arg ...))
+
+(provide envvar-indexed)
+(define (envvar-indexed s)
+  (as-index (envvar s)))

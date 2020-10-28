@@ -3,7 +3,49 @@
 (Section 'flonum)
 
 (require racket/flonum
+         racket/unsafe/ops
          "for-util.rkt")
+
+(define 1nary-table
+  (list (list fl- unsafe-fl-)
+        (list fl/ unsafe-fl/)
+
+        (list fl>= unsafe-fl>=)
+        (list fl> unsafe-fl>)
+        (list fl= unsafe-fl=)
+        (list fl<= unsafe-fl<=)
+        (list fl< unsafe-fl<)
+        (list flmin unsafe-flmin)
+        (list flmax unsafe-flmax)))
+
+(define 0nary-table
+  (list (list fl+ unsafe-fl+)
+        (list fl* unsafe-fl*)))
+
+(let ()
+  (define (same-results fl unsafe-fl args)
+    (test (apply fl args) apply unsafe-fl args))
+
+  (for ([line (in-list 1nary-table)])
+    (test #t 'single (and ((car line) +nan.0) #t))
+    (test #t 'single (and ((cadr line) +nan.0) #t)))
+
+  (for ([ignore (in-range 0 800)])
+    (let ([i (random)]
+          [j (random)]
+          [k (random)]
+          [more-flonums (build-list (random 20) (λ (i) (random)))])
+      (for ([line (in-list 0nary-table)])
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i j)))
+      (for ([line (in-list 1nary-table)])
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i j)))
+      (for ([line (in-list (append 0nary-table 1nary-table))])
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i j k))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (list i k j))
+        (test #t same-results (list-ref line 0) (list-ref line 1) (cons i more-flonums))))))
 
 (define (flonum-close? fl1 fl2)
   (<= (flabs (fl- fl1 fl2))
@@ -157,6 +199,10 @@
 (test-sequence [(2.0 4.0 6.0)] (in-flvector (flvector 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) 1 6 2))
 (test-sequence [(8.0 6.0 4.0)] (in-flvector (flvector 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) 7 2 -2))
 
+;; test malformed in-flvector
+(err/rt-test (for/list ([x (in-flvector)]) x))
+(err/rt-test (in-flvector))
+
 ;; flvector sequence tests
 
 (test-sequence [(1.0 2.0 3.0)] (flvector 1.0 2.0 3.0))
@@ -168,6 +214,23 @@
 (err/rt-test (for/flvector #:length 5 #:fill 0.0 ([i 5]) 8))
 (err/rt-test (for/flvector #:length 5 #:fill 0 ([i 5]) 8.0))
 (err/rt-test (for/flvector #:length 10 #:fill 0 ([i 5]) 8.0))
+
+;; ----------------------------------------
+;; flsingle
+
+(test 1.0 unsafe-flsingle 1.0)
+(test -1.0 unsafe-flsingle -1.0)
+(test +nan.0 unsafe-flsingle +nan.0)
+(test +inf.0 unsafe-flsingle +inf.0)
+(test -inf.0 unsafe-flsingle -inf.0)
+(test 1.2500000360947476e38 unsafe-flsingle 1.25e38)
+(test 1.2500000449239123e-37 unsafe-flsingle 1.25e-37)
+(test -1.2500000360947476e38 unsafe-flsingle -1.25e38)
+(test  -1.2500000449239123e-37 unsafe-flsingle -1.25e-37)
+(test +inf.0 unsafe-flsingle 1e100)
+(test -inf.0 unsafe-flsingle -1e100)
+(test 0.0 unsafe-flsingle 1e-100)
+(test -0.0 unsafe-flsingle -1e-100)
 
 ;; ----------------------------------------
 ;; flrandom
@@ -302,6 +365,23 @@
   (check-equal? (flexpt +nan.0 -0.0) +1.0)
   (check-equal? (flexpt +1.0 +nan.0) +1.0)
   (check-equal? (flexpt -1.0 +nan.0) +nan.0))
+
+;; ----------------------------------------
+
+(test -inf.0 fllog 0.0)
+(test -inf.0 fllog -0.0)
+(test +nan.0 fllog -1.0)
+(test +nan.0 log (fllog -1.0))
+
+(test -0.0 flsqrt -0.0)
+(test +nan.0 log (flsqrt -1.0))
+
+;; ----------------------------------------
+;; Make sure `flvector` is not incorrectly constant-folded
+
+(let ([v (flvector 1.0 2.0 3.0)])
+  (unsafe-flvector-set! v 0 10.0)
+  (test 10.0 'ref (unsafe-flvector-ref v 0)))
 
 ;; ----------------------------------------
 

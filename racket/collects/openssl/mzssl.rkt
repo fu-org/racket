@@ -28,18 +28,23 @@ TO DO:
          ffi/unsafe/define
          ffi/unsafe/atomic
          ffi/unsafe/alloc
+         ffi/unsafe/global
          ffi/file
+         ffi/unsafe/custodian
          racket/list
          racket/port
          racket/tcp
          racket/string
          racket/lazy-require
-         racket/runtime-path
+         racket/include
          "libcrypto.rkt"
-         "libssl.rkt")
+         "libssl.rkt"
+         (for-syntax racket/base))
 (lazy-require
  ["private/win32.rkt" (load-win32-store)]
  ["private/macosx.rkt" (load-macosx-keychain)])
+
+(define-logger openssl)
 
 (define protocol-symbol/c
   (or/c 'secure 'auto 'sslv2-or-v3 'sslv2 'sslv3 'tls 'tls11 'tls12))
@@ -80,18 +85,26 @@ TO DO:
         (list/c 'macosx-keychain path-string?)))
 
 (provide
- ssl-dh4096-param-path
+ ssl-dh4096-param-bytes
  (contract-out
   [ssl-available? boolean?]
   [ssl-load-fail-reason (or/c #f string?)]
   [ssl-make-client-context
-   (->* () (protocol-symbol/c) ssl-client-context?)]
+   (->* ()
+        (protocol-symbol/c
+         #:private-key (or/c (list/c 'pem path-string?) (list/c 'der path-string?) #f)
+         #:certificate-chain (or/c path-string? #f))
+        ssl-client-context?)]
   [ssl-secure-client-context
    (c-> ssl-client-context?)]
   [ssl-make-server-context
-   (->* () (protocol-symbol/c) ssl-server-context?)]
+   (->* ()
+        (protocol-symbol/c
+         #:private-key (or/c (list/c 'pem path-string?) (list/c 'der path-string?) #f)
+         #:certificate-chain (or/c path-string? #f))
+        ssl-server-context?)]
   [ssl-server-context-enable-dhe!
-   (->* (ssl-server-context?) (path-string?) void?)]
+   (->* (ssl-server-context?) ((or/c path-string? bytes?)) void?)]
   [ssl-server-context-enable-ecdhe!
    (->* (ssl-server-context?) (curve/c) void?)]
   [ssl-client-context?
@@ -148,6 +161,8 @@ TO DO:
    (c-> ssl-port? (or/c bytes? #f))]
   [ssl-peer-issuer-name
    (c-> ssl-port? (or/c bytes? #f))]
+  [ssl-channel-binding
+   (c-> ssl-port? (or/c 'tls-unique 'tls-server-end-point) bytes?)]
   [ports->ssl-ports
    (->* [input-port?
          output-port?]
@@ -160,7 +175,7 @@ TO DO:
          #:hostname (or/c string? #f)]
         (values input-port? output-port?))]
   [ssl-listen
-   (->* [(integer-in 1 (sub1 (expt 2 16)))]
+   (->* [listen-port-number?]
         [exact-nonnegative-integer?
          any/c
          (or/c string? #f)
@@ -202,8 +217,6 @@ TO DO:
 (define ssl-load-fail-reason
   (or libssl-load-fail-reason
       libcrypto-load-fail-reason))
-
-(define 3m? (eq? '3m (system-type 'gc)))
 
 (define libmz (ffi-lib #f))
 
@@ -279,13 +292,13 @@ TO DO:
   (SSL_CTX_ctrl ctx SSL_CTRL_OPTIONS opts #f))
 
 (define-ssl SSL_CTX_set_verify (_fun _SSL_CTX* _int _pointer -> _void))
-(define-ssl SSL_CTX_use_certificate_chain_file (_fun _SSL_CTX* _bytes -> _int))
-(define-ssl SSL_CTX_load_verify_locations (_fun _SSL_CTX* _bytes _bytes -> _int))
+(define-ssl SSL_CTX_use_certificate_chain_file (_fun _SSL_CTX* _path -> _int))
+(define-ssl SSL_CTX_load_verify_locations (_fun _SSL_CTX* _path _path -> _int))
 (define-ssl SSL_CTX_set_client_CA_list (_fun _SSL_CTX* _X509_NAME* -> _int))
 (define-ssl SSL_CTX_set_session_id_context (_fun _SSL_CTX* _bytes _int -> _int))
-(define-ssl SSL_CTX_use_RSAPrivateKey_file (_fun _SSL_CTX* _bytes _int -> _int))
-(define-ssl SSL_CTX_use_PrivateKey_file (_fun _SSL_CTX* _bytes _int -> _int))
-(define-ssl SSL_load_client_CA_file (_fun _bytes -> _X509_NAME*/null))
+(define-ssl SSL_CTX_use_RSAPrivateKey_file (_fun _SSL_CTX* _path _int -> _int))
+(define-ssl SSL_CTX_use_PrivateKey_file (_fun _SSL_CTX* _path _int -> _int))
+(define-ssl SSL_load_client_CA_file (_fun _path -> _X509_NAME*/null))
 (define-ssl SSL_CTX_set_cipher_list (_fun _SSL_CTX* _string -> _int))
 
 (define-ssl SSL_free (_fun _SSL* -> _void)
@@ -306,12 +319,15 @@ TO DO:
 (define-ssl SSL_renegotiate (_fun _SSL* -> _int))
 (define-ssl SSL_renegotiate_pending (_fun _SSL* -> _int))
 (define-ssl SSL_do_handshake (_fun _SSL* -> _int))
-(define-ssl SSL_ctrl (_fun _SSL* _int _long _pointer -> _long))
+(define-ssl SSL_ctrl/bytes (_fun _SSL* _int _long _bytes/nul-terminated -> _long)
+  #:c-id SSL_ctrl)
 (define-ssl SSL_set_SSL_CTX (_fun _SSL* _SSL_CTX* -> _SSL_CTX*))
 
 (define-crypto X509_free (_fun _X509* -> _void)
   #:wrap (deallocator))
 (define-ssl SSL_get_peer_certificate (_fun _SSL* -> _X509*/null)
+  #:wrap (allocator X509_free))
+(define-ssl SSL_get_certificate (_fun _SSL* -> _X509*/null)
   #:wrap (allocator X509_free))
 
 (define-crypto X509_get_subject_name (_fun _X509* -> _X509_NAME*))
@@ -338,10 +354,19 @@ TO DO:
 (define-crypto X509_NAME_get_entry (_fun _X509_NAME* _int -> _X509_NAME_ENTRY*/null))
 (define-crypto X509_NAME_ENTRY_get_data (_fun _X509_NAME_ENTRY* -> _ASN1_STRING*))
 (define-crypto X509_get_ext_d2i (_fun _X509* _int _pointer _pointer -> _STACK*/null))
-(define-crypto sk_num (_fun _STACK* -> _int))
+(define-crypto sk_num (_fun _STACK* -> _int)
+  #:fail (lambda ()
+           (define-crypto OPENSSL_sk_num (_fun _STACK* -> _int))
+           OPENSSL_sk_num))
 (define-crypto sk_GENERAL_NAME_value (_fun _STACK* _int -> _GENERAL_NAME-pointer)
-  #:c-id sk_value)
-(define-crypto sk_pop_free (_fun _STACK* _fpointer -> _void))
+  #:c-id sk_value
+  #:fail (lambda ()
+           (define-crypto OPENSSL_sk_value (_fun _STACK* _int -> _GENERAL_NAME-pointer))
+           OPENSSL_sk_value))
+(define-crypto sk_pop_free (_fun _STACK* _fpointer -> _void)
+  #:fail (lambda ()
+           (define-crypto OPENSSL_sk_pop_free (_fun _STACK* _fpointer -> _void))
+           OPENSSL_sk_pop_free))
 
 ;; (define-crypto X509_get_default_cert_area (_fun -> _string))
 (define-crypto X509_get_default_cert_dir  (_fun -> _string))
@@ -349,23 +374,79 @@ TO DO:
 (define-crypto X509_get_default_cert_dir_env (_fun -> _string))
 (define-crypto X509_get_default_cert_file_env (_fun -> _string))
 
+(define-ssl SSL_get_peer_finished (_fun _SSL* _pointer _size -> _size))
+(define-ssl SSL_get_finished (_fun _SSL* _pointer _size -> _size))
+
+(define-cpointer-type _EVP_MD*)
+(define-crypto EVP_sha224 (_fun -> _EVP_MD*/null))
+(define-crypto EVP_sha256 (_fun -> _EVP_MD*/null))
+(define-crypto EVP_sha384 (_fun -> _EVP_MD*/null))
+(define-crypto EVP_sha512 (_fun -> _EVP_MD*/null))
+(define-crypto EVP_MD_size (_fun _EVP_MD* -> _int))
+
+(define-ssl OBJ_find_sigid_algs
+  (_fun _int (alg : (_ptr o _int)) (_pointer = #f) -> (r : _int)
+        -> (if (> r 0) alg 0)))
+
+(define-ssl X509_get_signature_nid
+  (_fun _X509* -> _int))
+
+(define-ssl X509_digest
+  (_fun _X509* _EVP_MD* _pointer (_ptr i _uint) -> _int))
+
 (define (x509-root-sources)
-  (define (dir-sep)
-    (case (system-type)
-      [(windows) ";"]
-      [else ":"]))
-  (define (get-paths get-env get-path dir? split?)
-    (cond [libcrypto
-           (let* ([result (or (getenv (get-env)) (get-path))]
-                  [results (if split?
-                               (string-split result (dir-sep))
-                               (list result))])
-             (if dir?
-                 (map (lambda (p) (list 'directory p)) results)
-                 results))]
-          [else null]))
-  (append (get-paths X509_get_default_cert_file_env X509_get_default_cert_file #f #f)
-          (get-paths X509_get_default_cert_dir_env X509_get_default_cert_dir #t #t)))
+  (cond
+    [libcrypto
+     ;; Workaround for natipkg openssl library: the default cert locations vary
+     ;; from distro to distro, and there is no one configuration that works with
+     ;; all. So build natipkg libssl.so with `--openssldir="/RACKET_USE_ALT_PATH"`
+     ;; and this code will override with better guesses.
+     ;; Cert locations for various distros:
+     ;;   Debian: dir=/etc/ssl/certs, file=/etc/ssl/certs/ca-certificates.crt (prefer dir!)
+     ;;   RedHat: file=/etc/pki/tls/certs/ca-bundle.crt; /etc/ssl/certs exists but useless!
+     ;;   OpenSUSE: dir=/etc/ssl/certs, file=/var/lib/ca-certificates/ca-bundle.pem (prefer dir!)
+     ;; So try file=/etc/pki/tls/certs/ca-bundle.crt, dir=/etc/ssl/certs.
+     (define (use-alt-path? p) (regexp-match? #rx"^/RACKET_USE_ALT_PATH" p))
+     (define (subst-cert-file p)
+       (cond [(use-alt-path? p)
+              (log-openssl-debug "cert file path is ~s; using alternatives" p)
+              (filter file-exists? '("/etc/pki/tls/certs/ca-bundle.crt"))]
+             [else p]))
+     (define (subst-cert-dir p)
+       (cond [(use-alt-path? p)
+              (log-openssl-debug "cert dir path is ~s; using alternatives" p)
+              (filter directory-exists? '("/etc/ssl/certs"))]
+             [else p]))
+     ;; ----
+     (define dir-sep (case (system-type) [(windows) ";"] [else ":"]))
+     (define cert-file0
+       (or (getenv (X509_get_default_cert_file_env)) (X509_get_default_cert_file)))
+     (define cert-dirs0
+       (or (getenv (X509_get_default_cert_dir_env)) (X509_get_default_cert_dir)))
+     ;; Use path-string? filter to avoid {file,directory}-exists? error on "".
+     (define cert-files
+       (filter path-string? (flatten (map subst-cert-file (list cert-file0)))))
+     (define cert-dirs
+       (filter path-string? (flatten (map subst-cert-dir (string-split cert-dirs0 dir-sep)))))
+     ;; Log error only if *no* cert source exists (eg, on Debian/Ubuntu, default
+     ;; cert file does not exist).
+     (unless (or (ormap file-exists? cert-files) (ormap directory-exists? cert-dirs))
+       (set! complain-on-cert
+             (lambda ()
+               (log-openssl-error
+                "x509-root-sources: cert sources do not exist: ~s, ~s; ~a"
+                cert-file0 cert-dirs0
+                (format "override using ~a, ~a"
+                        (X509_get_default_cert_file_env)
+                        (X509_get_default_cert_dir_env))))))
+     (log-openssl-debug "using cert sources: ~s, ~s" cert-files cert-dirs)
+     (append cert-files (map (lambda (p) (list 'directory p)) cert-dirs))]
+    [else null]))
+
+(define complain-on-cert void)
+(define (maybe-complain-on-cert)
+  (complain-on-cert)
+  (set! complain-on-cert void))
 
 (define ssl-default-verify-sources
   (make-parameter
@@ -424,9 +505,22 @@ TO DO:
 (define SSL_TLSEXT_ERR_OK 0)
 (define SSL_TLSEXT_ERR_NOACK 3)
 
-(define-mzscheme scheme_make_custodian (_fun _pointer -> _scheme))
+(define NID_md5 4)
+(define NID_sha1 64)
+(define NID_sha224 675)
+(define NID_sha256 672)
+(define NID_sha384 673)
+(define NID_sha512 674)
 
-(define-runtime-path ssl-dh4096-param-path "dh4096.pem")
+(define ssl-dh4096-param-bytes
+  (include/reader "dh4096.pem" (lambda (src port)
+                                 (let loop ([accum '()])
+                                   (define bstr (read-bytes 4096 port))
+                                   (if (eof-object? bstr)
+                                       (if (null? accum)
+                                           eof
+                                           (datum->syntax #'here (apply bytes-append (reverse accum))))
+                                       (loop (cons bstr accum)))))))
 
 ;; Make this bigger than 4096 to accommodate at least
 ;; 4096 of unencrypted data
@@ -513,14 +607,6 @@ TO DO:
                           server?)
   #:mutable)
 
-(define (make-immobile-bytes n)
-  (if 3m?
-      ;; Allocate the byte string via malloc:
-      (let ([p (malloc 'atomic-interior n)])
-        (make-sized-byte-string p n))
-      ;; Normal byte string is immobile:
-      (make-bytes n)))
-
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Errors
 
@@ -593,7 +679,7 @@ TO DO:
    (list 'secure TLS_client_method
          'auto TLS_client_method
          'sslv2-or-v3 TLS_client_method
-         'sslv2 SSLv2_client_method
+         ;; 'sslv2 SSLv2_client_method --- always fails in modern OpenSSL
          'sslv3 SSLv3_client_method
          'tls TLSv1_client_method
          'tls11 TLSv1_1_client_method
@@ -603,7 +689,7 @@ TO DO:
    (list 'secure TLS_server_method
          'auto TLS_server_method
          'sslv2-or-v3 TLS_server_method
-         'sslv2 SSLv2_server_method
+         ;; 'sslv2 SSLv2_server_method --- always fails in modern OpenSSL
          'sslv3 SSLv3_server_method
          'tls TLSv1_server_method
          'tls11 TLSv1_1_server_method
@@ -617,43 +703,56 @@ TO DO:
   (let ([protocols (supported-server-protocols)])
     (and (pair? protocols) (last protocols))))
 
-(define (make-context who protocol-symbol client?)
+(define (make-context who protocol-symbol client? priv-key cert-chain)
   (define ctx (make-raw-context who protocol-symbol client?))
-  ((if client? make-ssl-client-context make-ssl-server-context) ctx #f #f))
+  (define mzctx ((if client? make-ssl-client-context make-ssl-server-context) ctx #f #f))
+  (when cert-chain (ssl-load-certificate-chain! mzctx cert-chain))
+  (cond [(and (pair? priv-key) (eq? (car priv-key) 'pem))
+         (ssl-load-private-key! mzctx (cadr priv-key) #f #f)]
+        [(and (pair? priv-key) (eq? (car priv-key) 'der))
+         (ssl-load-private-key! mzctx (cadr priv-key) #f #t)]
+        [else (void)])
+  mzctx)
 
 (define (make-raw-context who protocol-symbol client?)
-  (cond
-   [(and (eq? protocol-symbol 'secure)
-         client?)
-    (ssl-context-ctx (ssl-secure-client-context))]
-   [else
-    (define meth (encrypt->method who protocol-symbol client?))
-    (define ctx
-      (atomically ;; connect SSL_CTX_new to subsequent check-valid (ERR_get_error)
-       (let ([ctx (SSL_CTX_new meth)])
-         (check-valid ctx who "context creation")
-         ctx)))
-    (unless (memq protocol-symbol '(sslv2 sslv3))
-      (SSL_CTX_set_options ctx (bitwise-ior SSL_OP_NO_SSLv2 SSL_OP_NO_SSLv3)))
-    (SSL_CTX_set_mode ctx (bitwise-ior SSL_MODE_ENABLE_PARTIAL_WRITE
-                                       SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER))
-    ctx]))
+  (define meth (encrypt->method who protocol-symbol client?))
+  (define ctx
+    (atomically ;; connect SSL_CTX_new to subsequent check-valid (ERR_get_error)
+     (let ([ctx (SSL_CTX_new meth)])
+       (check-valid ctx who "context creation")
+       ctx)))
+  (unless (memq protocol-symbol '(sslv2 sslv3))
+    (SSL_CTX_set_options ctx (bitwise-ior SSL_OP_NO_SSLv2 SSL_OP_NO_SSLv3)))
+  (SSL_CTX_set_mode ctx (bitwise-ior SSL_MODE_ENABLE_PARTIAL_WRITE
+                                     SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER))
+  ctx)
 
 (define (need-ctx-free? context-or-encrypt-method)
   (and (symbol? context-or-encrypt-method)
        (not (eq? context-or-encrypt-method 'secure))))
 
-(define (ssl-make-client-context [protocol-symbol default-encrypt])
-  (make-context 'ssl-make-client-context protocol-symbol #t))
+(define (ssl-make-client-context [protocol-symbol default-encrypt]
+                                 #:private-key [priv-key #f]
+                                 #:certificate-chain [cert-chain #f])
+  (cond [(and (eq? protocol-symbol 'secure) (not priv-key) (not cert-chain))
+         (ssl-secure-client-context)]
+        [else
+         (define ctx (make-context 'ssl-make-client-context protocol-symbol #t priv-key cert-chain))
+         (when (eq? protocol-symbol 'secure) (secure-client-context! ctx))
+         ctx]))
 
-(define (ssl-make-server-context [protocol-symbol default-encrypt])
-  (make-context 'ssl-make-server-context protocol-symbol #f))
+(define (ssl-make-server-context [protocol-symbol default-encrypt]
+                                 #:private-key [priv-key #f]
+                                 #:certificate-chain [cert-chain #f])
+  (make-context 'ssl-make-server-context protocol-symbol #f priv-key cert-chain))
 
 (define (get-context who context-or-encrypt-method client?
                      #:need-unsealed? [need-unsealed? #f])
   (if (ssl-context? context-or-encrypt-method)
       (extract-ctx who need-unsealed? context-or-encrypt-method)
-      (make-raw-context who context-or-encrypt-method client?)))
+      (if (and client? (eq? context-or-encrypt-method 'secure))
+          (ssl-context-ctx (ssl-secure-client-context))
+          (make-raw-context who context-or-encrypt-method client?))))
 
 (define (get-context/listener who ssl-context-or-listener [fail? #t]
                               #:need-unsealed? [need-unsealed? #f])
@@ -692,8 +791,10 @@ TO DO:
   (SSL_CTX_ctrl ctx SSL_CTRL_OPTIONS SSL_OP_SINGLE_ECDH_USE #f)
   (void))
 
-(define (ssl-server-context-enable-dhe! context [path ssl-dh4096-param-path])
-  (define params (call-with-input-file path port->bytes))
+(define (ssl-server-context-enable-dhe! context [ssl-dh4096-param ssl-dh4096-param-bytes])
+  (define params (if (bytes? ssl-dh4096-param)
+                     ssl-dh4096-param
+                     (call-with-input-file* ssl-dh4096-param port->bytes)))
   (define params-bio (BIO_new_mem_buf params (bytes-length params)))
   (check-valid params-bio 'ssl-server-context-enable-dhe! "loading Diffie-Hellman parameters")
   (with-failure
@@ -715,13 +816,12 @@ TO DO:
            (path->complete-path (cleanse-path pathname)
                                 (current-directory))])
       (security-guard-check-file who path '(read))
-      (let ([path (path->bytes path)])
-        (atomically ;; for to connect ERR_get_error to `load-it'
-         (let ([n (load-it ctx path)])
-           (unless (or (= n 1) try?)
-             (error who "load failed from: ~e ~a"
-                    pathname
-                    (get-error-message (ERR_get_error))))))))))
+      (atomically ;; for to connect ERR_get_error to `load-it'
+       (let ([n (load-it ctx path)])
+         (unless (or (= n 1) try?)
+           (error who "load failed from: ~e ~a"
+                  pathname
+                  (get-error-message (ERR_get_error)))))))))
 
 (define (ssl-load-certificate-chain! ssl-context-or-listener pathname)
   (ssl-load-... 'ssl-load-certificate-chain! 
@@ -783,6 +883,7 @@ TO DO:
         [else (bad-source)]))
 
 (define (ssl-load-default-verify-sources! ctx)
+  (maybe-complain-on-cert)
   (for ([src (in-list (ssl-default-verify-sources))])
     (ssl-load-verify-source! ctx src #:try? #t)))
 
@@ -911,27 +1012,29 @@ TO DO:
 
 ;; ----
 
-(define (ssl-make-secure-client-context sym)
-  (let ([ctx (ssl-make-client-context sym)])
-    ;; Load root certificates
-    (ssl-load-default-verify-sources! ctx)
-    ;; Require verification
-    (ssl-set-verify! ctx #t)
-    (ssl-set-verify-hostname! ctx #t)
-    ;; No weak cipher suites; see discussion, patch at http://bugs.python.org/issue13636
-    (ssl-set-ciphers! ctx "DEFAULT:!aNULL:!eNULL:!LOW:!EXPORT:!SSLv2")
-    ;; Seal context so further changes cannot weaken it
-    (ssl-seal-context! ctx)
-    ctx))
+(define (secure-client-context! ctx)
+  ;; Load root certificates
+  (ssl-load-default-verify-sources! ctx)
+  ;; Require verification
+  (ssl-set-verify! ctx #t)
+  (ssl-set-verify-hostname! ctx #t)
+  ;; No weak cipher suites; see discussion, patch at http://bugs.python.org/issue13636
+  (ssl-set-ciphers! ctx "DEFAULT:!aNULL:!eNULL:!LOW:!EXPORT:!SSLv2")
+  ;; Seal context so further changes cannot weaken it
+  (ssl-seal-context! ctx)
+  (void))
 
 ;; context-cache: (list (weak-box ssl-client-context) (listof path-string) nat) or #f
+;; Cache for (ssl-secure-client-context) and (ssl-make-client-context 'secure) (w/o key, cert).
 (define context-cache #f)
 
 (define (ssl-secure-client-context)
+  (maybe-complain-on-cert)
   (let ([locs (ssl-default-verify-sources)])
     (define (reset)
       (let* ([now (current-seconds)]
-             [ctx (ssl-make-secure-client-context default-encrypt)])
+             [ctx (ssl-make-client-context 'auto)])
+        (secure-client-context! ctx)
         (set! context-cache (list (make-weak-box ctx) locs now))
         ctx))
     (let* ([cached context-cache]
@@ -1020,7 +1123,7 @@ TO DO:
   ;;  call to SSL_read must use the same arguments.
   ;; Use xfer-buffer so we have a consistent buffer to use with
   ;;  SSL_read across calls to the port's write function.
-  (let-values ([(xfer-buffer) (make-immobile-bytes BUFFER-SIZE)]
+  (let-values ([(xfer-buffer) (make-bytes BUFFER-SIZE)]
          [(got-r got-w) (make-pipe)]
          [(must-read-len) #f])
     (make-input-port/read-to-peek
@@ -1147,9 +1250,8 @@ TO DO:
         (loop)))))))
 
 (define (kernel-thread thunk)
-  ;; Since we provide #f to scheme_make_custodian,
-  ;;  the custodian is managed directly by the root:
-  (parameterize ([current-custodian (scheme_make_custodian #f)])
+  ;; Run with a custodian that is managed directly by the root custodian:
+  (parameterize ([current-custodian (make-custodian-at-root)])
     (thread thunk)))
 
 (define (make-ssl-output-port mzssl)
@@ -1157,7 +1259,7 @@ TO DO:
   ;;  call to SSL_write must use the same arguments.
   ;; Use xfer-buffer so we have a consistent buffer to use with
   ;;  SSL_write across calls to the port's write function.
-  (let ([xfer-buffer (make-immobile-bytes BUFFER-SIZE)]
+  (let ([xfer-buffer (make-bytes BUFFER-SIZE)]
         [buffer-mode (or (file-stream-buffer-mode (mzssl-o mzssl)) 'bloack)]
         [flush-ch (make-channel)]
         [must-write-len #f])
@@ -1426,8 +1528,8 @@ TO DO:
                        (ssl-context-verify-hostname? context-or-encrypt-method)]
                       [else #f])])
     (when (string? hostname)
-      (SSL_ctrl ssl SSL_CTRL_SET_TLSEXT_HOSTNAME
-		TLSEXT_NAMETYPE_host_name (string->bytes/latin-1 hostname)))
+      (SSL_ctrl/bytes ssl SSL_CTRL_SET_TLSEXT_HOSTNAME
+                      TLSEXT_NAMETYPE_host_name (string->bytes/latin-1 hostname)))
 
     ;; connect/accept:
     (let-values ([(buffer) (make-bytes BUFFER-SIZE)]
@@ -1490,10 +1592,13 @@ TO DO:
 
 (define (ssl-addresses p [port-numbers? #f])
   (let-values ([(mzssl input?) (lookup 'ssl-addresses p)])
-    (tcp-addresses (if (eq? 'listener input?)
-                       (ssl-listener-l mzssl)
-                       (if input? (mzssl-i mzssl) (mzssl-o mzssl)))
-                   port-numbers?)))
+    (define port
+      (if (eq? 'listener input?)
+          (ssl-listener-l mzssl)
+          (if input? (mzssl-i mzssl) (mzssl-o mzssl))))
+    (cond [(or (tcp-port? port) (tcp-listener? port))
+           (tcp-addresses port port-numbers?)]
+          [else (error 'ssl-addresses "not connected to TCP port")])))
 
 (define (ssl-abandon-port p)
   (let-values ([(mzssl input?) (lookup 'ssl-abandon-port p)])
@@ -1612,6 +1717,43 @@ TO DO:
          [lit-rxs (for/list ([part (in-list lit-parts)]) (regexp-quote part #f))])
     (regexp (string-join lit-rxs ".*"))))
 
+(define (ssl-channel-binding p type)
+  ;; Reference: https://tools.ietf.org/html/rfc5929
+  (define who 'ssl-channel-binding)
+  (define-values (mzssl _in?) (lookup 'ssl-channel-binding p))
+  (define ssl (mzssl-ssl mzssl))
+  (case type
+    [(tls-unique)
+     (define MAX_FINISH_LEN 50) ;; usually 12 bytes, but be cautious (see RFC 5246 7.4.9)
+     (define get-finished ;; assumes no session resumption
+       (cond [(mzssl-server? mzssl) SSL_get_peer_finished]
+             [else SSL_get_finished]))
+     (define buf (make-bytes MAX_FINISH_LEN))
+     (define r (get-finished ssl buf (bytes-length buf)))
+     (cond [(zero? r) (error who "unable to get TLS Finished message")]
+           [(< 0 r MAX_FINISH_LEN) (subbytes buf 0 r)]
+           [else (error who "internal error: TLS Finished message too large")])]
+    [(tls-server-end-point)
+     (define x509
+       (cond [(mzssl-server? mzssl) (SSL_get_certificate ssl)]
+             [else (SSL_get_peer_certificate ssl)]))
+     (unless x509 (error who "failed to get server certificate"))
+     (define sig-nid (X509_get_signature_nid x509))
+     (define hash-nid (OBJ_find_sigid_algs sig-nid))
+     (define hash-evp ;; change md5, sha1 to sha256, per RFC 5929 4.1
+       (cond [(or (= hash-nid NID_md5) (= hash-nid NID_sha1)) (EVP_sha256)]
+             [(= hash-nid NID_sha224) (EVP_sha224)]
+             [(= hash-nid NID_sha256) (EVP_sha256)]
+             [(= hash-nid NID_sha384) (EVP_sha384)]
+             [(= hash-nid NID_sha512) (EVP_sha512)]
+             [else (error who "unsupported digest in certificate")]))
+     (define buflen (EVP_MD_size hash-evp))
+     (unless (> buflen 0) (error who "internal error: bad digest length"))
+     (define buf (make-bytes buflen))
+     (define r (X509_digest x509 hash-evp buf buflen))
+     (X509_free x509)
+     (if (> r 0) buf (error who "internal error: certificate digest failed"))]))
+
 (define (ssl-port? v)
   (and (hash-ref ssl-ports v #f) #t))
 
@@ -1623,7 +1765,7 @@ TO DO:
                     [protocol-symbol-or-context default-encrypt])
   (let* ([ctx (if (ssl-server-context? protocol-symbol-or-context)
                protocol-symbol-or-context
-               (make-context 'ssl-listen protocol-symbol-or-context #f))]
+               (make-context 'ssl-listen protocol-symbol-or-context #f #f #f))]
         [l (tcp-listen port-k queue-k reuse? hostname-or-#f)]
         [ssl-l (make-ssl-listener l ctx)])
     (register ssl-l ssl-l 'listener)))
@@ -1689,29 +1831,25 @@ TO DO:
 (define ssl-available? (and libssl #t))
 
 
-(define scheme_register_process_global
-  (and ssl-available?
-       (get-ffi-obj 'scheme_register_process_global #f (_fun _string _pointer -> _pointer))))
-
 (when ssl-available?
   ;; Make sure only one place tries to initialize OpenSSL,
   ;; and wait in case some other place is currently initializing
   ;; it.
   (begin
     (start-atomic)
-    (let* ([done (cast 1 _scheme _pointer)]
-           [v (scheme_register_process_global "OpenSSL-support-initializing" done)])
+    (let* ([done (ptr-add #f 1)]
+           [v (register-process-global #"OpenSSL-support-initializing" done)])
       (if v
           ;; Some other place is initializing:
           (begin
             (end-atomic)
             (let loop ()
-              (unless (scheme_register_process_global "OpenSSL-support-initialized" #f)
+              (unless (register-process-global #"OpenSSL-support-initialized" #f)
                 (sleep 0.01) ;; busy wait! --- this should be rare
                 (loop))))
           ;; This place must initialize:
           (begin
             (SSL_library_init)
             (SSL_load_error_strings)
-            (scheme_register_process_global "OpenSSL-support-initialized" done)
+            (register-process-global #"OpenSSL-support-initialized" done)
             (end-atomic))))))

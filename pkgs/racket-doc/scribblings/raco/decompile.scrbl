@@ -4,7 +4,7 @@
           "common.rkt"
           (for-label racket/base
                      compiler/decompile
-                     (only-in compiler/zo-parse compilation-top? req)
+                     (only-in compiler/zo-parse linkl-directory? linkl-bundle? linkl?)
                      compiler/zo-marshal))
 
 @title[#:tag "decompile"]{@exec{raco decompile}: Decompiling Bytecode}
@@ -12,9 +12,12 @@
 The @exec{raco decompile} command takes the path of a bytecode file (which usually
  has the file extension @filepath{.zo}) or a source file with an
  associated bytecode file (usually created with @exec{raco make}) and
- converts the bytecode file's content back to an approximation of Racket code. Decompiled
- bytecode is mostly useful for checking the compiler's transformation
- and optimization of the source program.
+ converts the bytecode file's content back to an approximation of Racket code.
+ When the ``bytecode'' file contains machine code, as for the @tech[#:doc guide-doc]{CS}
+ variant of Racket, then it cannot be converted back to an approximation of
+ Racket, but installing the @filepath{disassemble} package may enable disassembly
+ of the machine code. Decompilation is mostly useful for checking the
+ compiler's transformation and optimization of the source program.
 
 The @exec{raco decompile} command accepts the following command-line flags:
 
@@ -23,11 +26,16 @@ The @exec{raco decompile} command accepts the following command-line flags:
         given file's path and an associated @filepath{.zo} file (if any)}
   @item{@Flag{n} @nonterm{n} or @DFlag{columns} @nonterm{n} --- format
         output for a display with @nonterm{n} columns}
+  @item{@DFlag{linklet} --- decompile only as far as linklets, instead
+        of decoding linklets to approximate Racket @racket[module] forms}
+  @item{@DFlag{no-disassemble} --- show machine code as-is in a byte string,
+        instead of attempting to disassemble}
 ]
 
-Many forms in the decompiled code, such as @racket[module],
- @racket[define], and @racket[lambda], have the same meanings as
- always. Other forms and transformations are specific to the rendering
+To the degree that it can be converted back to Racket code,
+ many forms in the decompiled code have the same meanings as
+ always, such as @racket[module], @racket[define], and @racket[lambda].
+ Other forms and transformations are specific to the rendering
  of bytecode, and they reflect a specific execution model:
 
 @itemize[
@@ -125,7 +133,15 @@ Many forms in the decompiled code, such as @racket[module],
 @item{A @racketidfont{#%decode-syntax} form corresponds to a syntax
  object.}
 
+@item{A @racketidfont{#%machine-code} form corresponds to machine code
+ that is not disassembled, where the machine code is in a byte string.}
+
+@item{A @racketidfont{#%assembly-code} form corresponds to disassembled
+ machine code, where the assembly code is shown as a sequence of strings.}
+
 ]
+
+@history[#:changed "1.8" @elem{Added @DFlag{no-disassemble}.}]
 
 @; ------------------------------------------------------------
 
@@ -133,7 +149,7 @@ Many forms in the decompiled code, such as @racket[module],
 
 @defmodule[compiler/decompile]
 
-@defproc[(decompile [top compilation-top?]) any/c]{
+@defproc[(decompile [top (or/c linkl-directory? linkl-bundle? linkl?)]) any/c]{
 
 Consumes the result of parsing bytecode and returns an S-expression
 (as described above) that represents the compiled code.}
@@ -148,11 +164,11 @@ Consumes the result of parsing bytecode and returns an S-expression
 
 @defmodule[compiler/zo-marshal]
 
-@defproc[(zo-marshal-to [top compilation-top?] [out output-port?]) void?]{
+@defproc[(zo-marshal-to [top (or/c linkl-directory? linkl-bundle?)] [out output-port?]) void?]{
 
 Consumes a representation of bytecode and writes it to @racket[out].}
 
-@defproc[(zo-marshal [top compilation-top?]) bytes?]{
+@defproc[(zo-marshal [top (or/c linkl-directory? linkl-bundle?)]) bytes?]{
 
 Consumes a representation of bytecode and generates a byte string for
 the marshaled bytecode.}
@@ -160,4 +176,3 @@ the marshaled bytecode.}
 @; ------------------------------------------------------------
 
 @include-section["zo-struct.scrbl"]
-

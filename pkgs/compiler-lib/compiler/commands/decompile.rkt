@@ -5,12 +5,14 @@
          compiler/decompile
          compiler/compilation-path
          racket/pretty
-         racket/format)
+         racket/format
+         "../private/chez.rkt")
 
 (define (get-name)
   (string->symbol (short-program+command-name)))
 
 (define force? #f)
+(define to-linklets? #f)
 
 (define source-files
   (command-line
@@ -24,6 +26,10 @@
         (raise-user-error (get-name)
                           "not a valid column count: ~a" n))
       (pretty-print-columns num))]
+   [("--linklet") "Decompile to linklets"
+    (set! to-linklets? #t)]
+   [("--no-disassemble") "Show machine code as-is"
+    (current-can-disassemble #f)]
    #:args source-or-bytecode-file
    source-or-bytecode-file))
 
@@ -85,6 +91,7 @@
                        [print-graph #t])
           (pretty-write
            (decompile
+            #:to-linklets? to-linklets?
             (call-with-input-file*
              (if (file-exists? alt-file) alt-file zo-file)
              (lambda (in)

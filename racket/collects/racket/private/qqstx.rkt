@@ -2,8 +2,8 @@
 ;; #%qqstx : quasisyntax
 
 (module qqstx '#%kernel
-  (#%require "small-scheme.rkt" "stxcase-scheme.rkt" "stx.rkt"
-             (for-syntax '#%kernel "small-scheme.rkt" "stxcase-scheme.rkt" "stx.rkt"))
+  (#%require "define-et-al.rkt" "stxcase-scheme.rkt" "stx.rkt" "template.rkt"
+             (for-syntax '#%kernel "qq-and-or.rkt" "cond.rkt" "stxcase-scheme.rkt" "stx.rkt"))
 
   (#%provide quasisyntax
              quasisyntax/loc
@@ -105,13 +105,11 @@
                                                     [ctx (datum->syntax #'x 'ctx #'x)])
                                         (convert-k (datum->syntax
                                                     stx
-                                                    (list* (syntax temp)
-                                                           (quote-syntax ...)
-                                                           rest-v)
+                                                    (cons #'(~@! . temp) rest-v)
                                                     stx
                                                     stx)
                                                    (with-syntax ([check check-splicing-list-id])
-                                                     (cons #'[(temp (... ...)) (check x (quote-syntax ctx))]
+                                                     (cons #'[temp (check x (quote-syntax ctx))]
                                                            bindings)))))])
                                (loop (syntax rest) depth
                                      (lambda ()
@@ -243,12 +241,15 @@
                              depth
                              same-k
                              (lambda (v bindings)
-                               (convert-k (datum->syntax
-                                           stx
-                                           (list->vector (syntax->list v))
-                                           stx
-                                           stx)
-                                          bindings)))]
+                               (let ([stx-lst/#f (syntax->list v)])
+                                 (convert-k (datum->syntax
+                                             stx
+                                             (if stx-lst/#f
+                                                 (list->vector stx-lst/#f)
+                                                 (vector-immutable (cons #'~@! v)))
+                                             stx
+                                             stx)
+                                            bindings))))]
                       [(prefab-struct-key (syntax-e stx))
                        (let* ([d (syntax-e stx)]
                               [key (prefab-struct-key d)]

@@ -72,7 +72,7 @@
 (define current-launcher-variant
   (make-parameter (cross-system-type 'gc)
                   (lambda (v)
-                    (unless (memq v '(3m script-3m cgc script-cgc))
+                    (unless (memq v '(3m script-3m cgc script-cgc cs script-cs))
                       (raise-type-error
                        'current-launcher-variant
                        "variant symbol"
@@ -116,26 +116,38 @@
          [alt-kind (if (eq? '3m normal-kind)
                        'cgc
                        '3m)]
+         [alt2-kind (if (or (eq? '3m normal-kind)
+                            (eq? 'cgc normal-kind))
+                        'cs
+                        'cgc)]
          [normal (if (variant-available? kind cased-kind-name normal-kind)
                      (list normal-kind)
                      null)]
          [alt (if (variant-available? kind cased-kind-name alt-kind)
                   (list alt-kind)
                   null)]
+         [alt2 (if (variant-available? kind cased-kind-name alt2-kind)
+                   (list alt2-kind)
+                   null)]
+         [kind->script-kind (lambda (kind)
+                              (cond
+                                [(eq? kind '3m) '(script-3m)]
+                                [(eq? kind 'cgc) '(script-cgc)]
+                                [else '(script-cs)]))]
          [script (if (and (eq? 'macosx (cross-system-type))
                           (eq? kind 'mred)
                           (pair? normal))
-                     (if (eq? normal-kind '3m)
-                         '(script-3m)
-                         '(script-cgc))
+                     (kind->script-kind normal-kind)
                      null)]
          [script-alt (if (and (memq alt-kind alt)
                               (pair? script))
-                         (if (eq? alt-kind '3m)
-                             '(script-3m)
-                             '(script-cgc))
-                         null)])
-    (append normal alt script script-alt)))
+                         (kind->script-kind alt-kind)
+                         null)]
+         [script-alt2 (if (and (memq alt2-kind alt2)
+                               (pair? script))
+                          (kind->script-kind alt2-kind)
+                          null)])
+    (append normal alt alt2 script script-alt script-alt2)))
 
 (define (available-gracket-variants)
   (available-variants 'mred))
@@ -163,7 +175,7 @@
       (file-or-directory-permissions dest perms2))))
 
 (define (script-variant? v)
-  (memq v '(script-3m script-cgc)))
+  (memq v '(script-3m script-cgc script-cs)))
 
 (define (add-file-suffix path variant mred?)
   (let ([s (variant-suffix
@@ -425,9 +437,10 @@
                      (if (eq? kind 'mred)
                          (find-gui-bin-dir)
                          (find-console-bin-dir)))]
+         [as-relative? (let ([a (assq 'relative? aux)])
+                         (and a (cdr a)))]
          [dir-finder
-          (if (let ([a (assq 'relative? aux)])
-                (and a (cdr a)))
+          (if as-relative?
               (make-relative-path-header dest bindir use-librktdir?)
               (make-absolute-path-header bindir))]
          [exec (format
@@ -470,7 +483,11 @@
         (when use-librktdir?
           (display "# {{{ librktdir\n")
           (display "librktdir=\"$bindir/")
-          (display (find-relative-path bindir
+          (display (find-relative-path (if as-relative?
+                                           (simplify-path
+                                            (let-values ([(base name dir?) (split-path (path->complete-path dest))])
+                                              base))
+                                           bindir)
                                        (simplify-path
                                         (find-lib-dir))))
           (display "\"\n")
@@ -517,7 +534,9 @@
                           dest))
   (define dir (if user?
                   (find-user-apps-dir)
-                  (find-apps-dir)))
+                  (or (find-apps-dir)
+                      (error 'installed-executable-path->desktop-path
+                             "no installation directory is available"))))
   (path-replace-extension (build-path dir (file-name-from-path dest))
                           #".desktop"))
 
@@ -557,7 +576,7 @@
               ;; for the executable and icon, but we don't want absolute
               ;; paths in an in-place build. So, the ".desktop" files
               ;; in an in-place build won't be usable directly, but they
-              ;; adn be patched up by `setup/unixstyle-install'.
+              ;; and be patched up by `setup/unixstyle-install'.
               (let ([p (simple-form-path (path->complete-path p))])
                 (if (or user?
                         (get-absolute-installation?))
@@ -1047,15 +1066,17 @@
 
 (define (racket-launcher-up-to-date? dest [aux null])
   (cond
-    ;; When running Setup PLT under Windows, the
+    ;; When running "raco.exe" under Windows, the
     ;;  launcher process stays running until Racket
     ;;  completes, which means that it cannot be
-    ;;  overwritten at that time. So we assume
-    ;;  that a Setup-PLT-style independent launcher
-    ;;  is always up-to-date.
-    [(eq? 'windows (cross-system-type))
-     (and (let ([m (assq 'independent? aux)]) (and m (cdr m)))
-          (file-exists? dest))]
+    ;;  overwritten at that time. Only update that
+    ;;  kind of launcher if the environment variable
+    ;;  `PLT_REPLACE_INDEPENDENT_LAUNCHERS` is set.
+    [(and (eq? 'windows (system-type))
+          (let ([m (assq 'independent? aux)]) (and m (cdr m)))
+          (file-exists? dest)
+          (not (getenv "PLT_REPLACE_INDEPENDENT_LAUNCHERS")))
+     #t]
     ;; For any other setting, we could implement
     ;;  a fancy check, but for now always re-create
     ;;  launchers.

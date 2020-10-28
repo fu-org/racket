@@ -57,8 +57,18 @@ offset is always in bytes.}
 @defproc[(cpointer-gcable? [cptr cpointer?]) boolean?]{
 
 Returns @racket[#t] if @racket[cptr] is treated as a reference to
-memory that is managed by the garbage collector, @racket[#f]
-otherwise.}
+memory that is (assumed to be) managed by the garbage collector,
+@racket[#f] otherwise.
+
+For a pointer based on @racket[_gcpointer] as a result type,
+@racket[cpointer-gcable?] will return @racket[#t]. In the @3m[] and
+@CGC[] variants of Racket, @racket[cpointer-gcable?] will return
+@racket[#f] for a pointer based on @racket[_pointer] as a result type.
+The @CS[] variant is mostly the sane, except that if a pointer is
+extracted using the @racket[_pointer] type from memory allocated as
+@racket['nonatomic], @racket[cpointer-gcable?] will report @racket[#t]
+for the extracted pointer.}
+
 
 @; ----------------------------------------------------------------------
 
@@ -138,20 +148,9 @@ easily lead to a segmentation fault or memory corruption.}
 
 
 @defproc*[([(memmove [cptr cpointer?]
+                     [offset exact-integer? 0]
                      [src-cptr cpointer?]
-                     [count exact-nonnegative-integer?]
-                     [type ctype? _byte])
-            void?]
-           [(memmove [cptr cpointer?]
-                     [offset exact-integer?]
-                     [src-cptr cpointer?]
-                     [count exact-nonnegative-integer?]
-                     [type ctype? _byte])
-            void?]
-           [(memmove [cptr cpointer?]
-                     [offset exact-integer?]
-                     [src-cptr cpointer?]
-                     [src-offset exact-integer?]
+                     [src-offset exact-integer? 0]
                      [count exact-nonnegative-integer?]
                      [type ctype? _byte])
             void?])]{
@@ -164,20 +163,9 @@ destination is determined by @racket[count], which is in @racket[type]
 instances when supplied.}
 
 @defproc*[([(memcpy [cptr cpointer?]
+                    [offset exact-integer? 0]
                     [src-cptr cpointer?]
-                    [count exact-nonnegative-integer?]
-                    [type ctype? _byte])
-            void?]
-           [(memcpy [cptr cpointer?]
-                    [offset exact-integer?]
-                    [src-cptr cpointer?]
-                    [count exact-nonnegative-integer?]
-                    [type ctype? _byte])
-            void?]
-           [(memcpy [cptr cpointer?]
-                    [offset exact-integer?]
-                    [src-cptr cpointer?]
-                    [src-offset exact-integer?]
+                    [src-offset exact-integer? 0]
                     [count exact-nonnegative-integer?]
                     [type ctype? _byte])
             void?])]{
@@ -186,12 +174,7 @@ Like @racket[memmove], but the result is undefined if the destination
 and source overlap.}
 
 @defproc*[([(memset [cptr cpointer?]
-                    [byte byte?]
-                    [count exact-nonnegative-integer?]
-                    [type ctype? _byte])
-            void?]
-           [(memset [cptr cpointer?]
-                    [offset exact-integer?]
+                    [offset exact-integer? 0]
                     [byte byte?]
                     [count exact-nonnegative-integer?]
                     [type ctype? _byte])
@@ -241,7 +224,7 @@ see @|InsideRacket|.
          cpointer?]{
 
 Allocates a memory block of a specified size using a specified
-allocation. The result is a @racket[cpointer] to the allocated
+allocation. The result is a C pointer to the allocated
 memory, or @racket[#f] if the requested size is zero.  Although 
 not reflected above, the four arguments can appear in
 any order, since they are all different types of Racket objects; a size
@@ -250,7 +233,7 @@ specification is required at minimum:
 @itemize[
 
  @item{If a C type @racket[bytes-or-type] is given, its size is used
-       to the block allocation size.}
+       to determine the block allocation size.}
 
  @item{If an integer @racket[bytes-or-type] is given, it specifies the
        required size in bytes.}
@@ -263,22 +246,90 @@ specification is required at minimum:
        the new block.}
 
   @item{A symbol @racket[mode] argument can be given, which specifies
-  what allocation function to use.  It should be one of
-  @indexed-racket['nonatomic] (uses @cpp{scheme_malloc} from
-  Racket's C API), @indexed-racket['atomic]
-  (@cpp{scheme_malloc_atomic}), @indexed-racket['tagged]
-  (@cpp{scheme_malloc_tagged}), @indexed-racket['atomic]
-  (@cpp{scheme_malloc_atomic}), @indexed-racket['stubborn]
-  (@cpp{scheme_malloc_stubborn}), @indexed-racket['uncollectable]
-  (@cpp{scheme_malloc_uncollectable}), @indexed-racket['eternal]
-  (@cpp{scheme_malloc_eternal}), @indexed-racket['interior]
-  (@cpp{scheme_malloc_allow_interior}),
-  @indexed-racket['atomic-interior]
-  (@cpp{scheme_malloc_atomic_allow_interior}), or
-  @indexed-racket['raw] (uses the operating system's @cpp{malloc},
-  creating a GC-invisible block).}  @item{If an additional
-  @indexed-racket['failok] flag is given, then
-  @cpp{scheme_malloc_fail_ok} is used to wrap the call.}
+  what allocation function to use.  It should be one of the following:
+
+   @itemlist[
+
+     @item{@indexed-racket['raw] --- Allocates memory that is outside
+       the garbage collector's space and is not traced by the garbage
+       collector (i.e., is treated as holding no pointers to
+       collectable memory). This memory must be freed with
+       @racket[free]. The initial content of the memory is
+       unspecified.}
+
+     @item{@indexed-racket['atomic] --- Allocates memory that can be
+       reclaimed by the garbage collector but is not traced by the
+       garbage collector. The initial content of the memory is
+       unspecified.
+
+       For the @3m[] and @CGC[] Racket variants, this allocation mode corresponds
+       to @cpp{scheme_malloc_atomic} in the C API.}
+
+     @item{@indexed-racket['nonatomic] --- Allocates memory that can
+       be reclaimed by the garbage collector, is treated by the
+       garbage collector as holding only pointers, and is initially
+       filled with zeros.
+
+       For the @3m[] and @CGC[] Racket variants, this allocation mode corresponds
+       to @cpp{scheme_malloc} in the C API.
+
+       For the @CS[] Racket variant, this mode is of limited use,
+       because a pointer allocated this way cannot be passed to
+       foreign functions that expect a pointer to pointers. The result
+       can only be used with functions like @racket[ptr-set!] and
+       @racket[ptr-ref].}
+
+     @item{@indexed-racket['atomic-interior] --- Like
+       @racket['atomic], but the allocated object will not be moved by
+       the garbage collector as long as the allocated object is
+       retained.
+
+       For the @3m[] and @CGC[] Racket variants, a reference can point
+       to the interior of the object, instead of its starting address.
+       This allocation mode corresponds to
+       @cpp{scheme_malloc_atomic_allow_interior} in the C API.}
+
+     @item{@indexed-racket['nonatomic-interior] --- Like
+       @racket['nonatomic], but the allocated object will not be moved
+       by the garbage collector as long as the allocated object is
+       retained.
+
+       This mode is supported only for the @3m[] and @CGC[] Racket variants, and
+       it corresponds to @cpp{scheme_malloc_allow_interior} in the C
+       API.}
+
+     @item{@indexed-racket['tagged] --- Allocates memory that must
+       start with a @tt{short} value that is registered as a tag with
+       the garbage collector.
+
+       This mode is supported only for the @3m[] and @CGC[] Racket variants, and
+       it corresponds to @cpp{scheme_malloc_tagged} in the C API.}
+
+     @item{@indexed-racket['stubborn] --- Like @racket['nonatomic],
+       but supports a hint to the GC via @racket[end-stubborn-change]
+       after all changes to the object have been made.
+
+       This mode is supported only for the @3m[] and @CGC[] Racket variants, and
+       it corresponds to @cpp{scheme_malloc_stubborn} in the C API.}
+
+     @item{@indexed-racket['eternal] --- Like @racket['raw], except the
+       allocated memory cannot be freed.
+
+       This mode is supported only for the @CGC[] Racket variant, and
+       it corresponds to @cpp{scheme_malloc_uncollectable} in the C API.}
+
+     @item{@indexed-racket['uncollectable] --- Allocates memory that is
+       never collected, cannot be freed, and potentially contains
+       pointers to collectable memory.
+
+       This mode is supported only for the @CGC[] Racket variant, and
+       it corresponds to @cpp{scheme_malloc_uncollectable} in the C API.}
+
+   ]}
+
+  @item{If an additional @indexed-racket['failok] flag is given, then
+        some effort may be made to detect an allocation failure and
+        raise @racket[exn:fail:out-of-memory] instead of crashing.}
 
 ]
 
@@ -296,7 +347,11 @@ Uses the operating system's @cpp{free} function for
 library allocated and we should free.  Note that this is useful as
 part of a finalizer (see below) procedure hook (e.g., on the Racket
 pointer object, freeing the memory when the pointer object is
-collected, but beware of aliasing).}
+collected, but beware of aliasing).
+
+Memory allocated with @racket[malloc] and modes other than
+@racket['raw] must not be @racket[free]d, since those modes allocate
+memory that is managed by the garbage collector.}
 
 
 @defproc[(end-stubborn-change [cptr cpointer?]) void?]{
@@ -323,11 +378,15 @@ Frees an immobile cell created by @racket[malloc-immobile-cell].}
 @defproc[(register-finalizer [obj any/c] [finalizer (any/c . -> . any)]) void?]{
 
 Registers a finalizer procedure @racket[finalizer-proc] with the given
-@racket[obj], which can be any Racket (GC-able) object.  The finalizer
-is registered with a will executor; see
-@racket[make-will-executor]. The finalizer is invoked when
-@racket[obj] is about to be collected.
-See also @racket[register-custodian-shutdown].
+@racket[obj], which can be any Racket (GC-able) object. The finalizer
+is registered with a ``late'' @tech[#:doc reference.scrbl]{will
+executor} that makes wills ready for a value only after all
+weak references (such as in a @tech[#:doc reference.scrbl]{weak box}) for the value have
+been cleared, which implies that the value is unreachable and no
+normal @tech[#:doc reference.scrbl]{will executor} has a will ready
+for the value. The finalizer is invoked when the will for @racket[obj]
+becomes ready in the ``late'' will executor, which means that the
+value is unreachable (even from wills, and even from itself) by safe code.
 
 The finalizer is invoked in a thread that is in charge of triggering
 will executors for @racket[register-finalizer]. The given
@@ -344,9 +403,13 @@ foreign code.  Note, however, that the finalizer is registered for the
 free a pointer object, then you must be careful to not register
 finalizers for two cpointers that point to the same address.  Also, be
 careful to not make the finalizer a closure that holds on to the
-object.
+object. Finally, beware that the finalizer is not guaranteed to
+be run when a place exits; see @racketmodname[ffi/unsafe/alloc]
+and @racket[register-finalizer-and-custodian-shutdown] for more
+complete solutions.
 
-For example, suppose that you're dealing with a foreign function that returns a
+As an example for @racket[register-finalizer],
+suppose that you're dealing with a foreign function that returns a
 C string that you should free.  Here is an attempt at creating a suitable type:
 
 @racketblock[
@@ -361,7 +424,7 @@ C string that you should free.  Here is an attempt at creating a suitable type:
 
 The above code is wrong: the finalizer is registered for @racket[x],
 which is no longer needed after the byte string is created.  Changing
-the example to register the finalizer for @racket[b] correct the problem,
+the example to register the finalizer for @racket[b] corrects the problem,
 but then @racket[free] is invoked @racket[b] it instead of on @racket[x].
 In the process of fixing this problem, we might be careful and log a message
 for debugging:
@@ -387,16 +450,31 @@ debugging message also avoids the problem, since the finalization
 procedure would then not close over @racket[b].)}
 
 
+@deftogether[(
+@defproc[(make-late-weak-box [v any/c]) weak-box?]
+@defproc[(make-late-weak-hasheq [v any/c]) (and/c hash? hash-eq? hash-weak?)]
+)]{
+
+Like @racket[make-weak-box] and @racket[make-weak-hasheq], but with
+``late'' weak references that last longer than references in the
+result of @racket[make-weak-box] or @racket[make-weak-hasheq].
+Specifically, a ``late'' weak reference remains intact if a value is
+unreachable but not yet processed by a finalizer installed with
+@racket[register-finalizer]. ``Late'' weak references are intended for
+use by such finalizers.}
+
+
 @defproc[(make-sized-byte-string [cptr cpointer?] [length exact-nonnegative-integer?]) 
          bytes?]{
 
-Returns a byte string made of the given pointer and the given length.
-No copying is done.  This can be used as an alternative to make
-pointer values accessible in Racket when the size is known.
+Returns a byte string made of the given pointer and the given length
+in the @3m[] and @CGC[] variants of Racket; no copying is performed.
+In the @CS[] variant, the @racket[exn:fail:unsupported] exception is
+raised.
 
 Beware that the representation of a Racket byte string normally
 requires a nul terminator at the end of the byte string (after
-@racket[length] bytes), but some function work with a byte-string
+@racket[length] bytes), but some functions work with a byte-string
 representation that has no such terminator---notably
 @racket[bytes-copy].
 
@@ -405,6 +483,17 @@ offset is immediately added to the pointer. Thus, this function cannot
 be used with @racket[ptr-add] to create a substring of a Racket byte
 string, because the offset pointer would be to the middle of a
 collectable object (which is not allowed).}
+
+
+@defproc[(void/reference-sink [v any/c] ...) void?]{
+
+Returns @|void-const|, but unlike calling the @racket[void] function
+where the compiler may optimize away the call and replace it with a
+@|void-const| result, calling @racket[void/reference-sink] ensures
+that the arguments are considered reachable by the garbage collector
+until the call returns.
+
+@history[#:added "6.10.1.2"]}
 
 @; ----------------------------------------------------------------------
 

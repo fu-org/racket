@@ -51,16 +51,36 @@
   (unless (path-string? path)
     (raise-argument-error 'delete-directory/files "path-string?" path))
   (let loop ([path path])
-    (cond
-     [(or (link-exists? path) (file-exists? path))
-      (delete-file path)]
-     [(directory-exists? path)
-      (for-each (lambda (e) (loop (build-path path e)))
-                (directory-list path))
-      (delete-directory path)]
-     [else
-      (when must-exist?
-        (raise-not-a-file-or-directory 'delete-directory/files path))])))
+    (case (file-or-directory-type path)
+      [(file link)
+       (delete-file* path)]
+      [(directory)
+       (for-each (lambda (e) (loop (build-path path e)))
+                 (directory-list path))
+       (delete-directory path)]
+      [(directory-link)
+       (delete-directory path)]
+      [else
+       (when must-exist?
+         (raise-not-a-file-or-directory 'delete-directory/files path))])))
+
+(define (delete-file* path)
+  (cond
+    [(eq? 'windows (system-type))
+     ;; Deleting a file doesn't remove the file name from the
+     ;; parent directory until all references are closed, and
+     ;; other processes (like the search indexer) might open
+     ;; files. So, try to move a file to the temp directory,
+     ;; then delete from there. That way, the enclosing directory
+     ;; can still be deleted. The move might fail if the
+     ;; temp directory is on a different volume, though.
+     (define tmp (make-temporary-file))
+     (unless (with-handlers ([exn:fail:filesystem? (lambda (x) #f)])
+               (rename-file-or-directory path tmp #t)
+               #t)
+       (delete-file path))
+     (delete-file tmp)]
+    [else (delete-file path)]))
 
 (define (raise-not-a-file-or-directory who path)
   (raise
@@ -172,16 +192,35 @@
                               base-dir))
       (let ([tmpdir (find-system-path 'temp-dir)])
         (let loop ([s (current-seconds)]
-                   [ms (inexact->exact (truncate (current-inexact-milliseconds)))])
+                   [ms (inexact->exact (truncate (current-inexact-milliseconds)))]
+                   [tries 0])
           (let ([name (let ([n (format template (format "~a~a" s ms))])
                         (cond [base-dir (build-path base-dir n)]
                               [(relative-path? n) (build-path tmpdir n)]
                               [else n]))])
-            (with-handlers ([exn:fail:filesystem:exists?
+            (with-handlers ([(lambda (exn)
+                               (or (exn:fail:filesystem:exists? exn)
+                                   (and (exn:fail:filesystem:errno? exn)
+                                        (let ([errno (exn:fail:filesystem:errno-errno exn)])
+                                          (and (eq? 'windows (cdr errno))
+                                               (eqv? (car errno) 5) ; ERROR_ACCESS_DENIED
+                                               ;; On Windows, if the target path refers to a file
+                                               ;; that has been deleted but is still open
+                                               ;; somewhere, then an access-denied error is reported
+                                               ;; instead of a file-exists error; there appears
+                                               ;; to be no way to detect that it was really a
+                                               ;; file-still-exists error. Try again for a while.
+                                               ;; There's still a small chance that this will
+                                               ;; fail, but it's vanishingly small at 32 tries.
+                                               ;; If ERROR_ACCESS_DENIED really is the right
+                                               ;; error (e.g., because the target directory is not
+                                               ;; writable), we'll take longer to get there.
+                                               (tries . < . 32))))))
                              (lambda (x)
                                ;; try again with a new name
                                (loop (- s (random 10))
-                                     (+ ms (random 10))))])
+                                     (+ ms (random 10))
+                                     (add1 tries)))])
               (if copy-from
                   (if (eq? copy-from 'directory)
                       (make-directory name)
@@ -198,7 +237,8 @@
 ;;  the file is reliably deleted if there's a break.
 (define (call-with-atomic-output-file path 
                                       proc
-                                      #:security-guard [guard #f])
+                                      #:security-guard [guard #f]
+                                      #:rename-fail-handler [rename-fail-handler #f])
   (unless (path-string? path)
     (raise-argument-error 'call-with-atomic-output-file "path-string?" path))
   (unless (and (procedure? proc)
@@ -207,6 +247,10 @@
   (unless (or (not guard)
               (security-guard? guard))
     (raise-argument-error 'call-with-atomic-output-file "(or/c #f security-guard?)" guard))
+  (unless (or (not rename-fail-handler)
+              (procedure? rename-fail-handler)
+              (procedure-arity-includes? rename-fail-handler 2))
+    (raise-argument-error 'call-with-atomic-output-file "(or/c #f (procedure-arity-includes/c 2))" rename-fail-handler))
   (define (try-delete-file path [noisy? #t])
     ;; Attempt to delete, but give up if it doesn't work:
     (with-handlers ([exn:fail:filesystem? void])
@@ -231,13 +275,28 @@
      (lambda ()
        (parameterize ([current-security-guard (or guard (current-security-guard))])
          (if ok?
-             (if (eq? (system-type) 'windows)
-                 (let ([tmp-path2 (make-temporary-file "tmp~a" #f (path-only path))])
-                   (with-handlers ([exn:fail:filesystem? void])
-                     (rename-file-or-directory path tmp-path2 #t))
-                   (rename-file-or-directory tmp-path path #t)
-                   (try-delete-file tmp-path2))
-                 (rename-file-or-directory tmp-path path #t))
+             (with-handlers ([void (lambda (exn)
+                                     (try-delete-file tmp-path)
+                                     (raise exn))])
+               (if (eq? (system-type) 'windows)
+                   (cond
+                     [rename-fail-handler
+                      (let loop ()
+                        (with-handlers* ([exn:fail:filesystem?
+                                          (lambda (exn)
+                                            (call-with-break-parameterization
+                                             bp
+                                             (lambda () (rename-fail-handler exn tmp-path)))
+                                            (loop))])
+                          (rename-file-or-directory tmp-path path #t)
+                          void))]
+                     [else
+                      (let ([tmp-path2 (make-temporary-file "tmp~a" #f (path-only path))])
+                        (with-handlers ([exn:fail:filesystem? void])
+                          (rename-file-or-directory path tmp-path2 #t))
+                        (rename-file-or-directory tmp-path path #t)
+                        (try-delete-file tmp-path2))])
+                   (rename-file-or-directory tmp-path path #t)))
              (try-delete-file tmp-path)))))))
 
 (define (with-pref-params thunk)
@@ -706,7 +765,8 @@
 (define (file->x who f file-mode read-x x-append)
   (check-path who f)
   (check-file-mode who file-mode)
-  (let ([sz (file-size f)])
+  (let ([sz (with-handlers ([exn:fail:filesystem? (lambda (_) 0)])
+                             (file-size f))])
     (call-with-input-file* f #:mode file-mode
       (lambda (in)
         ;; There's a good chance that `file-size' gets all the data:

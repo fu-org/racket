@@ -111,9 +111,13 @@
 (test 1 procedure-result-arity car)
 (test 1 procedure-result-arity list)
 (test 1 procedure-result-arity (procedure-reduce-arity car 1))
-(test (arity-at-least 0) procedure-result-arity values)
-(test (arity-at-least 0) procedure-result-arity (procedure-reduce-arity values 1))
-(test (arity-at-least 0) procedure-result-arity call/cc)
+(let ([adjust-no-information (lambda (x)
+                               ;; `(arity-at-least 0)` is the same as `#f`,
+                               ;; since both are no information
+                               (or x (arity-at-least 0)))])
+  (test (arity-at-least 0) adjust-no-information (procedure-result-arity values))
+  (test (arity-at-least 0) adjust-no-information (procedure-result-arity (procedure-reduce-arity values 1)))
+  (test (arity-at-least 0) adjust-no-information (procedure-result-arity call/cc)))
 (let ()
   (struct s (x))
   (test 1 procedure-result-arity s-x)
@@ -152,11 +156,14 @@
                                            [(a b c d e f) (values 1 2 3 4 5 6 7 8)]
                                            [(a b . whatever) a]))))
 
-;; hopefully this test will start failing at
-;; some point and return 1 instead of #f
 (let ()
   (struct s (f) #:property prop:procedure 0)
-  (test #f procedure-result-arity (s car)))
+  (test (case (system-type 'vm)
+          ;; maybe this test will start failing at
+          ;; some point and return 1 instead of #f
+          [(racket) #f]
+          [else 1])
+        procedure-result-arity (s car)))
 
 ;; ---------- identity ----------
 (let ()
@@ -257,5 +264,21 @@
   ((((curryr foo3 1) 2) 3) . => . '(3 2 1))
   (((curryr list 1) 2 3) . => . '(2 3 1))
   )
+
+;; Regression test for arity checking and a large number of arguments
+;; (thanks to James Bornholt)
+(let ()
+  (define extreme
+    (case-lambda
+      [(op x) x]
+      [(op x y) (if (op x y) x y)]
+      [(op x y . z) (apply extreme op (extreme op x y) z)]))
+
+  (define @max (curry extreme >=))
+
+  (define l (for/list ([i 100]) 0))
+  (test 0 apply @max l))
+
+;; ----------------------------------------
 
 (report-errs)

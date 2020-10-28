@@ -6,7 +6,8 @@
                      racket/unsafe/ops
                      racket/require
                      racket/random
-                     racket/list))
+                     racket/list
+                     math/flonum))
 
 @(define math-eval (make-base-eval))
 @examples[#:hidden #:eval math-eval (require racket/math)]
@@ -18,11 +19,15 @@
 All @deftech{numbers} are @deftech{complex numbers}. Some of them are
 @deftech{real numbers}, and all of the real numbers that can be
 represented are also @deftech{rational numbers}, except for
-@as-index{@racket[+inf.0]} (positive @as-index{infinity}), @as-index{@racket[+inf.f]} (single-precision variant),
-@as-index{@racket[-inf.0]} (negative infinity), @as-index{@racket[-inf.f]}  (single-precision variant),
-@as-index{@racket[+nan.0]} (@as-index{not-a-number}), and @as-index{@racket[+nan.f]}  (single-precision variant). Among the
-rational numbers, some are @deftech{integers}, because @racket[round]
-applied to the number produces the same number.
+@as-index{@racket[+inf.0]} (positive @as-index{infinity}),
+@as-index{@racketvalfont{+inf.f}} (single-precision variant, when
+enabled via @racket[read-single-flonum]),
+@as-index{@racket[-inf.0]} (negative infinity),
+@as-index{@racketvalfont{-inf.f}} (single-precision variant, when
+enabled), @as-index{@racket[+nan.0]} (@as-index{not-a-number}), and
+@as-index{@racketvalfont{+nan.f}} (single-precision variant, when
+enabled). Among the rational numbers, some are @deftech{integers},
+because @racket[round] applied to the number produces the same number.
 
 @margin-note/ref{See @secref["parse-number"] for information on the
 syntax of number literals.}
@@ -41,34 +46,40 @@ are both exact or inexact with the same precision, or the number has
 an exact zero real part and an inexact imaginary part; a complex
 number with an exact zero imaginary part is a real number.
 
-Inexact real numbers are implemented as either single- or
-double-precision @as-index{IEEE floating-point numbers}---the latter
-by default, and the former only when a computation starts with
-numerical constants specified as single-precision numbers. Inexact
-real numbers that are represented as double-precision floating-point
-numbers are @deftech{flonums}.
+Inexact real numbers are implemented as double-precision
+@as-index{IEEE floating-point numbers}, also known as
+@deftech{flonums}, or as single-precision IEEE floating-point numbers,
+also known as @deftech{single-flonums}. Single-flonums are
+supported only when @racket[(single-flonum-available?)] reports
+@racket[#t]. Although we write @racketvalfont{+inf.f},
+@racketvalfont{-inf.f}, and @racketvalfont{+nan.f} to mean
+single-flonums, those forms read as double-precision flonums by
+default, since @racket[read-single-flonum] is @racket[#f] by default.
+When single-flonums are supported, inexact numbers are still
+represented as flonums by default, and single precision is used only
+when a computation starts with single-flonums.
 
 Inexact numbers can be coerced to exact form, except for the inexact
-numbers @racket[+inf.0], @racket[+inf.f],
-@racket[-inf.0], @racket[-inf.f], @racket[+nan.0], and @racket[+nan.f], which
+numbers @racket[+inf.0], @racketvalfont{+inf.f},
+@racket[-inf.0], @racketvalfont{-inf.f}, @racket[+nan.0], and @racketvalfont{+nan.f}, which
 have no exact form. @index["division by inexact zero"]{Dividing} a
 number by exact zero raises an exception; dividing a non-zero number
-other than @racket[+nan.0] or @racket[+nan.f] by an inexact zero returns @racket[+inf.0],
-@racket[+inf.f], @racket[-inf.0]
-or @racket[-inf.f], depending on the sign and precision of the dividend. The
+other than @racket[+nan.0] or @racketvalfont{+nan.f} by an inexact zero returns @racket[+inf.0],
+@racketvalfont{+inf.f}, @racket[-inf.0]
+or @racketvalfont{-inf.f}, depending on the sign and precision of the dividend. The
 @racket[+nan.0] value is not @racket[=] to itself, but @racket[+nan.0]
-is @racket[eqv?] to itself, and @racket[+nan.f] is similarly @racket[eqv?] but 
+is @racket[eqv?] to itself, and @racketvalfont{+nan.f} is similarly @racket[eqv?] but 
 not @racket[=] to itself. Conversely, @racket[(= 0.0 -0.0)] is
 @racket[#t], but @racket[(eqv? 0.0 -0.0)] is @racket[#f], and the 
 same for @racket[0.0f0] and @racket[-0.0f0] (which are single-precision variants). The datum
 @racketvalfont{-nan.0} refers to the same constant as @racket[+nan.0],
-and @racketvalfont{-nan.f} is the same as @racket[+nan.f].
+and @racketvalfont{-nan.f} is the same as @racketvalfont{+nan.f}.
 
-Calculations with infinites produce results consistent with IEEE
+Calculations with infinities produce results consistent with IEEE
 double- or single-precision floating point where IEEE specifies the result; in
 cases where IEEE provides no specification,
 the result corresponds to the limit approaching
-infinity, or @racket[+nan.0] or @racket[+nan.f] if no such limit exists.
+infinity, or @racket[+nan.0] or @racketvalfont{+nan.f} if no such limit exists.
 
 The precision and size of exact numbers is limited only by available
 memory (and the precision of operations that can produce irrational
@@ -76,8 +87,9 @@ numbers). In particular, adding, multiplying, subtracting, and
 dividing exact numbers always produces an exact result.
 
 A @deftech{fixnum} is an exact integer whose two's complement
-representation fit into 31 bits on a 32-bit platform or 63 bits on a
-64-bit platform; furthermore, no allocation is required when computing
+representation fits into 30 or 31 bits (depending on the Racket variant)
+on a 32-bit platform or 61 or 63 bits (depending on the Racket variant) on a
+64-bit platform. No allocation is required when computing
 with fixnums. See also the @racketmodname[racket/fixnum] module, below.
 
 Two fixnums that are @racket[=] are also the same
@@ -87,7 +99,7 @@ by the default reader in @racket[read-syntax] mode are @tech{interned} and there
 when they are @racket[eqv?].
 
 Two real numbers are @racket[eqv?] when they are both inexact with the same precision or both
-exact, and when they are @racket[=] (except for @racket[+nan.0], @racket[+nan.f],
+exact, and when they are @racket[=] (except for @racket[+nan.0], @racketvalfont{+nan.f},
 @racket[+0.0], @racket[+0.0f0], @racket[-0.0], and @racket[-0.0f0], as noted above). 
 Two complex numbers are @racket[eqv?] when their real and imaginary parts are @racket[eqv?].
 Two numbers are @racket[equal?] when they are @racket[eqv?].
@@ -102,7 +114,7 @@ Two numbers are @racket[equal?] when they are @racket[eqv?].
 @defproc[(number? [v any/c]) boolean?]{Returns @racket[#t] if @racket[v]
  is a number, @racket[#f] otherwise.
 
-@mz-examples[(number? 1) (number? 2+3i) (number? "hello")]}
+@mz-examples[(number? 1) (number? 2+3i) (number? "hello") (number? +nan.0)]}
 
 
 @defproc[(complex? [v any/c]) boolean?]{ Returns @racket[(number? v)],
@@ -161,7 +173,8 @@ Return @racket[#t] if @racket[v] is a @techlink{fixnum}, @racket[#f]
 otherwise.
 
 Note: the result of this function is platform-dependent, so using it in
-syntax transformers can lead to platform-dependent bytecode files.}
+syntax transformers can lead to platform-dependent bytecode files.
+See also @racket[fixnum-for-every-system?].}
 
 
 @defproc[(flonum? [v any/c]) boolean?]{
@@ -172,9 +185,25 @@ otherwise.}
 @defproc[(double-flonum? [v any/c]) boolean?]{
 Identical to @racket[flonum?]}.
 
-@defproc[(single-flonum? [v any/c]) boolean?]{
-Return @racket[#t] if @racket[v] is a single-precision floating-point
-number, @racket[#f] otherwise.}
+@defproc[(single-flonum? [v any/c]) boolean?]{ Return @racket[#t] if
+@racket[v] is a @tech{single-flonum} (i.e., a single-precision
+floating-point number), @racket[#f] otherwise.}
+
+
+@defproc[(single-flonum-available?) boolean?]{
+
+Returns @racket[#t] if @tech{single-flonums} are supported on
+the current platform, @racket[#f] otherwise.
+
+Currently, @racket[single-flonum-available?] produces @racket[#t] when
+@racket[(system-type 'vm)] produces @racket['racket], and
+@racket[single-flonum-available?] produces @racket[#f] otherwise.
+
+If the result is @racket[#f], then @racket[single-flonum?] also
+produces @racket[#f] for all arguments.
+
+@history[#:added "7.3.0.5"]}
+
 
 @defproc[(zero? [z number?]) boolean?]{ Returns @racket[(= 0 z)].
 
@@ -217,7 +246,7 @@ number, @racket[#f] otherwise.}
 @defproc[(inexact->exact [z number?]) exact?]{ Coerces @racket[z] to an
  exact number. If @racket[z] is already exact, it is returned. If @racket[z]
  is @racket[+inf.0], @racket[-inf.0], @racket[+nan.0],
- @racket[+inf.f], @racket[-inf.f], or @racket[+nan.f], then the
+ @racketvalfont{+inf.f}, @racketvalfont{-inf.f}, or @racketvalfont{+nan.f}, then the
  @exnraise[exn:fail:contract].
 
 @mz-examples[(inexact->exact 1) (inexact->exact 1.0)]}
@@ -436,7 +465,7 @@ Coerces @racket[q] to an exact number, finds the numerator of the
 @mz-examples[(numerator 5) (numerator 34/8) (numerator 2.3)]}
 
 
-@defproc[(denominator [q rational?]) integer?]{
+@defproc[(denominator [q rational?]) (and/c integer? positive?)]{
 
 Coerces @racket[q] to an exact number, finds the denominator of the
  number expressed in its simplest fractional form, and returns this
@@ -463,42 +492,52 @@ Among the real numbers within @racket[(abs tolerance)] of @racket[x],
 @; ----------------------------------------
 @subsection{Number Comparison}
 
-@defproc[(= [z number?] [w number?] ...+) boolean?]{ Returns
+@defproc[(= [z number?] [w number?] ...) boolean?]{ Returns
  @racket[#t] if all of the arguments are numerically equal,
  @racket[#f] otherwise.  An inexact number is numerically equal to an
  exact number when the exact coercion of the inexact number is the
  exact number. Also, @racket[0.0] and @racket[-0.0] are numerically
  equal, but @racket[+nan.0] is not numerically equal to itself.
 
-@mz-examples[(= 1 1.0) (= 1 2) (= 2+3i 2+3i 2+3i)]}
+@mz-examples[(= 1 1.0) (= 1 2) (= 2+3i 2+3i 2+3i) (= 1)]
+
+@history/arity[]}
 
 
-@defproc[(< [x real?] [y real?] ...+) boolean?]{ Returns @racket[#t] if
+@defproc[(< [x real?] [y real?] ...) boolean?]{ Returns @racket[#t] if
  the arguments in the given order are strictly increasing,
  @racket[#f] otherwise.
 
-@mz-examples[(< 1 1) (< 1 2 3) (< 1 +inf.0) (< 1 +nan.0)]}
+@mz-examples[(< 1 1) (< 1 2 3) (< 1) (< 1 +inf.0) (< 1 +nan.0)]
+
+@history/arity[]}
 
 
-@defproc[(<= [x real?] [y real?] ...+) boolean?]{ Returns @racket[#t]
+@defproc[(<= [x real?] [y real?] ...) boolean?]{ Returns @racket[#t]
  if the arguments in the given order are non-decreasing,
  @racket[#f] otherwise.
 
-@mz-examples[(<= 1 1) (<= 1 2 1)]}
+@mz-examples[(<= 1 1) (<= 1 2 1)]
+
+@history/arity[]}
 
 
 @defproc[(> [x real?] [y real?] ...+) boolean?]{ Returns @racket[#t] if
  the arguments in the given order are strictly decreasing,
  @racket[#f] otherwise.
 
-@mz-examples[(> 1 1) (> 3 2 1) (> +inf.0 1) (> +nan.0 1)]}
+@mz-examples[(> 1 1) (> 3 2 1) (> +inf.0 1) (> +nan.0 1)]
+
+@history/arity[]}
 
 
-@defproc[(>= [x real?] [y real?] ...+) boolean?]{ Returns @racket[#t]
+@defproc[(>= [x real?] [y real?] ...) boolean?]{ Returns @racket[#t]
  if the arguments in the given order are non-increasing,
  @racket[#f] otherwise.
 
-@mz-examples[(>= 1 1) (>= 1 2 1)]}
+@mz-examples[(>= 1 1) (>= 1 2 1)]
+
+@history/arity[]}
 
 
 @; ------------------------------------------------------------------------
@@ -538,16 +577,30 @@ Returns @racket[z] raised to the power of @racket[w].
 
 If @racket[w] is
  exact @racket[0], the result is exact @racket[1].
- If @racket[w] is @racket[0.0] or @racket[-0.0]  and @racket[z] is a @tech{real number}, the
+ If @racket[w] is @racket[0.0] or @racket[-0.0]  and @racket[z] is a @tech{real number}
+ other than exact @racket[1] or @racket[0], the
  result is @racket[1.0] (even if @racket[z] is @racket[+nan.0]).
 
 If @racket[z] is exact @racket[1], the result is exact @racket[1].
  If @racket[z] is @racket[1.0] and @racket[w] is a @tech{real number}, the
  result is @racket[1.0] (even if @racket[w] is @racket[+nan.0]).
 
-If @racket[z] is
- exact @racket[0] and @racket[w] is negative, the
- @exnraise[exn:fail:contract:divide-by-zero].
+If @racket[z] is exact @racket[0], the result is as follows:
+@;
+@itemlist[#:style 'compact
+
+ @item{@racket[w] is exact @racket[0] --- result is @racket[1]}
+
+ @item{@racket[w] is @racket[0.0] or @racket[-0.0] --- result is @racket[1.0]}
+
+ @item{real part of @racket[w] is negative --- the @exnraise[exn:fail:contract:divide-by-zero]}
+
+ @item{@racket[w] is nonreal with a nonpositive real part  --- the @exnraise[exn:fail:contract:divide-by-zero]}
+
+ @item{@racket[w] is @racket[+nan.0] --- result is @racket[+nan.0]}
+
+ @item{otherwise --- result is @racket[0]}
+]
 
 Further special cases when @racket[w] is a @tech{real number}:
 @margin-note*{These special cases correspond to @tt{pow} in C99 @cite["C99"],
@@ -558,45 +611,45 @@ integer.}
 
  @item{@racket[(expt 0.0 w)]:
        @itemlist[#:style 'compact
-         @item{@racket[w] is negative --- @racket[+inf.0]}
-         @item{@racket[w] is positive --- @racket[0.0]}]}
+         @item{@racket[w] is negative --- result is @racket[+inf.0]}
+         @item{@racket[w] is positive --- result is @racket[0.0]}]}
 
  @item{@racket[(expt -0.0 w)]:
        @itemlist[#:style 'compact
          @item{@racket[w] is negative:
                @itemlist[#:style 'compact
-                @item{@racket[w] is an odd integer --- @racket[-inf.0]}
-                @item{@racket[w] otherwise rational --- @racket[+inf.0]}]}
+                @item{@racket[w] is an odd integer --- result is @racket[-inf.0]}
+                @item{@racket[w] otherwise rational --- result is @racket[+inf.0]}]}
          @item{@racket[w] is positive:
                @itemlist[#:style 'compact
-                @item{@racket[w] is an odd integer --- @racket[-0.0]}
-                @item{@racket[w] otherwise rational --- @racket[+0.0]}]}]}
+                @item{@racket[w] is an odd integer --- result is @racket[-0.0]}
+                @item{@racket[w] otherwise rational --- result is @racket[+0.0]}]}]}
 
  @item{@racket[(expt z -inf.0)] for positive @racket[z]:
        @itemlist[#:style 'compact
-         @item{@racket[z] is less than @racket[1.0] --- @racket[+inf.0]}
-         @item{@racket[z] is greater than @racket[1.0] --- @racket[+0.0]}]}
+         @item{@racket[z] is less than @racket[1.0] --- result is @racket[+inf.0]}
+         @item{@racket[z] is greater than @racket[1.0] --- result is @racket[+0.0]}]}
 
  @item{@racket[(expt z +inf.0)] for positive @racket[z]:
        @itemlist[#:style 'compact
-         @item{@racket[z] is less than @racket[1.0] --- @racket[+0.0]}
-         @item{@racket[z] is greater than @racket[1.0] --- @racket[+inf.0]}]}
+         @item{@racket[z] is less than @racket[1.0] --- result is @racket[+0.0]}
+         @item{@racket[z] is greater than @racket[1.0] --- result is @racket[+inf.0]}]}
 
  @item{@racket[(expt -inf.0 w)] for integer @racket[w]:
        @itemlist[#:style 'compact
          @item{@racket[w] is negative:
                @itemlist[#:style 'compact
-                @item{@racket[w] is odd --- @racket[-0.0]}
-                @item{@racket[w] is even --- @racket[+0.0]}]}
+                @item{@racket[w] is odd --- result is @racket[-0.0]}
+                @item{@racket[w] is even --- result is @racket[+0.0]}]}
          @item{@racket[w] is positive:
                @itemlist[#:style 'compact
-                @item{@racket[w] is odd --- @racket[-inf.0]}
-                @item{@racket[w] is even --- @racket[+inf.0]}]}]}
+                @item{@racket[w] is odd --- result is @racket[-inf.0]}
+                @item{@racket[w] is even --- result is @racket[+inf.0]}]}]}
 
  @item{@racket[(expt +inf.0 w)]:
        @itemlist[#:style 'compact
-         @item{@racket[w] is negative --- @racket[+0.0]}
-         @item{@racket[w] is positive --- @racket[+inf.0]}]}
+         @item{@racket[w] is negative --- result is @racket[+0.0]}
+         @item{@racket[w] is positive --- result is @racket[+inf.0]}]}
 ]
 
 @mz-examples[(expt 2 3) (expt 4 0.5) (expt +inf.0 0)]}
@@ -606,19 +659,29 @@ integer.}
 
 Returns Euler's number raised to the power of @racket[z]. The result
  is normally inexact, but it is exact @racket[1] when @racket[z] is an
- exact @racket[0].
+ exact @racket[0]. See also @racket[expt].
 
 @mz-examples[(exp 1) (exp 2+3i) (exp 0)]}
 
 
-@defproc[(log [z number?]) number?]{
+@defproc[(log [z number?] [b number? (exp 1)]) number?]{
 
 Returns the natural logarithm of @racket[z].  The result is normally
  inexact, but it is exact @racket[0] when @racket[z] is an exact
  @racket[1]. When @racket[z] is exact @racket[0],
  @exnraise[exn:fail:contract:divide-by-zero].
 
-@mz-examples[(log (exp 1)) (log 2+3i) (log 1)]}
+ If @racket[b] is provided, it serves as an alternative
+ base. It is equivalent to @racket[(/ (log z) (log b))], but
+ can potentially run faster. If @racket[b] is exact
+ @racket[1], @exnraise[exn:fail:contract:divide-by-zero].
+
+ Consider using @racket[fllogb] instead when accuracy is
+ important.
+
+@mz-examples[(log (exp 1)) (log 2+3i) (log 1) (log 100 10) (log 8 2) (log 5 5)]
+
+@history[#:changed "6.9.0.1" @elem{Added second argument for arbitrary bases.}]}
 
 
 @; ------------------------------------------------------------------------
@@ -669,7 +732,8 @@ Returns the arccosine in radians of @racket[z].
 
 In the one-argument case, returns the arctangent of the inexact
  approximation of @racket[z], except that the result is an exact
- @racket[0] for an exact @racket[0] argument.
+ @racket[0] for @racket[z] as @racket[0], and the @exnraise[exn:fail:contract:divide-by-zero]
+ for @racket[z] as exact @racket[0+1i] or exact @racket[0-1i].
 
 In the two-argument case, the result is roughly the same as @racket[
  (atan (/ (exact->inexact y)) (exact->inexact x))], but the signs of @racket[y]
@@ -677,25 +741,33 @@ In the two-argument case, the result is roughly the same as @racket[
  suitable angle is returned when @racket[y] divided by @racket[x]
  produces @racket[+nan.0] in the case that neither @racket[y] nor
  @racket[x] is @racket[+nan.0]. Finally, if @racket[y] is exact
- @racket[0] and @racket[x] is an exact positive number, the result is
+ @racket[0] and @racket[x] is a positive number, the result is
  exact @racket[0]. If both @racket[x] and @racket[y] are exact
  @racket[0], the @exnraise[exn:fail:contract:divide-by-zero].
 
-@mz-examples[(atan 0.5) (atan 2 1) (atan -2 -1) (atan 1+05.i) (atan +inf.0 -inf.0)]}
+@mz-examples[(atan 0.5) (atan 2 1) (atan -2 -1) (atan 1+05.i) (atan +inf.0 -inf.0)]
+
+@history[#:changed "7.2.0.2" @elem{Changed to raise @racket[exn:fail:contract:divide-by-zero]
+                                   for @racket[0+1i] and @racket[0-1i] and to produce exact @racket[0]
+                                   for any positive @racket[x] (not just exact values) when @racket[y] is @racket[0].}]}
 
 @; ------------------------------------------------------------------------
 @subsection{Complex Numbers}
 
 @defproc[(make-rectangular [x real?] [y real?]) number?]{
 
-Returns @racket[(+ x (* y 0+1i))].
+Creates a complex number with @racket[x] as the real part
+and @racket[y] as the imaginary part. That is, returns @racket[(+ x (* y 0+1i))].
 
 @mz-examples[(make-rectangular 3 4.0)]}
 
 
 @defproc[(make-polar [magnitude real?] [angle real?]) number?]{
 
-Returns @racket[(+ (* magnitude (cos angle)) (* magnitude (sin angle)
+Creates a complex number which, if thought of as a point,
+is @racket[magnitude] away from the origin and is rotated
+@racket[angle] radians counter clockwise from the positive x-axis.
+That is, returns @racket[(+ (* magnitude (cos angle)) (* magnitude (sin angle)
  0+1i))].
 
 @mz-examples[#:eval math-eval
@@ -722,9 +794,15 @@ Returns the imaginary part of the complex number @racket[z] in
 @defproc[(magnitude [z number?]) (and/c real? (not/c negative?))]{
 
  Returns the magnitude of the complex number @racket[z] in polar
- coordinates.
+ coordinates. A complex number with @racket[+inf.0] or @racket[-inf.0]
+ as a component has magnitude @racket[+inf.0], even if the other
+ component is @racket[+nan.0].
 
-@mz-examples[(magnitude -3) (magnitude 3.0) (magnitude 3+4i)]}
+@mz-examples[(magnitude -3) (magnitude 3.0) (magnitude 3+4i)]
+
+@history[#:changed "7.2.0.2" @elem{Changed to always return @racket[+inf.0]
+                                   for a complex number with a @racket[+inf.0]
+                                   or @racket[-inf.0] component.}]}
 
 
 @defproc[(angle [z number?]) real?]{ Returns the angle of
@@ -871,7 +949,7 @@ uses a 54-bit version of L'Ecuyer's MRG32k3a algorithm
 @history[#:changed "6.4"]{Added support for ranges.}}
 
 
-@defproc[(random-seed [k (integer-in 1 (sub1 (expt 2 31)))])
+@defproc[(random-seed [k (integer-in 0 (sub1 (expt 2 31)))])
           void?]{
 
 Seeds the current pseudo-random number generator with
@@ -1014,7 +1092,11 @@ evaluates the entire sequence.
                          [decimal-mode (or/c 'decimal-as-inexact 'decimal-as-exact)
                                        (if (read-decimal-as-inexact)
                                            'decimal-as-inexact
-                                           'decimal-as-exact)])
+                                           'decimal-as-exact)]
+                         [single-mode (or/c 'single 'double)
+                                      (if (read-single-flonum)
+                                          'single
+                                          'double)])
          (or/c number? #f string? extflonum?)]{
 
 Reads and returns a number datum from @racket[s] (see
@@ -1035,6 +1117,9 @@ The @racket[decimal-mode] argument controls number parsing the same
 way that the @racket[read-decimal-as-inexact] parameter affects
 @racket[read].
 
+The @racket[single-mode] argument controls number parsing the same way
+that the @racket[read-single-flonum] parameter affects @racket[read].
+
 @mz-examples[(string->number "3.0+2.5i")
              (string->number "hello")
              (string->number "111" 7)
@@ -1043,7 +1128,8 @@ way that the @racket[read-decimal-as-inexact] parameter affects
              (string->number "10.3" 10 'read 'decimal-as-exact)]
 
 @history[#:changed "6.8.0.2" @elem{Added the @racket[convert-mode] and
-                                   @racket[decimal-mode] arguments.}]}
+                                   @racket[decimal-mode] arguments.}
+         #:changed "7.3.0.5" @elem{Added the @racket[single-mode] argument.}]}
 
 
 @defproc[(real->decimal-string [n real?] [decimal-digits exact-nonnegative-integer? 2])
@@ -1076,17 +1162,19 @@ padded with trailing zeros if necessary).
 
 Converts the machine-format number encoded in @racket[bstr] to an
 exact integer. The @racket[start] and @racket[end] arguments specify
-the substring to decode, where @racket[(- end start)] must be
+the substring to decode, where @racket[(- end start)] must be @racket[1],
 @racket[2], @racket[4], or @racket[8]. If @racket[signed?] is true,
 then the bytes are decoded as a two's-complement number, otherwise it
 is decoded as an unsigned integer. If @racket[big-endian?] is true,
-then the first character's ASCII value provides the most significant
-eight bits of the number, otherwise the first character provides the
-least-significant eight bits, and so on.}
+then the first byte's value provides the most significant
+eight bits of the number, otherwise the first byte provides the
+least-significant eight bits, and so on.
+
+@history[#:changed "6.10.0.1" @elem{Added support for decoding a 1-byte string.}]}
 
 
 @defproc[(integer->integer-bytes [n exact-integer?]
-                                 [size-n (or/c 2 4 8)]
+                                 [size-n (or/c 1 2 4 8)]
                                  [signed? any/c]
                                  [big-endian? any/c (system-big-endian?)]
                                  [dest-bstr (and/c bytes? (not/c immutable?))
@@ -1095,12 +1183,12 @@ least-significant eight bits, and so on.}
           bytes?]{
 
 Converts the exact integer @racket[n] to a machine-format number
-encoded in a byte string of length @racket[size-n], which must be
+encoded in a byte string of length @racket[size-n], which must be @racket[1],
 @racket[2], @racket[4], or @racket[8]. If @racket[signed?] is true,
 then the number is encoded as two's complement, otherwise it is
 encoded as an unsigned bit stream. If @racket[big-endian?] is true,
 then the most significant eight bits of the number are encoded in the
-first character of the resulting byte string, otherwise the
+first byte of the resulting byte string, otherwise the
 least-significant bits are encoded in the first byte, and so on.
 
 The @racket[dest-bstr] argument must be a mutable byte string of
@@ -1108,9 +1196,11 @@ length @racket[size-n]. The encoding of @racket[n] is written into
 @racket[dest-bstr] starting at offset @racket[start], and
 @racket[dest-bstr] is returned as the result.
 
-If @racket[n] cannot be encoded in a string of the requested size and
+If @racket[n] cannot be encoded in a byte string of the requested size and
 format, the @exnraise[exn:fail:contract]. If @racket[dest-bstr] is not
-of length @racket[size-n], the @exnraise[exn:fail:contract].}
+of length @racket[size-n], the @exnraise[exn:fail:contract].
+
+@history[#:changed "6.10.0.1" @elem{Added support for encoding a 1-byte value.}]}
 
 
 @defproc[(floating-point-bytes->real [bstr bytes?]
@@ -1173,15 +1263,12 @@ pi
 (cos pi)
 ]}
 
-@defthing[pi.f single-flonum?]{
+@defthing[pi.f (or/c single-flonum? flonum?)]{
 
-Like @racket[pi], but in single precision.
-@examples[
-#:eval math-eval
-pi.f
-(* 2.0f0 pi)
-(* 2.0f0 pi.f)
-]}
+The same value as @racket[pi], but as a single-precision
+floating-point number if the current platform supports it.
+
+@history[#:changed "7.3.0.5" @elem{Allow value to be a double-precision flonum.}]}
 
 @defproc[(degrees->radians [x real?]) real?]{
 
@@ -1205,17 +1292,21 @@ Converts @racket[x] radians to degrees.
 
 Returns @racket[(* z z)].}
 
-@defproc[(sgn [x real?]) (or/c (=/c -1) (=/c 0) (=/c 1) +nan.0 +nan.f)]{
+@defproc[(sgn [x real?]) (or/c (=/c -1) (=/c 0) (=/c 1) +nan.0 @#,racketvalfont{+nan.f})]{
 
-Returns the sign of @racket[x] as either @math{-1}, @math{0},
-@math{1}, or not-a-number.
+Returns the sign of @racket[x] as either @math{-1}, @math{0} (or a signed-zero variant, when
+inexact), @math{1}, or not-a-number.
 
 @mz-examples[
 #:eval math-eval
 (sgn 10)
 (sgn -10.0)
 (sgn 0)
+(sgn -0.0)
+(sgn +0.0)
 (sgn +nan.0)
+(sgn +inf.0)
+(sgn -inf.0)
 ]}
 
 @defproc[(conjugate [z number?]) number?]{
@@ -1277,11 +1368,11 @@ Hence also:
 
 @defproc[(nan? [x real?]) boolean?]{
 
-Returns @racket[#t] if @racket[x] is @racket[eqv?] to @racket[+nan.0] or @racket[+nan.f]; otherwise @racket[#f].}
+Returns @racket[#t] if @racket[x] is @racket[eqv?] to @racket[+nan.0] or @racketvalfont{+nan.f}; otherwise @racket[#f].}
 
 @defproc[(infinite? [x real?]) boolean?]{
 
-Returns @racket[#t] if @racket[x] is @racket[+inf.0], @racket[-inf.0], @racket[+inf.f], @racket[-inf.f]; otherwise @racket[#f].}
+Returns @racket[#t] if @racket[x] is @racket[+inf.0], @racket[-inf.0], @racketvalfont{+inf.f}, @racketvalfont{-inf.f}; otherwise @racket[#f].}
 
 @defproc[(positive-integer? [x any/c]) boolean?]{
  Like @racket[exact-positive-integer?], but also returns
@@ -1289,13 +1380,11 @@ Returns @racket[#t] if @racket[x] is @racket[+inf.0], @racket[-inf.0], @racket[+
  @history[#:added "6.8.0.2"]}
 
 @defproc[(negative-integer? [x any/c]) boolean?]{
- Like @racket[exact-negative-integer?], but also returns
- @racket[#t] for negative @racket[inexact?] integers.
+ The same as @racket[(and (integer? x) (negative? x))].
  @history[#:added "6.8.0.2"]}
 
 @defproc[(nonpositive-integer? [x any/c]) boolean?]{
- Like @racket[exact-nonpositive-integer?], but also returns
- @racket[#t] for non-positive @racket[inexact?] integers.
+ The same as @racket[(and (integer? x) (not (positive? x)))].
  @history[#:added "6.8.0.2"]}
 
 @defproc[(nonnegative-integer? [x any/c]) boolean?]{

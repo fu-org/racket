@@ -357,6 +357,15 @@
                    [(hash-table (key val) ...) key]
                    [_ 'no])))
 
+   (comp "non-empty"
+         (match #hash((1 . 2))
+           [(hash-table) "empty"]
+           [_ "non-empty"]))
+   (comp "empty"
+         (match #hash()
+           [(hash-table) "empty"]
+           [_ "non-empty"]))
+
    (comp
     (match #(1 (2) (2) (2) 5)
       [(vector 1 (list a) ..3 5) a]
@@ -506,6 +515,10 @@
 
    (comp 'yes (with-handlers ([exn:fail:syntax? (lambda _ 'yes)]) (expand #'(match-lambda ((a ?) #f))) 'no))
    (comp 'yes (with-handlers ([exn:fail:syntax? (lambda _ 'yes)]) (expand #'(match-lambda ((?) #f))) 'no))
+   (comp 'yes (with-handlers ([exn:fail:syntax? (lambda _ 'yes)]
+                              [exn:fail? (lambda _ 'no)])
+                (expand #'(match 1 [1 (=> (fail)) 1]))
+                'no))
 
    (comp
     'yes
@@ -563,10 +576,10 @@
            [_ 'no]))
 
    (comp 1
-         (match (box 'x) ('#&x 1) (else #f)))
+         (match (box 'x) ('#&x 1) (_ #f)))
 
    (comp 2
-         (match (vector 1 2) ('#(1 2) 2) (else #f)))
+         (match (vector 1 2) ('#(1 2) 2) (_ #f)))
 
    (comp 'yes
          (with-handlers ([exn:fail? (lambda _ 'yes)]
@@ -609,7 +622,7 @@
    (comp 'bad
          (match #(1)
            [(vector a b) a]
-           [else 'bad]))
+           [_ 'bad]))
 
    (comp '(1 2)
          (call-with-values
@@ -667,7 +680,7 @@
 
            (match (make-pose 1 2 3)
              [(struct pose (x y a)) "Gotcha!"]
-             [else "Epic fail!"])))
+             [_ "Epic fail!"])))
 
    (comp #f
          (match (list 'a 'b 'c)
@@ -831,6 +844,19 @@
 
               (set! foo 2)
               (check-equal? x 2))
+
+   (test-case
+    "match-expander with arity 2"
+    (define-syntax forty-two-pat
+      (let ()
+        (define-struct datum-pat (datum)
+          #:property prop:match-expander
+          (lambda (pat stx)
+            (datum->syntax #'here (datum-pat-datum pat) stx)))
+        (make-datum-pat 42)))
+    (check-equal? (match 42
+                    [(forty-two-pat) #t])
+                  #t))
 
 
 ))

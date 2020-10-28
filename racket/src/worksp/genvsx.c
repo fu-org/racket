@@ -16,9 +16,9 @@ static const char *projects[] = { "gracket/gracket.vcxproj",
                                   "libracket/libracket.vcxproj",
                                   "mzstart/mzstart.vcxproj",
                                   "libffi/libffi.vcxproj",
+                                  "librktio/librktio.vcxproj",
                                   "mrstart/mrstart.vcxproj",
                                   "racket/racket.vcxproj",
-                                  "libmzgc/libmzgc.vcxproj",
                                   "mzcom/mzcom.vcxproj",
                                   "sgc/sgc.vcxproj",
                                   NULL };
@@ -86,7 +86,16 @@ int main() {
   const char *vers = "100";
   int i;
 
-#if _MSC_VER >= 1900
+/* From list at:
+   https://dev.to/yumetodo/list-of-mscver-and-mscfullver-8nd
+   */
+#if _MSC_VER >= 1920
+  /* VS 2019 */
+  vers = "142";
+#elif _MSC_VER >= 1910
+  /* VS 2017 */
+  vers = "141";
+#elif _MSC_VER >= 1900
   /* VS 2015 */
   vers = "140";
 #elif _MSC_VER >= 1800

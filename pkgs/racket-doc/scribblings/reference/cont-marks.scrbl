@@ -85,7 +85,9 @@ Returns a newly-created list containing the marks for @racket[key-v]
 in @racket[mark-set], which is a set of marks returned by
 @racket[current-continuation-marks]. The result list is truncated at
 the first point, if any, where continuation frames were originally
-separated by a prompt tagged with @racket[prompt-tag].}
+separated by a prompt tagged with @racket[prompt-tag]. Producing the result
+takes time proportional to the size of the continuation reflected by
+@racket[mark-set].}
 
 @defproc*[([(make-continuation-mark-key) continuation-mark-key?]
            [(make-continuation-mark-key [sym symbol?]) continuation-mark-key?])]{
@@ -114,7 +116,30 @@ particular vector position is the value for the corresponding key in
 @racket[key-list]. Values for multiple keys appear in a single vector
 only when the marks are for the same continuation frame in
 @racket[mark-set]. The @racket[none-v] argument is used for vector
-elements to indicate the lack of a value.}
+elements to indicate the lack of a value. Producing the result
+takes time proportional to the size of the continuation reflected by
+@racket[mark-set] times the length of @racket[key-list].}
+
+@defproc[(continuation-mark-set->iterator
+          [mark-set continuation-mark-set?]
+          [key-list (listof any/c)]
+          [none-v any/c #f]
+          [prompt-tag continuation-prompt-tag? (default-continuation-prompt-tag)])
+         (-> (values (or/c vector? #f) procedure?))]{
+
+Like @racket[continuation-mark-set->list*], but instead of returning a
+list of values, returns a functional iterator in the form of a
+procedure that returns one element of the would-be list and a new
+iterator function for the rest of the would-be list. An iterator
+procedure returns @racket[#f] instead of a vector when no more
+elements are available; in that case, the returned iterator
+procedure is like the called one, producing no further values.
+The time required for each step is proportional to the length of
+@racket[key-list] times the size of the segment of the continuation
+reflected by @racket[mark-set] between frames that have keys in
+@racket[key-list].
+
+@history[#:added "7.5.0.7"]}
 
 @defproc[(continuation-mark-set-first 
           [mark-set (or/c continuation-mark-set? #f)]
@@ -125,10 +150,18 @@ elements to indicate the lack of a value.}
 Returns the first element of the list that would be returned by
 @racket[(continuation-mark-set->list (or mark-set
 (current-continuation-marks prompt-tag)) key-v prompt-tag)], or
-@racket[none-v] if the result would be the empty list. Typically, this
+@racket[none-v] if the result would be the empty list.
+
+The result
+is produced in (amortized) constant time. Typically, this
 result can be computed more quickly using
 @racket[continuation-mark-set-first] than using
-@racket[continuation-mark-set->list].}
+@racket[continuation-mark-set->list] or by using
+@racket[continuation-mark-set->iterator] and iterating just once.
+
+Although @racket[#f] and @racket[(current-continuation-marks
+prompt-tag)] are equivalent for @racket[mark-set], providing @racket[#f]
+as @racket[mark-set] can enable shortcuts that make it even faster.}
 
 @defproc[(call-with-immediate-continuation-mark
           [key-v any/c]
@@ -148,10 +181,22 @@ called in tail position with respect to the
 
 This function could be implemented with a combination of
 @racket[with-continuation-mark], @racket[current-continuation-marks],
-and @racket[continuation-mark-set->list], but
+and @racket[continuation-mark-set->list*], as shown below, but
 @racket[call-with-immediate-continuation-mark] is implemented more
 efficiently; it inspects only the first frame of the current
-continuation.}
+continuation.
+
+@racketblock[
+(code:comment "Equivalent, but inefficient:")
+(define (call-with-immediate-continuation-mark key-v proc [default-v #f])
+  (define private-key (gensym))
+  (with-continuation-mark
+   private-key #t
+   (let ([vecs (continuation-mark-set->list* (current-continuation-marks)
+                                             (list key-v private-key)
+                                             default-v)])
+     (proc (vector-ref (car vecs) 0)))))
+]}
 
 @defproc[(continuation-mark-key? [v any/c]) boolean?]{
 Returns @racket[#t] if @racket[v] is a mark key created by

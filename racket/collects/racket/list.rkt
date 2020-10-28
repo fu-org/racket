@@ -61,7 +61,8 @@
          remf
          remf*)
 
-(require (for-syntax racket/base))
+(require (for-syntax racket/base)
+         racket/private/list-predicates)
 
 (define (first x)
   (if (and (pair? x) (list? x))
@@ -111,8 +112,6 @@
     (cdr l)
     (raise-argument-error 'rest "(and/c list? (not/c empty?))" l)))
 
-(define (cons? l) (pair? l))
-(define (empty? l) (null? l))
 (define empty '())
 
 (define (make-list n x)
@@ -184,7 +183,7 @@
           (cons x (loop (cdr list)))
           '()))
       ;; could return `list' here, but make it behave like `take'
-      ;; exmaple: (takef '(a b c . d) symbol?) should be similar
+      ;; example: (takef '(a b c . d) symbol?) should be similar
       ;; to (take '(a b c . d) 3)
       '())))
 
@@ -254,7 +253,7 @@
 
 (define (count-from-right who list pred)
   (unless (procedure? pred)
-    (raise-argument-error who "procedure?" 0 list pred))
+    (raise-argument-error who "procedure?" 1 list pred))
   (let loop ([list list] [rev '()] [n 0])
     (if (pair? list)
       (loop (cdr list) (cons (car list) rev) (add1 n))
@@ -440,41 +439,45 @@
 ;;                -> X or #f
 (define (check-duplicates items
                           [same? equal?]
-                          #:key [key values])
+                          #:key [key values]
+                          #:default [failure-result (λ () #f)])
   (unless (list? items)
     (raise-argument-error 'check-duplicates "list?" 0 items))
   (unless (and (procedure? key)
                (procedure-arity-includes? key 1))
     (raise-argument-error 'check-duplicates "(-> any/c any/c)" key))
-  (cond [(eq? same? equal?)
-         (check-duplicates/t items key (make-hash))]
-        [(eq? same? eq?)
-         (check-duplicates/t items key (make-hasheq))]
-        [(eq? same? eqv?)
-         (check-duplicates/t items key (make-hasheqv))]
-        [else
-         (unless (and (procedure? same?)
-                      (procedure-arity-includes? same? 2))
-           (raise-argument-error 'check-duplicates
-                                 "(any/c any/c . -> . any/c)"
-                                 1 items same?))
-         (check-duplicates/list items key same?)]))
-(define (check-duplicates/t items key table)
+  (let ([fail-k (if (procedure? failure-result) failure-result (λ () failure-result))])
+    (cond [(eq? same? equal?)
+           (check-duplicates/t items key (make-hash) fail-k)]
+          [(eq? same? eq?)
+           (check-duplicates/t items key (make-hasheq) fail-k)]
+          [(eq? same? eqv?)
+           (check-duplicates/t items key (make-hasheqv) fail-k)]
+          [else
+           (unless (and (procedure? same?)
+                        (procedure-arity-includes? same? 2))
+             (raise-argument-error 'check-duplicates
+                                   "(any/c any/c . -> . any/c)"
+                                   1 items same?))
+           (check-duplicates/list items key same? fail-k)])))
+(define (check-duplicates/t items key table fail-k)
   (let loop ([items items])
-    (and (pair? items)
-         (let ([key-item (key (car items))])
-           (if (hash-ref table key-item #f)
+    (if (pair? items)
+        (let ([key-item (key (car items))])
+          (if (hash-ref table key-item #f)
                (car items)
                (begin (hash-set! table key-item #t)
-                      (loop (cdr items))))))))
-(define (check-duplicates/list items key same?)
+                      (loop (cdr items)))))
+        (fail-k))))
+(define (check-duplicates/list items key same? fail-k)
   (let loop ([items items] [sofar null])
-    (and (pair? items)
-         (let ([key-item (key (car items))])
-           (if (for/or ([prev (in-list sofar)])
+    (if (pair? items)
+        (let ([key-item (key (car items))])
+          (if (for/or ([prev (in-list sofar)])
                  (same? key-item prev))
                (car items)
-               (loop (cdr items) (cons key-item sofar)))))))
+               (loop (cdr items) (cons key-item sofar))))
+        (fail-k))))
 
 ;; Eli: Just to have a record of this: my complaint about having this
 ;; code separately from `remove-duplicates' still stands.  Specifically,
@@ -601,6 +604,7 @@
 
 ;; Fisher-Yates Shuffle
 (define (shuffle l)
+  (unless (list? l) (raise-argument-error 'shuffle "list?" 0 l))
   (define a (make-vector (length l)))
   (for ([x (in-list l)] [i (in-naturals)])
     (define j (random (add1 i)))

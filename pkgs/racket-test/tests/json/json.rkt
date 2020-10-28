@@ -1,6 +1,9 @@
 #lang at-exp racket/base
 
+;; Mathias, added test for contracts on read-json
+
 (require json racket/string tests/eli-tester)
+(require racket/port)
 
 (define T string-append)
 
@@ -38,6 +41,12 @@
         (not (jsexpr? (/ 1.0 0.0)))
         (not (jsexpr? (/ -1.0 0.0)))
         (not (jsexpr? (/ 0.0 0.0)))
+        (not (jsexpr? +inf.0))
+        (not (jsexpr? -inf.0))
+        (not (jsexpr? +nan.0))
+        (not (jsexpr? +inf.f))
+        (not (jsexpr? -inf.f))
+        (not (jsexpr? +nan.f))
         )
   ;; other `null' values
   (parameterize ([json-null #\null])
@@ -85,10 +94,26 @@
         ))
 
 (define (parse-tests)
-  (test (string->jsexpr @T{  1   }) =>  1
+  (test (string->jsexpr @T{  0   }) =>  0
+        (string->jsexpr @T{  0x  }) =>  0 ; not clearly a good idea, but preserve old behavior
+        (string->jsexpr @T{  1   }) =>  1
         (string->jsexpr @T{ -1   }) => -1 ; note: `+' is forbidden
+        (string->jsexpr @T{ -12  }) => -12
+        (string->jsexpr @T{ -123 }) => -123
         (string->jsexpr @T{  1.0 }) =>  1.0
+        (string->jsexpr @T{  1.3 }) =>  1.3
+        (string->jsexpr @T{  1.34}) =>  1.34
         (string->jsexpr @T{ -1.0 }) => -1.0
+        (string->jsexpr @T{ -1.3 }) => -1.3
+        (string->jsexpr @T{-10.34}) => -10.34
+        (string->jsexpr @T{-10.34e3}) => -10340.0
+        (string->jsexpr @T{-10.34e03}) => -10340.0
+        (string->jsexpr @T{-10.34e+3}) => -10340.0
+        (string->jsexpr @T{-10.34e+03}) => -10340.0
+        (string->jsexpr @T{-10.34e+0x}) => -10.340 ; preserve old behavior
+        (string->jsexpr @T{-10.34e-3}) => -1.034e-2
+        (string->jsexpr @T{-10.34e-03}) => -1.034e-2
+        (string->jsexpr @T{-10.34e+31}) => -1.034e32
         (string->jsexpr @T{ true  }) => #t
         (string->jsexpr @T{ false }) => #f
         (string->jsexpr @T{ null  }) => 'null
@@ -101,13 +126,16 @@
         (string->jsexpr @T{ {} }) => '#hasheq()
         (string->jsexpr @T{ {"x":1} }) => '#hasheq([x . 1])
         (string->jsexpr @T{ {"x":1,"y":2} }) => '#hasheq([x . 1] [y . 2])
-        (string->jsexpr @T{ [{"x": 1}, {"y": 2}] }) => 
+        (string->jsexpr @T{ [{"x": 1}, {"y": 2}] }) =>
                         '(#hasheq([x . 1]) #hasheq([y . 2]))
 
         ;; string escapes
         (string->jsexpr @T{ " \b\n\r\f\t\\\"\/ " }) => " \b\n\r\f\t\\\"/ "
         (string->jsexpr @T{ "\uD834\uDD1E" }) => "\U1D11E"
         (string->jsexpr @T{ "\ud834\udd1e" }) => "\U1d11e"
+	;; INPUT PORT is optional
+	(with-input-from-string "[]" read-json)
+	=> (parameterize ((json-null '())) (json-null))
         ;; EOF detection
         (for/list ([je (in-port read-json
                                 (open-input-string
@@ -120,7 +148,7 @@
         (string->jsexpr " \t\r\n") => eof
 
         ;; Invalid UTF-8 input.
-        (bytes->jsexpr #"\"\377\377\377\"") =error> exn:fail:contract?
+        (bytes->jsexpr #"\"\377\377\377\"") =error> exn:fail?
 
         ;; More string escapes:
         (string->jsexpr @T{ "hel\"lo" }) => "hel\"lo"
@@ -130,6 +158,17 @@
         (string->jsexpr @T{ "/" }) => "/"
         (string->jsexpr @T{ "\/" }) => "/"
         ;; More error tests:
+        (string->jsexpr @T{ -}) =error> #rx"string->jsexpr:.*-"
+        (string->jsexpr @T{ -x}) =error> #rx"string->jsexpr:.*-x"
+        (string->jsexpr @T{ 1.}) =error> #rx"string->jsexpr:.*1[.]"
+        (string->jsexpr @T{ 1.x }) =error> #rx"string->jsexpr:.*1[.]x"
+        (string->jsexpr @T{ -1.}) =error> #rx"string->jsexpr:.*-1[.]"
+        (string->jsexpr @T{ -1.x }) =error> #rx"string->jsexpr:.*-1[.]x"
+        (string->jsexpr @T{ -13e }) =error> #rx"string->jsexpr:.*-13e"
+        (string->jsexpr @T{ -1.3e }) =error> #rx"string->jsexpr:.*-1[.]3e"
+        (string->jsexpr @T{ -1.3ex}) =error> #rx"string->jsexpr:.*-1[.]3e"
+        (string->jsexpr @T{ 10.3ex}) =error> #rx"string->jsexpr:.*10[.]3e"
+        (string->jsexpr @T{ [00] }) =error> "string->jsexpr:"
         (string->jsexpr @T{ [1,2,,3] }) =error> "string->jsexpr:"
         (string->jsexpr @T{ [1,2,3,] }) =error> "string->jsexpr:"
         (string->jsexpr @T{ {42 : "bad-key!"} }) =error> "string->jsexpr:"
@@ -140,6 +179,7 @@
         (string->jsexpr " [\"x\",1, \"y\",2} ") =error> "string->jsexpr:"
         (string->jsexpr @T{ truelove }) =error> "string->jsexpr:"
         (string->jsexpr @T{ truebred }) =error> "string->jsexpr:"
+        (string->jsexpr @T{ truea }) =error> "string->jsexpr:"
         (string->jsexpr @T{ falsehood }) =error> "string->jsexpr:"
         (string->jsexpr @T{ falsetto }) =error> "string->jsexpr:"
         (string->jsexpr @T{ nullity }) =error> "string->jsexpr:"

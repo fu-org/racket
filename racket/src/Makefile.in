@@ -1,6 +1,4 @@
-
-# Builds Racket and GRacket (if enabled), and
-#  drives the main install
+# Dispatches to CS or BC to build Racket, and drives the main install
 
 PACKAGE = racket
 
@@ -22,16 +20,6 @@ builddir = @builddir@
 
 NOOP = :
 
-ICP = @ICP@
-
-# RUN_RACKET_<X> typically redirects to RUN_THIS_RACKET_<X>,
-# but it can also redirect to an existing Racket executable
-# that is the same as the version being built (which is
-# useful for cross-compilation, for example).
-RUN_THIS_RACKET_CGC = racket/racket@CGC@
-RUN_THIS_RACKET_MMM = racket/racket@MMM@
-RUN_THIS_RACKET_MAIN_VARIANT = racket/racket@MAIN_VARIANT@
-
 ALLDIRINFO = "$(DESTDIR)$(bindir)" \
              "$(DESTDIR)$(collectsdir)" \
              "$(DESTDIR)$(docdir)" \
@@ -43,114 +31,127 @@ ALLDIRINFO = "$(DESTDIR)$(bindir)" \
              "$(DESTDIR)$(appsdir)" \
              "$(DESTDIR)$(mandir)"
 
-COPYING = "$(srcdir)/COPYING-libscheme.txt" \
-          "$(srcdir)/COPYING_LESSER.txt" \
-          "$(srcdir)/COPYING.txt"
+COPYING = "$(srcdir)/LICENSE-libscheme.txt" \
+          "$(srcdir)/LICENSE-MIT.txt" \
+          "$(srcdir)/LICENSE-APACHE.txt" \
+          "$(srcdir)/LICENSE-LGPL.txt" \
+          "$(srcdir)/LICENSE-GPL.txt"
 
 all:
+	$(MAKE) @MAIN_MAKE_TARGET@
+
+racketbc:
 	$(MAKE) @MAIN_VARIANT@
+
+.PHONY: bc
+bc:
+	$(MAKE) racketbc
 
 TAGS:
 	etags `find "@srcdir@/racket" -type f`
 
 3m:
+	if [ ! -f bc/Makefile ]; then $(MAKE) bc-explain-configure; fi
 	$(MAKE) @MAKE_LOCAL_RACKET@
-	cd racket; $(MAKE) 3m
-	$(MAKE) @MAKE_GRACKET@-3m
-
-gracket-3m:
-	cd gracket; $(MAKE) 3m
+	cd bc && $(MAKE) 3m-with-gracket
 
 no-3m:
 	$(NOOP)
 
+.PHONY: cgc
 cgc:
+	if [ ! -f bc/Makefile ]; then $(MAKE) bc-explain-configure; fi
 	$(MAKE) @MAKE_LOCAL_RACKET@
-	cd racket; $(MAKE) cgc
-	$(MAKE) @MAKE_GRACKET@-cgc
-
-gracket-cgc:
-	cd gracket; $(MAKE) cgc
-
-no-cgc:
-	$(NOOP)
+	cd bc && $(MAKE) cgc-with-gracket
 
 both:
 	$(MAKE) cgc
 	$(MAKE) 3m
+
+bc-explain-configure:
+	echo configure with --enable-bc or similar to enable
+	exit 1
+
+racketcs:
+	if [ ! -f cs/c/Makefile ]; then $(MAKE) cs-explain-configure; fi
+	$(MAKE) @CS_BOOTSTRAP_HELP@
+	cd cs/c && $(MAKE) @CS_USE_BOOTSTRAP_HELP@
+
+.PHONY: cs
+cs:
+	$(MAKE) racketcs
+
+cs-explain-configure:
+	echo configure with --enable-cs or similar to enable
+	exit 1
 
 # Cross-compilation helper:
 
 no-local-racket:
 	$(NOOP)
 
-local/racket/racket3m:
+local/bc/racket3m:
 	mkdir -p local
 	$(MAKE) local/Makefile
-	cd local ; $(MAKE)
+	cd local  && $(MAKE)
 
 local/Makefile:
-	cd local ; `cd ..; cd $(srcdir); pwd`/configure --disable-gracket
+	cd local && `cd ..; cd $(srcdir); pwd`/configure --disable-gracket
 
 # Install (common) ----------------------------------------
 
-INST_CONFIG = -X @DIRCVTPRE@"$(DESTDIR)$(collectsdir)"@DIRCVTPOST@ -G @DIRCVTPRE@"$(DESTDIR)$(configdir)"@DIRCVTPOST@
-SETUP_RACKET_FLAGS = $(INST_CONFIG) $(SELF_RACKET_FLAGS) @INSTALL_SETUP_RACKET_FLAGS@
-SETUP_SETUP_FLAGS = @INSTALL_SETUP_FLAGS@ $(PLT_SETUP_OPTIONS) $(PLT_ISO)
-SETUP_ARGS = $(SETUP_RACKET_FLAGS) -N "raco" -l- setup $(SETUP_SETUP_FLAGS)
+# Needed for non-GNU makes:
+SELF_ROOT_CONFIG_FLAG = -Z
+PROPAGATE_VARIABLES = SELF_ROOT_CONFIG_FLAG="$(SELF_ROOT_CONFIG_FLAG)" \
+                      PLT_SETUP_OPTIONS="$(PLT_SETUP_OPTIONS)" \
+                      SETUP_MACHINE_FLAGS="$(SETUP_MACHINE_FLAGS)"
 
 install:
-	$(MAKE) install-@MAIN_VARIANT@
+	$(MAKE) install-@MAIN_MAKE_TARGET@ $(PROPAGATE_VARIABLES)
+
+install-bc:
+	$(MAKE) install-@MAIN_VARIANT@ $(PROPAGATE_VARIABLES)
 
 plain-install:
 	if [ "$(DESTDIR)" != "" ]; then \
           echo "cannot use plain-install with DESTDIR=$(DESTDIR)"; exit 1; \
         fi
-	$(MAKE) plain-install-@MAIN_VARIANT@
+	$(MAKE) plain-install-@MAIN_MAKE_TARGET@
 
 install-common-first:
-	if [ "$(DESTDIR)" != "" ]; then \
-          if [[ "$(DESTDIR)" != /* ]]; then \
-            echo "expected an absolute path for DESTDIR; given: $(DESTDIR)"; exit 1; \
-          fi; \
-        fi
+	case "$(DESTDIR)" in \
+	  "" | /*) ;; \
+	  *) echo "expected an absolute path for DESTDIR; given: $(DESTDIR)"; exit 1;; \
+        esac
 	mkdir -p $(ALLDIRINFO)
+
+MIDDLE_POST_COLLECTS = install-no-post-collects
 
 install-common-middle:
 	$(MAKE) @MAKE_COPYTREE@-run
-	$(MAKE) install-@MAKE_GRACKET@-post-collects
-	$(MAKE) lib-finish
 
 install-common-last:
 	$(MAKE) fix-paths
 	$(MAKE) @MAKE_INSTALL_PKGSCOPE@-raco-pkg-default-scope
-	$(ICP) $(COPYING) "$(DESTDIR)$(sharepltdir)"/
+	cp $(COPYING) "$(DESTDIR)$(sharepltdir)"/
 
 install-no:
 	$(NOOP)
-
-lib-finish:
-	if [ "$(DESTDIR)" = "" ]; then \
-	  @LIBFINISH@ "$(libdir)"; \
-	fi
 
 no-run:
 	$(NOOP)
 
 copytree-run:
-	@RUN_RACKET_CGC@ $(SELF_RACKET_FLAGS) -u \
+	@RUN_RACKET@ $(SELF_RACKET_FLAGS) -u \
           "$(srcdir)/../collects/setup/unixstyle-install.rkt" \
           make-install-copytree "$(srcdir)/.." \
           $(ALLDIRINFO) "@INSTALL_ORIG_TREE@"
 
 adjust-raco-pkg-default-scope:
-	@RUN_RACKET_CGC@ -l raco pkg config -i --set default-scope @INSTALL_PKGSCOPE@
+	@RUN_RACKET@ -l raco pkg config -i --set default-scope @INSTALL_PKGSCOPE@
 
 preserve-raco-pkg-default-scope:
 	$(NOOP)
-
-install-gracket-post-collects:
-	cd gracket; $(MAKE) install-post-collects
 
 install-no-post-collects:
 	$(NOOP)
@@ -158,7 +159,7 @@ install-no-post-collects:
 fix-paths:
 	if [ "$(DESTDIR)" != "" ]; then \
           if [ "$(SKIP_DESTDIR_FIX)" = "" ]; then \
-            @RUN_RACKET_CGC@ $(SELF_RACKET_FLAGS) -u \
+            @RUN_RACKET@ $(SELF_RACKET_FLAGS) -u \
               "$(srcdir)/../collects/setup/unixstyle-install.rkt" \
               make-install-destdir-fix "$(srcdir)/.." \
               $(ALLDIRINFO) "@INSTALL_ORIG_TREE@"; \
@@ -169,13 +170,13 @@ fix-paths:
 
 install-3m-common:
 	$(MAKE) install-common-first
-	cd racket; $(MAKE) install-3m
-	$(MAKE) install-@MAKE_GRACKET@-3m
+	cd bc && $(MAKE) install-3m
 	$(MAKE) install-common-middle
+	$(MAKE) install-bc-common-post-collects
 
 install-3m:
 	$(MAKE) install-3m-common
-	@RUN_RACKET_MMM@ $(SETUP_ARGS)
+	cd bc && $(MAKE) install-setup-3m $(PROPAGATE_VARIABLES)
 	$(MAKE) install-common-last
 
 plain-install-3m:
@@ -185,20 +186,21 @@ plain-install-3m:
 install-no-3m:
 	$(NOOP)
 
-install-gracket-3m:
-	cd gracket; $(MAKE) install-3m
+install-bc-common-post-collects:
+	cd bc && $(MAKE) install-post-collects
+	cd bc && $(MAKE) install-lib-finish DESTDIR="$(DESTDIR)" LIB_FINISH_DIR="$(libdir)"
 
 # CGC install ----------------------------------------
 
 install-cgc-common:
 	$(MAKE) install-common-first
-	cd racket; $(MAKE) install-cgc
-	$(MAKE) install-@MAKE_GRACKET@-cgc
+	cd bc && $(MAKE) install-cgc
 	$(MAKE) install-common-middle
+	$(MAKE) install-bc-common-post-collects
 
 install-cgc:
 	$(MAKE) install-cgc-common
-	@RUN_RACKET_CGC@ $(SETUP_ARGS)
+	cd bc && $(MAKE) install-setup-cgc $(PROPAGATE_VARIABLES)
 	$(MAKE) install-common-last
 
 plain-install-cgc:
@@ -208,20 +210,16 @@ plain-install-cgc:
 install-no-cgc:
 	$(NOOP)
 
-install-gracket-cgc:
-	cd gracket; $(MAKE) install-cgc
-
 # Both install ----------------------------------------
 
 install-both-common:
 	$(MAKE) install-common-first
-	cd racket; $(MAKE) install-both
-	$(MAKE) install-@MAKE_GRACKET@-both
+	cd bc && $(MAKE) install-both
 	$(MAKE) install-common-middle
 
 install-both:
 	$(MAKE) install-both-common
-	@RUN_RACKET_MAIN_VARIANT@ $(SETUP_ARGS)
+	cd bc && $(MAKE) install-setup-3m
 	$(MAKE) install-common-last
 
 plain-install-both:
@@ -231,8 +229,28 @@ plain-install-both:
 install-no-both:
 	$(NOOP)
 
-install-gracket-both:
-	cd gracket; $(MAKE) install-both
+# CS install ----------------------------------------
+
+CS_SETUP_INSTALL_TARGET = setup-install
+
+install-cs-common:
+	$(MAKE) install-common-first
+	cd cs/c && $(MAKE) plain-install
+	$(MAKE) install-common-middle
+	cd cs/c && $(MAKE) $(CS_SETUP_INSTALL_TARGET) $(PROPAGATE_VARIABLES)
+	$(MAKE) install-common-last
+
+install-racketcs:
+	$(MAKE) install-cs-common $(PROPAGATE_VARIABLES)
+
+plain-install-racketcs:
+	$(MAKE) install-cs-common CS_SETUP_INSTALL_TARGET=no-setup-install
+
+install-cs:
+	$(MAKE) install-racketcs $(PROPAGATE_VARIABLES)
+
+plain-install-cs:
+	$(MAKE) plain-install-racketcs
 
 # Docs install ----------------------------------------
 
@@ -246,19 +264,6 @@ install-pdf:
 # Clean ----------------------------------------
 
 clean:
-	cd racket; $(MAKE) clean
-	if [ -d gracket ]; then cd gracket; $(MAKE) clean; fi
+	cd bc && $(MAKE) clean
+	rm -rf compiled
 	rm -f TAGS
-
-# Reconfigure ----------------------------------------
-
-SRC_MAKEFILES = $(srcdir)/Makefile.in $(srcdir)/racket/Makefile.in \
-                $(srcdir)/racket/src/Makefile.in $(srcdir)/gracket/Makefile.in \
-                $(srcdir)/racket/gc2/Makefile.in $(srcdir)/gracket/gc2/Makefile.in \
-                $(srcdir)/racket/dynsrc/Makefile.in
-
-reconfigure:
-	$(MAKE) Makefile
-
-Makefile: $(srcdir)/configure $(SRC_MAKEFILES)
-	$(srcdir)/configure $(CONFIGURE_ARGS_qq)

@@ -7,7 +7,7 @@
   (define val (bytes-ref bs byte))
   (bytes-set! bs byte (bitwise-xor (expt 2 bit) val)))
 
-(define (run-bytes bs)
+(define (read-bytes bs)
   (sync
    (parameterize ([current-custodian (make-custodian)])
      (thread
@@ -15,7 +15,8 @@
         (custodian-limit-memory (current-custodian)
                                 (* 512 (expt 2 20)))
         (with-handlers ([void void])
-          (eval (parameterize ([read-accept-compiled #t])
+          (eval (parameterize ([read-accept-compiled #t]
+                               [current-code-inspector (make-inspector)])
                   (with-input-from-bytes bs read)))))))))
 
 (define (run-file fname seed0 #:write? [out-fname? #f])
@@ -33,7 +34,7 @@
           (call-with-output-file (build-path (current-directory) out-fname?)
             (lambda (o)
               (write-bytes bs o))))
-        (run-bytes bs))))
+        (read-bytes bs))))
 
 (define (go)
   (let ([seed0 #f] [file #f] [dir #f] [forever? #f] [global-seed #f] [write? #f])
@@ -96,7 +97,11 @@
 
 (module+ test
   (require racket/vector syntax/location)
-  (parameterize ([current-command-line-arguments (vector-append #("-c") (current-command-line-arguments))])
-    (dynamic-require (quote-module-path ".." main) #f))
+  (cond
+    [(eq? 'racket (system-type 'vm))
+     (parameterize ([current-command-line-arguments (vector-append #("-c") (current-command-line-arguments))])
+       (dynamic-require (quote-module-path ".." main) #f))]
+    [else
+     (printf "This test only works when (system-type 'vm) is 'racket\n")])
   (module config info
     (define random? #t)))

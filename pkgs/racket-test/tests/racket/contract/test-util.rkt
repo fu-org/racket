@@ -9,6 +9,7 @@
          test/neg-blame
          test/well-formed
          test ctest ctest/rewrite
+         test-true test-false
          
          current-contract-namespace
          make-basic-contract-namespace
@@ -23,13 +24,16 @@
          contract-expand
          
          rewrite-to-add-opt/c
-         rewrite-to-double-wrap
+         rewrite-to-multi-wrap
          do-not-double-wrap
+         contract-rewrite-tests-to-skip
          
          test-cases failures)
 
 (define test-cases 0)
 (define failures 0)
+
+(define contract-rewrite-tests-to-skip (make-parameter '()))
 
 (provide new-test-case new-failure)
 (define (new-test-case name)
@@ -101,6 +105,7 @@
   (parameterize ([current-namespace n])
     (namespace-require 'racket/contract/base)
     (namespace-require '(only racket/contract/private/blame exn:fail:contract:blame?))
+    (namespace-require '(only racket/contract/private/collapsible-common COLLAPSIBLE-LIMIT))
     (for ([addon (in-list addons)])
       (namespace-require addon)))
   n)
@@ -159,7 +164,9 @@
   (test #t
         name
         (contract-eval #:test-case-name name
-                       `(with-handlers ((exn:fail? (λ (x) (and (,exn-ok? x) #t)))) ,exp))))
+                       `(with-handlers ((exn:fail? (λ (x) (and (,exn-ok? x) #t))))
+                          ,exp
+                          "NO EXN RAISED"))))
 
 (define (contract-syntax-error-test name exp [reg #rx""])
   (test #t
@@ -207,9 +214,10 @@
                   ,(wrapper expression k)
                   'no-exn-raised)))))
   (rewrite-test rewrite-to-add-opt/c   "rewrite-to-add-opt/c")
-  (rewrite-test rewrite-to-double-wrap "rewrite-to-double-wrap"))
+  (rewrite-test rewrite-to-multi-wrap "rewrite-to-double-wrap"))
 
-(define (test/spec-passed/result name expression result [double-wrapped-result result])
+(define (test/spec-passed/result name expression result [double-wrapped-result result]
+                                 #:skip-opt/c? [skip-opt/c? #f])
   (parameterize ([compile-enforce-module-constants #f])
     (contract-eval #:test-case-name name `(,test #:test-case-name ',name ',result eval ',expression))
     (define (rewrite-test wrapper wrapper-name [result* result])
@@ -222,9 +230,9 @@
            ',result*
            eval
            ',(wrapper expression k)))))
-    (rewrite-test rewrite-to-add-opt/c   "rewrite-to-add-opt/c")
+    (unless skip-opt/c? (rewrite-test rewrite-to-add-opt/c   "rewrite-to-add-opt/c"))
     (unless (eq? double-wrapped-result do-not-double-wrap)
-      (rewrite-test rewrite-to-double-wrap "rewrite-to-double-wrap" double-wrapped-result))
+      (rewrite-test rewrite-to-multi-wrap "rewrite-to-double-wrap" double-wrapped-result))
 
     (let ([new-expression (rewrite-out expression)])
       (when new-expression
@@ -236,6 +244,10 @@
            ',result
            eval
            ',new-expression))))))
+
+;; convenient shortcuts
+(define (test-true name expression)  (test/spec-passed/result name expression #t))
+(define (test-false name expression) (test/spec-passed/result name expression #f))
 
 ;; rewrites `provide/contract' to use `contract-out'
 (define (rewrite-out orig-exp)
@@ -327,21 +339,21 @@
   (rewrite (lambda (ctc val parties loop)
              `(contract (opt/c ,(loop ctc)) ,(loop val) ,@(map loop parties)))))
 
-;; rewrites `contract` to double-wrap. To test space-efficient wrappers.
-(define rewrite-to-double-wrap
+;; rewrites `contract` to double-wrap. To test collapsible wrappers.
+(define rewrite-to-multi-wrap
   (rewrite (lambda (ctc val parties loop)
              (define new-ctc (loop ctc))
              (define new-parties (map loop parties))
-             `(contract ,new-ctc
-                        (contract ,(loop ctc)
-                                  ,(loop val)
-                                  ,@new-parties)
-                        ,@new-parties))))
+             `(let ([the-ctc ,new-ctc])
+                (for/fold ([the-val ,(loop val)])
+                          ([i (in-range (add1 COLLAPSIBLE-LIMIT))])
+                  (contract the-ctc the-val ,@new-parties))))))
 (define do-not-double-wrap (gensym)) ; recognized by some test forms
 
 ;; blame : (or/c 'pos 'neg string?)
 ;;   if blame is a string, expect to find the string (format "blaming: ~a" blame) in the exn message
-(define (test/spec-failed name expression blame)
+;;   if header-of-message is a string, look for it at the start of the message
+(define (test/spec-failed name expression blame #:header-of-message [header-of-message #f])
   (define (has-proper-blame? msg)
     (define reg
       (cond
@@ -350,6 +362,11 @@
         [(string? blame) (string-append "blaming: " (regexp-quote blame))]
         [else #f]))
     (and reg (regexp-match? reg msg)))
+  (define (has-right-header? msg)
+    (cond
+      [header-of-message
+       (regexp-match? (format "^[^\n]*~a\n" (regexp-quote header-of-message)) msg)]
+      [else #t]))
   (contract-eval
    #:test-case-name name
    `(,test-an-error
@@ -358,24 +375,31 @@
      ',expression
      (lambda (exn)
        (and (exn:fail:contract:blame? exn)
-            (,has-proper-blame? (exn-message exn))))))
+            (,has-proper-blame? (exn-message exn))
+            (,has-right-header? (exn-message exn))))))
   (define (rewrite-test wrapper wrapper-name short-wrapper-name)
-    (let/ec k
-      (let ([rewritten (wrapper expression k)])
-        (contract-eval
-         #:test-case-name (format "~a ~a" name wrapper-name)
-         `(,test-an-error
-           ',(string->symbol (format "~a+~a" name short-wrapper-name))
-           (lambda () ,rewritten)
-           ',rewritten
-           (lambda (exn)
-             (and (exn:fail:contract:blame? exn)
-                  (,has-proper-blame? (exn-message exn)))))))))
-  (rewrite-test rewrite-to-add-opt/c   "rewrite-to-add-opt/c"   "opt/c")
-  (rewrite-test rewrite-to-double-wrap "rewrite-to-double-wrap" "double"))
+    (unless (member short-wrapper-name (contract-rewrite-tests-to-skip))
+      (let/ec k
+        (let ([rewritten (wrapper expression k)])
+          (contract-eval
+           #:test-case-name (format "~a ~a" name wrapper-name)
+           `(,test-an-error
+             ',(string->symbol (format "~a+~a" name short-wrapper-name))
+             (lambda () ,rewritten)
+             ',rewritten
+             (lambda (exn)
+               (and (exn:fail:contract:blame? exn)
+                    (,has-proper-blame? (exn-message exn))
+                    (,has-right-header? (exn-message exn))))))))))
+  (rewrite-test rewrite-to-add-opt/c  "rewrite-to-add-opt/c"   "opt/c")
+  (rewrite-test rewrite-to-multi-wrap "rewrite-to-double-wrap" "double"))
 
-(define (test/pos-blame name expression) (test/spec-failed name expression 'pos))
-(define (test/neg-blame name expression) (test/spec-failed name expression 'neg))
+(define (test/pos-blame name expression #:header-of-message [header-of-message #f])
+  (test/spec-failed name expression 'pos
+                    #:header-of-message header-of-message))
+(define (test/neg-blame name expression #:header-of-message [header-of-message #f])
+  (test/spec-failed name expression 'neg
+                    #:header-of-message header-of-message))
 
 (define-syntax (ctest/rewrite stx)
   (syntax-case stx ()
@@ -392,7 +416,7 @@
                         ',name*
                         ,(wrapper 'expression k)))))
            (rewrite-test rewrite-to-add-opt/c   'opt-name)
-           (rewrite-test rewrite-to-double-wrap 'double-name)))]))
+           (rewrite-test rewrite-to-multi-wrap 'double-name)))]))
 
 (define (test/well-formed stx)
   (contract-eval
@@ -409,7 +433,7 @@
                       (let-values ([(base name dir) (split-path src)])
                         (format "~a" name))
                       (format "~s" src)))
-       #`(test/no-error/proc #,fn #,(syntax-source stx) arg))]))
+       #`(test/no-error/proc #,fn #,(syntax-line stx) arg))]))
 
 (define (test/no-error/proc fn line sexp)
   (contract-eval
@@ -427,4 +451,4 @@
                eval
                '(begin ,rewritten (void)))))))
   (rewrite-test rewrite-to-add-opt/c   "opt/c")
-  (rewrite-test rewrite-to-double-wrap "double"))
+  (rewrite-test rewrite-to-multi-wrap "double"))

@@ -1,6 +1,7 @@
 
-
 (load-relative "loadtest.rktl")
+
+(require ffi/unsafe/schedule)
 
 (Section 'synchronization)
 
@@ -111,7 +112,7 @@
 	  (sync (channel-put-evt c 32))))
   (test 45 'old-v v)
   (channel-put c 89)
-  (sleep)
+  (sync (system-idle-evt))
   (test 89 'new-v v)
   ;; get in main thread:
   (let ([t (current-thread)])
@@ -139,15 +140,20 @@
 ;; ----------------------------------------
 ;; Alarms
 
-(test #f sync/timeout 0.1 (alarm-evt (+ (current-inexact-milliseconds) 200)))
-(test 'ok sync/timeout 0.1 
-      (wrap-evt
-       (alarm-evt (+ (current-inexact-milliseconds) 50))
-       (lambda (x) 'ok)))
-(test 'ok sync/timeout 100
-      (wrap-evt
-       (alarm-evt (+ (current-inexact-milliseconds) 50))
-       (lambda (x) 'ok)))
+;; These tests are inherently flaky, because they rely on Racket
+;; running fast enough relative to wall-clock time.
+
+(when (run-unreliable-tests? 'timing)
+  
+  (test #f sync/timeout 0.1 (alarm-evt (+ (current-inexact-milliseconds) 200)))
+  (test 'ok sync/timeout 0.1
+        (wrap-evt
+         (alarm-evt (+ (current-inexact-milliseconds) 50))
+         (lambda (x) 'ok)))
+  (test 'ok sync/timeout 100
+        (wrap-evt
+         (alarm-evt (+ (current-inexact-milliseconds) 50))
+         (lambda (x) 'ok))))
 
 ;; ----------------------------------------
 ;; Waitable sets
@@ -174,6 +180,7 @@
     (test s2 sync/timeout SYNC-SLEEP-DELAY set)
     (test #f sync/timeout SYNC-SLEEP-DELAY set))
   (thread (lambda () (sleep) (semaphore-post s3)))
+  (sync (system-idle-evt))
   (test s3 sync/timeout SYNC-SLEEP-DELAY (choice-evt s1 s2 s3))
   (test #f sync/timeout SYNC-SLEEP-DELAY (choice-evt s1 s2 s3))
   (semaphore-post s3)
@@ -199,17 +206,19 @@
     (semaphore-post s3)
     (test s3 sync/timeout SYNC-SLEEP-DELAY set)
     (test #f sync/timeout SYNC-SLEEP-DELAY set))
-  
+
   (let* ([c (make-channel)]
 	 [set (choice-evt s1 s2 c)])
     (test #f sync/timeout SYNC-SLEEP-DELAY set)
     (thread (lambda () (channel-put c 12)))
+    (sync (system-idle-evt))
     (test 12 sync/timeout SYNC-SLEEP-DELAY set)
     (test #f sync/timeout SYNC-SLEEP-DELAY set)
     (let* ([p (channel-put-evt c 85)]
 	   [set (choice-evt s1 s2 p)])
       (test #f sync/timeout SYNC-SLEEP-DELAY set)
       (thread (lambda () (channel-get c)))
+      (sync (system-idle-evt))
       (test p sync/timeout SYNC-SLEEP-DELAY set)
       (test #f sync/timeout SYNC-SLEEP-DELAY set))))
 
@@ -345,6 +354,20 @@
 (test #t handle-evt? (choice-evt (wrap-evt always-evt void) (handle-evt always-evt void)))
 (test #f handle-evt? (wrap-evt always-evt void))
 (test #f handle-evt? (choice-evt (wrap-evt always-evt void) (wrap-evt always-evt void)))
+
+(let ()
+  (define (check-handle evt)
+    (test 'yes 'handle-evt-tail
+          (with-continuation-mark
+           'here 'yes
+           (sync (handle-evt evt
+                             (lambda (v)
+                               (call-with-immediate-continuation-mark
+                                'here
+                                (lambda (v) v))))))))
+  (check-handle always-evt)
+  (let ([t (thread (lambda () (void)))])
+    (check-handle (thread-dead-evt t))))
 
 ;; ----------------------------------------
 ;; Nack waitables
@@ -522,7 +545,7 @@
   (test 'not-ready values ok?))
 
 ;; If a `nack-guard-evt` function returns a `choice-evt`,
-;; then chosing any of those should avoid a NACK:
+;; then choosing any of those should avoid a NACK:
 (let ([n #f])
   (sync (nack-guard-evt (lambda (nack)
                           (set! n nack)
@@ -564,6 +587,15 @@
                                   (test #f values poll?)
                                   s))
                 (make-semaphore))))
+
+(let ()
+  (define k #f)
+  (test always-evt sync (poll-guard-evt
+                         (lambda (poll?)
+                           (let/cc now-k
+                             (set! k now-k))
+                           always-evt)))
+  (err/rt-test (k 10)))
 
 ;; ----------------------------------------
 ;; Replace waitables
@@ -656,6 +688,42 @@
                              (wrap-evt always-evt
                                        (lambda (_)
                                          (+ a b))))))
+
+(let ()
+  (define (chain-evts e1 e2)
+    (sync (make-semaphore) (replace-evt e1
+                                        (lambda (v)
+                                          (choice-evt
+                                           e2
+                                           (make-semaphore))))))
+  (test always-evt chain-evts always-evt always-evt)
+  (test always-evt chain-evts (make-semaphore 1) always-evt)
+  (let ([s (make-semaphore 1)])
+    (test always-evt chain-evts s always-evt))
+  (let ([s (make-semaphore 1)])
+    (test s chain-evts (make-semaphore 1) s))
+  (let ([s (make-semaphore 2)])
+    (test s chain-evts s s)
+    (test #f sync/timeout 0 s))
+  (let ([s (make-semaphore)])
+    (thread (lambda () (semaphore-post s)))
+    (test always-evt chain-evts s always-evt))
+  (let ([s (make-semaphore)])
+    (thread (lambda () (semaphore-post s) (sleep) (semaphore-post s)))
+    (test s chain-evts s s)))
+
+;; indirectly check that a `guard-evt` callabck in a `replace-evt`
+;; is not called in atomic mode; if it is, then the thread won't
+;; escape and terminate right
+(test #t thread? (sync
+                  (thread
+                   (lambda ()
+                     (let/cc esc
+                       (sync (replace-evt
+                              (guard-evt
+                               (lambda ()
+                                 (esc 'done)))
+                              void)))))))
 
 ;; ----------------------------------------
 ;; Structures as waitables
@@ -836,7 +904,7 @@
 
 ;; ----------------------------------------
 
-;; In the current implemenation, a depth of 10 for 
+;; In the current implementation, a depth of 10 for 
 ;;  waitable chains is a magic number; it causes the scheduler to
 ;;  swap a thread in to check whether it can run, instead of
 ;;  checking in the thread. (For a well-behaved chain, this 
@@ -972,6 +1040,46 @@
 
 ;; make sure it's ok for rewind to be the first action:
 (test (void) thread-wait (thread (lambda () (thread-rewind-receive '(1 2 3)))))
+
+;; ----------------------------------------
+;; Unsafe poller
+
+(let ()
+  (struct p (results)
+    #:property prop:evt (unsafe-poller
+                         (lambda (self wakeups)
+                           (values (p-results self) #f))))
+
+  (test 17 sync (p '(17)))
+  (test add1 sync (p (list add1)))
+  (test-values '(16 17) (lambda () (sync (p '(16 17)))))
+  (test-values '() (lambda () (sync (p '())))))
+
+(let ()
+  ;; Let the scheduler poll up to `counter` times:
+  (define counter 20)
+  (struct p ()
+    #:property prop:evt (unsafe-poller
+                         (lambda (self wakeups)
+                           (cond
+                             [(zero? counter)
+                              (values '(#t) #f)]
+                             [else
+                              (set! counter (sub1 counter))
+                              (when wakeups
+                                ;; Cancel any sleep:
+                                (unsafe-poll-ctx-milliseconds-wakeup wakeups (current-inexact-milliseconds)))
+                              (values #f self)]))))
+  (test #t sync (p)))
+
+(let ()
+  (struct not-ever-evt ()
+    #:property prop:evt
+    (unsafe-poller
+     (lambda (self wakeups)
+       (printf "~s\n" wakeups)
+       (values #f never-evt))))
+  (test #f sync/timeout 0 (not-ever-evt)))
 
 ;; ----------------------------------------
 ;;  Garbage collection
@@ -1159,21 +1267,17 @@
 		(break-enabled #f))
 	      (init ;; init function gets to decide whether to do the normal body:
 	       (lambda ()
-           (printf "here ~s\n"  (procedure? capture-pre))
 		 (dynamic-wind
 		     (lambda ()
-           (printf "here3 ~s\n" (procedure? capture-pre))
 		       (capture-pre
 			reset
 			(lambda ()
-           (printf "here4\n")
 			  (set! did-pre1 #t)
 			  (semaphore-post p)
 			  (pre-thunk)
 			  (pre-semaphore-wait s)
 			  (set! did-pre2 #t))))
 		     (lambda () 
-           (printf "here2\n")
 		       (capture-act
 			reset
 			(lambda ()
@@ -1207,7 +1311,8 @@
 	     should-post-break?
 	     should-done-break?)
       ;; print the state for this test:
-      (test #t list? (list 'go 
+      (test #t list? (list 'go
+                           mk-t* break-off?
 			   pre-thunk act-thunk post-thunk
 			   pre-semaphore-wait act-semaphore-wait post-semaphore-wait
 			   try-pre-break 
@@ -1308,9 +1413,6 @@
 					      (body))])
 			      ;; Grab a continuation for the dyn-wind's pre/act/post
 			      (go (lambda args
-                                    (printf "here???\n")
-                                    (printf "??? ~s\n" k+reset)
-                                    (printf "??? ~s\n" capture)
 				    (apply mk-t 
 					   (lambda (f) (f))
 					   (if (eq? which 'pre) capture no-capture)
@@ -1329,20 +1431,20 @@
 				       no-capture no-capture no-capture
 				       args))))])
        (list plain-mk-t
-	     (mk-capturing 'pre)
-	     (mk-capturing 'act))))))
+	     (procedure-rename (mk-capturing 'pre) 'pre-capturing)
+	     (procedure-rename (mk-capturing 'act) 'act-capturing))))))
 
 ;; ----------------------------------------
-;; Check wrap-evt result superceded by internally
+;; Check wrap-evt result superseded by internally
 ;;  installed constant (i.e., the input port):
 
 (let ([p (make-input-port
 	  'test
 	  (lambda (bstr) never-evt)
 	  (lambda (bstr skip-count progress-evt)
-	    (wrap-evt always-evt (lambda (_) 17)))
+	    (wrap-evt always-evt (lambda (_) 1)))
 	  void)])
-  ;; Make sure we don't get 17
+  ;; Make sure we don't get 1
   (test p sync p))
 
 ;; ----------------------------------------
@@ -1386,6 +1488,41 @@
   (err/rt-test (box-cas! (impersonate-box (box 1) g g) 1 2))
   (err/rt-test (box-cas! (chaperone-box (box 1) g g) 1 2))
   (err/rt-test (box-cas! (box-immutable 1) 1 2)))
+
+;; ----------------------------------------
+;; vector-cas! tests
+
+;; successful cas
+(let ()
+  (define v (vector #f #t))
+  (test #t vector-cas! v 0 #f #t)
+  (test #t vector-ref v 0)
+  (test #t vector-cas! v 1 #t #f)
+  (test #f vector-ref v 1))
+
+;; unsuccessful cas
+(let ()
+  (define v (vector #f #t))
+  (test #f vector-cas! v 0 #t #f)
+  (test #f vector-ref v 0)
+  (test #f vector-cas! v 1 #f #t)
+  (test #t vector-ref v 1))
+
+;; cas using allocated data
+(let ()
+  (define v (vector '()))
+  (define x (cons 1 (vector-ref v 0)))
+  (test #t vector-cas! v 0 '() x)
+  (test x vector-ref v 0)
+  (test #t vector-cas! v 0 x '())
+  (test '() vector-ref v 0)
+  (test #f vector-cas! v 0 x '())
+  (test '() vector-ref v 0))
+
+(let ([g (lambda (x y) y)])
+  (err/rt-test (vector-cas! (impersonate-vector (vector 1) g g) 0 1 2))
+  (err/rt-test (vector-cas! (chaperone-vector (vector 1) g g) 0 1 2))
+  (err/rt-test (vector-cas! (vector-immutable 1) 0 1 2)))
 
 ;; ----------------------------------------
 
@@ -1457,6 +1594,22 @@
   (thread-resume t)
   (void (sync t))
   (test 'ok values v))
+
+;; ----------------------------------------
+;; Try to make a semaphore-post succeed at exactly
+;; the same time that a `sync/timeout` times out
+
+(for ([i 10])
+  (define s (make-semaphore))
+  (define t (thread
+             (lambda ()
+               (sleep (- 0.1 (* 0.001 (random))))
+               (semaphore-post s))))
+  (define r (sync/timeout 0.1 s))
+  (unless r
+    ;; This will get stuck if the success of time sync got lost
+    (sync s))
+  (thread-wait t))
 
 ;; ----------------------------------------
 

@@ -112,6 +112,7 @@
   #:property
   prop:chaperone-contract
   (build-chaperone-contract-property
+   #:trusted trust-me
    #:name unconstrained-domain->-name
    #:first-order unconstrained-domain->-first-order
    #:late-neg-projection unconstrained-domain->-projection
@@ -119,8 +120,9 @@
 
 (define-struct (impersonator-unconstrained-domain-> unconstrained-domain->) ()
   #:property
-  prop:chaperone-contract
-  (build-chaperone-contract-property
+  prop:contract
+  (build-contract-property
+   #:trusted trust-me
    #:name unconstrained-domain->-name
    #:first-order unconstrained-domain->-first-order
    #:late-neg-projection unconstrained-domain->-projection

@@ -244,7 +244,6 @@
     (place-channel-put p (list flx flv bs in out))
     (place-wait p))
 
-
   (let ()
     (define p1 (place ch
                       (define in (place-channel-get ch))
@@ -303,9 +302,9 @@
     (for ([x (list 'p0val1 'p0val2 'p0val3)]) (place-channel-put out x))
     (sleep 4)
     (place-channel-put out 'p0val4)
-    (for ([p ps]) (place-wait p0))
+    (for ([p ps]) (place-wait p))
+    (place-wait p0)
     (test (void) printf "signal-handle vector growing completes"))
-
 
 (let ([pl (place-worker)])
   (define flv1 (shared-flvector 0.0 1.0 2.0 3.0))
@@ -362,6 +361,10 @@
     (try-graph "#0=#s(thing 7 #0#)"))
 
   (check-exn exn:fail? (λ () (place-channel-put pl (open-output-string))))
+  (check-exn exn:fail? (λ ()
+                         (struct s ([x #:mutable]) #:prefab)
+                         (struct t s (y) #:prefab)
+                         (place-channel-put pl (t 1 2))))
   (check-not-exn (λ () (place-channel-put pl "Test String")))
   (check-not-exn (λ () (place-channel-put pl (bytes->path #"/tmp/unix" 'unix))))
   (check-not-exn (λ () (place-channel-put pl (bytes->path #"C:\\Windows" 'windows))))
@@ -391,24 +394,17 @@
     (go 'terminate))
 
   ; test place-dead-evt
-  (define wbs '())
-  (for ([i (in-range 0 50)])
-    (define p (place ch (void (place-channel-get ch))))
-    (set! wbs
-          (cons
-           (make-weak-box
-            (thread
-             (λ ()
-               (define-values (in out) (place-channel))
-               (place-channel-put p in)
-               (sync 
-                 (handle-evt (place-dead-evt p)
-                   (lambda (x) (printf "Place ~a died\n" i) ))
-                 out))))
-           wbs))
-    (collect-garbage)
-    (set! wbs (filter weak-box-value wbs))
-    (printf "len ~a\n" (length wbs)))
+  (let ([ths (for/list ([i (in-range 0 20)])
+               (define p (place ch (void (place-channel-get ch))))
+               (thread
+                (λ ()
+                  (define-values (in out) (place-channel))
+                  (place-channel-put p in)
+                  (sync
+                   (handle-evt (place-dead-evt p)
+                               (lambda (x) (printf "Place ~a died\n" i) ))
+                   out))))])
+    (for-each sync ths))
 
   ; test deep stack handling in places_deep_copy c routine
   (test-long (lambda (x) 3) "Listof ints")
@@ -423,8 +419,9 @@
   ;; all count as "unreachable" when the place ends
   (define (check-thread sync-ch)
     (displayln "checking place-channel and thread GC interaction")
-    (let ([N 40])
+    (let ([N 20])
       (define weaks (make-weak-hash))
+      (define places (make-hasheq))
       (for ([i (in-range N)])
         (define s (make-semaphore))
         (hash-set!
@@ -432,6 +429,7 @@
          (thread (lambda ()
                    (define-values (i o) (place-channel))
                    (define p (place ch (place-channel-get ch)))
+                   (hash-set! places p #t)
                    (place-channel-put p o)
                    (place-wait p)
                    (semaphore-post s)
@@ -442,7 +440,9 @@
         (sync (system-idle-evt))
         (collect-garbage))
       (unless ((hash-count weaks) . < . (/ N 2))
-        (error "thread-gc test failed"))))
+        (error "thread-gc test failed"))
+      (for ([p (in-hash-keys places)])
+        (place-wait p))))
   (check-thread place-channel-get)
   (check-thread sync)
 

@@ -5,6 +5,9 @@
 
 (require racket/flonum
          racket/function
+         racket/list
+         racket/symbol
+         racket/keyword
          (prefix-in k: '#%kernel))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -151,6 +154,31 @@
 (test #f list? (cons 'a 4))
 (arity-test list? 1 1)
 
+;; Try to check that `list?` is amortized constant-time
+(when (run-unreliable-tests? 'timing)
+  (define expected #f)
+  (define (check-time thunk)
+    (define start (current-process-milliseconds))
+    (thunk)
+    (define duration (- (current-process-milliseconds) start))
+    (cond
+      [(not expected) (set! expected duration)]
+      [else
+       (test #t < duration (+ (* 2 expected) 10))]))
+  (define (try range)
+    (for ([n range])
+      (define l (for/list ([i (in-range n)]) i))
+      (define nl (append l 'no))
+
+      (check-time (lambda ()
+                    (test #t 'list
+                          (for/and ([i 10000]) (list? l)))))
+      (check-time (lambda ()
+                    (test #f 'non-list
+                          (for/or ([i 10000]) (list? nl)))))))
+  (try (in-range  1000  1010))
+  (try (in-range 10000 10010)))
+
 (test #t pair? '(a . b))
 (test #t pair? '(a . 1))
 (test #t pair? '(a b c))
@@ -227,7 +255,7 @@
 (box-tests make-weak-box weak-box-value weak-box? #f #f 'weak-box-value #t)
 
 ;; test clearing weak boxes
-(when (eq? '3m (system-type 'gc))
+(unless (eq? 'cgc (system-type 'gc))
   (let* ([s (gensym)]
          [b (make-weak-box s)])
     (test s weak-box-value b)
@@ -284,6 +312,12 @@
 (err/rt-test (list-tail '(1) -1))
 (err/rt-test (list-tail '(1) 2) exn:application:mismatch?)
 (err/rt-test (list-tail '(1 2 . 3) 3) exn:application:mismatch?)
+
+(err/rt-test (car 0) exn:fail:contract? #rx"car: contract violation.*expected: pair[?].*given: 0")
+(err/rt-test (cdr 0) exn:fail:contract? #rx"cdr: contract violation.*expected: pair[?].*given: 0")
+(err/rt-test (cadr 0) exn:fail:contract? #rx"cadr: contract violation.*expected: .cons/c any/c pair[?]..*given: 0")
+(err/rt-test (cdadr 0) exn:fail:contract? #rx"cdadr: contract violation.*expected: .cons/c any/c .cons/c pair[?] any/c..*given: 0")
+(err/rt-test (cdadar 0) exn:fail:contract? #rx"cdadar: contract violation.*expected: .cons/c .cons/c any/c .cons/c pair[?] any/c.. any/c.*given: 0")
 
 (define (test-mem memq memq-name)
   (test '(a b c) memq 'a '(a b c))
@@ -375,6 +409,26 @@
 (test #f immutable? (make-weak-hasheq))
 (test #f immutable? (make-weak-hash))
 
+(test #t eq? (hash) #hash())
+(test #t eq? (hasheq) #hasheq())
+(test #t eq? (hasheqv) #hasheqv())
+(test #t eq? (make-immutable-hash) #hash())
+(test #t eq? (make-immutable-hasheq) #hasheq())
+(test #t eq? (make-immutable-hasheqv) #hasheqv())
+(test #t eq? (hash) (hash-remove (hash 3 4) 3))
+(test #t eq? (hasheq) (hash-remove (hasheq 3 4) 3))
+(test #t eq? (hasheqv) (hash-remove (hasheqv 3 4) 3))
+
+(err/rt-test (hash 1))
+(err/rt-test (hasheqv 1))
+(err/rt-test (hasheq 1))
+(err/rt-test (make-hash 1))
+(err/rt-test (make-hasheqv 1))
+(err/rt-test (make-hasheq 1))
+(err/rt-test (make-weak-hash 1))
+(err/rt-test (make-weak-hasheqv 1))
+(err/rt-test (make-weak-hasheq 1))
+
 (test #t symbol? 'foo)
 (test #t symbol? (car '(a b)))
 (test #f symbol? "bar")
@@ -415,6 +469,13 @@
 (test "cb" 'string-set! x)
 (test "ab" symbol->string y)
 (test y string->symbol "ab")
+(err/rt-test (string->symbol 10))
+(err/rt-test (string->symbol 'oops))
+
+(test #f eq? (symbol->string 'apple) (symbol->string 'apple))
+(test "apple" symbol->immutable-string 'apple)
+(test #t immutable? (symbol->immutable-string 'apple))
+(test #t immutable? (symbol->immutable-string 'box))
 
 #ci(test #t eq? 'mISSISSIppi 'mississippi)
 #ci(test #f 'string->symbol (eq? 'bitBlt (string->symbol "bitBlt")))
@@ -434,10 +495,13 @@
 (test #f keyword? 'a)
 (test '#:apple string->keyword "apple")
 (test "apple" keyword->string '#:apple)
+(test #t keyword<? '#:a)
 (test #t keyword<? '#:a '#:b)
 (test #f keyword<? '#:b '#:b)
 (test #t keyword<? '#:b '#:bb)
 (test #f keyword<? '#:b '#:)
+(test #t keyword<? '#:b '#:c '#:d)
+(test #f keyword<? '#:b '#:c '#:c)
 (test #t keyword<? (string->keyword "a") (string->keyword "\uA0"))
 (test #t keyword<? (string->keyword "a") (string->keyword "\uFF"))
 (test #f keyword<? (string->keyword "\uA0") (string->keyword "a"))
@@ -446,8 +510,13 @@
 (test #f keyword<? (string->keyword "\uFF") (string->keyword "\uA0"))
 (test #f keyword<? (string->keyword "\uA0") (string->keyword "\uA0"))
 
+(test #f eq? (keyword->string '#:apple) (keyword->string '#:apple))
+(test "apple" keyword->immutable-string '#:apple)
+(test #t immutable? (keyword->immutable-string '#:apple))
+
+
 (arity-test keyword? 1 1)
-(arity-test keyword<? 2 -1)
+(arity-test keyword<? 1 -1)
 
 (define (char-tests)
   (test #t eqv? '#\  #\Space)
@@ -482,7 +551,7 @@
   (test #t char=? #\370 #\370)
   (test #f char=? #\371 #\370)
   (test #f char=? #\370 #\371)
-  (arity-test char=? 2 -1)
+  (arity-test char=? 1 -1)
   (err/rt-test (char=? #\a 1)) 
   (err/rt-test (char=? #\a #\b 1)) 
   (err/rt-test (char=? 1 #\a))
@@ -497,7 +566,7 @@
   (test #f char<? #\370 #\370)
   (test #f char<? #\371 #\370)
   (test #t char<? #\370 #\371)
-  (arity-test char<? 2 -1)
+  (arity-test char<? 1 -1)
   (err/rt-test (char<? #\a 1)) 
   (err/rt-test (char<? #\a #\a 1)) 
   (err/rt-test (char<? 1 #\a))
@@ -513,7 +582,7 @@
   (test #f char>? #\370 #\370)
   (test #t char>? #\371 #\370)
   (test #f char>? #\370 #\371)
-  (arity-test char>? 2 -1)
+  (arity-test char>? 1 -1)
   (err/rt-test (char>? #\a 1)) 
   (err/rt-test (char>? #\a #\a 1)) 
   (err/rt-test (char>? 1 #\a))
@@ -529,7 +598,7 @@
   (test #t char<=? #\370 #\370)
   (test #f char<=? #\371 #\370)
   (test #t char<=? #\370 #\371)
-  (arity-test char<=? 2 -1)
+  (arity-test char<=? 1 -1)
   (err/rt-test (char<=? #\a 1)) 
   (err/rt-test (char<=? #\b #\a 1)) 
   (err/rt-test (char<=? 1 #\a))
@@ -541,7 +610,7 @@
   (test #t char>=? #\370 #\370)
   (test #t char>=? #\371 #\370)
   (test #f char>=? #\370 #\371)
-  (arity-test char>=? 2 -1)
+  (arity-test char>=? 1 -1)
   (err/rt-test (char>=? #\a 1)) 
   (err/rt-test (char>=? #\a #\b 1)) 
   (err/rt-test (char>=? 1 #\a))
@@ -558,7 +627,7 @@
   (test #t char-ci=? #\370 #\370)
   (test #f char-ci=? #\371 #\370)
   (test #f char-ci=? #\370 #\371)
-  (arity-test char-ci=? 2 -1)
+  (arity-test char-ci=? 1 -1)
   (err/rt-test (char-ci=? #\a 1)) 
   (err/rt-test (char-ci=? #\a #\b 1)) 
   (err/rt-test (char-ci=? 1 #\a))
@@ -576,7 +645,7 @@
   (test #f char-ci<? #\370 #\370)
   (test #f char-ci<? #\371 #\370)
   (test #t char-ci<? #\370 #\371)
-  (arity-test char-ci<? 2 -1)
+  (arity-test char-ci<? 1 -1)
   (err/rt-test (char-ci<? #\a 1)) 
   (err/rt-test (char-ci<? #\b #\a 1)) 
   (err/rt-test (char-ci<? 1 #\a))
@@ -594,7 +663,7 @@
   (test #f char-ci>? #\370 #\370)
   (test #t char-ci>? #\371 #\370)
   (test #f char-ci>? #\370 #\371)
-  (arity-test char-ci>? 2 -1)
+  (arity-test char-ci>? 1 -1)
   (err/rt-test (char-ci>? #\a 1)) 
   (err/rt-test (char-ci>? #\a #\b 1)) 
   (err/rt-test (char-ci>? 1 #\a))
@@ -611,7 +680,7 @@
   (test #t char-ci<=? #\370 #\370)
   (test #f char-ci<=? #\371 #\370)
   (test #t char-ci<=? #\370 #\371)
-  (arity-test char-ci<=? 2 -1)
+  (arity-test char-ci<=? 1 -1)
   (err/rt-test (char-ci<=? #\a 1)) 
   (err/rt-test (char-ci<=? #\b #\a 1)) 
   (err/rt-test (char-ci<=? 1 #\a))
@@ -628,7 +697,7 @@
   (test #t char-ci>=? #\370 #\370)
   (test #t char-ci>=? #\371 #\370)
   (test #f char-ci>=? #\370 #\371)
-  (arity-test char-ci>=? 2 -1)
+  (arity-test char-ci>=? 1 -1)
   (err/rt-test (char-ci>=? #\a 1)) 
   (err/rt-test (char-ci>=? #\a #\b 1)) 
   (err/rt-test (char-ci>=? 1 #\a)))
@@ -732,6 +801,13 @@
   (err/rt-test (read (open-input-string "#1234567890(0)")) exn:fail:out-of-memory?))
 (test #t vector? (make-vector 0))
 
+(let ([b (vector 1 2 3)])
+  (vector-copy! b 0 b 1)
+  (test '#(2 3 3) values b))
+(let ([b (vector 2 3 4)])
+  (vector-copy! b 1 b 0 2)
+  (test '#(2 2 3) values b))
+
 (define f (make-string 3 #\*))
 (test "?**" 'string-set! (begin (string-set! f 0 #\?) f))
 (arity-test string-set! 3 3)
@@ -797,6 +873,15 @@
 (err/rt-test (string-append 1))
 (err/rt-test (string-append "hello" 1))
 (err/rt-test (string-append "hello" 1 "done"))
+(test "foobar" string-append-immutable "foo" "bar")
+(test "foo" string-append-immutable "foo")
+(test "" string-append-immutable)
+(test "" string-append-immutable "" "")
+(test #t immutable? (string-append-immutable "foo" "bar"))
+(test #t immutable? (string-append-immutable "foo"))
+(test #t immutable? (string-append-immutable "" ""))
+(test #t immutable? (string-append-immutable))
+(test #f immutable? (string-append (string->immutable-string "hello")))
 (test "" make-string 0)
 (define s (string-copy "hello"))
 (define s2 (string-copy s))
@@ -848,6 +933,9 @@
 (define ay (string #\a #\nul #\371 #\x))
 
 (define (string-tests)
+  (test #t string=? "")
+  (test #t string=? "A")
+
   (test #t string=? "" "")
   (test #f string<? "" "")
   (test #f string>? "" "")
@@ -869,6 +957,7 @@
   (test #f string=? ax ay)
   (test #f string=? ay ax)
 
+  (test #t string<? "A")
   (test #t string<? "A" "B")
   (test #t string<? "a" "b")
   (test #f string<? "9" "0")
@@ -879,6 +968,7 @@
   (test #t string<? ax ay)
   (test #f string<? ay ax)
 
+  (test #t string>? "A")
   (test #f string>? "A" "B")
   (test #f string>? "a" "b")
   (test #t string>? "9" "0")
@@ -889,6 +979,7 @@
   (test #f string>? ax ay)
   (test #t string>? ay ax)
 
+  (test #t string<=? "A")
   (test #t string<=? "A" "B")
   (test #t string<=? "a" "b")
   (test #f string<=? "9" "0")
@@ -899,6 +990,7 @@
   (test #t string<=? ax ay)
   (test #f string<=? ay ax)
 
+  (test #t string>=? "A")
   (test #f string>=? "A" "B")
   (test #f string>=? "a" "b")
   (test #t string>=? "9" "0")
@@ -909,6 +1001,7 @@
   (test #f string>=? ax ay)
   (test #t string>=? ay ax)
 
+  (test #t string-ci=? "A")
   (test #f string-ci=? "A" "B")
   (test #f string-ci=? "a" "B")
   (test #f string-ci=? "A" "b")
@@ -924,6 +1017,7 @@
   (test #f string-ci=? abigx ay)
   (test #f string-ci=? ay abigx)
 
+  (test #t string-ci<? "A")
   (test #t string-ci<? "A" "B")
   (test #t string-ci<? "a" "B")
   (test #t string-ci<? "A" "b")
@@ -940,6 +1034,7 @@
   (test #t string-ci<? abigx ay)
   (test #f string-ci<? ay abigx)
 
+  (test #t string-ci>? "A")
   (test #f string-ci>? "A" "B")
   (test #f string-ci>? "a" "B")
   (test #f string-ci>? "A" "b")
@@ -956,6 +1051,7 @@
   (test #f string-ci>? abigx ay)
   (test #t string-ci>? ay abigx)
 
+  (test #t string-ci<=? "A")
   (test #t string-ci<=? "A" "B")
   (test #t string-ci<=? "a" "B")
   (test #t string-ci<=? "A" "b")
@@ -972,6 +1068,7 @@
   (test #t string-ci<=? abigx ay)
   (test #f string-ci<=? ay abigx)
 
+  (test #t string-ci>=? "A")
   (test #f string-ci>=? "A" "B")
   (test #f string-ci>=? "a" "B")
   (test #f string-ci>=? "A" "b")
@@ -991,7 +1088,7 @@
 (string-tests)
 
 (map (lambda (pred)
-       (arity-test pred 2 -1)
+       (arity-test pred 1 -1)
        (err/rt-test (pred "a" 1))
        (err/rt-test (pred "a" "b" 5))
        (err/rt-test (pred 1 "a")))
@@ -1011,7 +1108,6 @@
 	   string-locale-ci=? 
 	   string-locale-ci>? 
 	   string-locale-ci<?))
-
 
 (test #t byte? 10)
 (test #t byte? 0)
@@ -1112,12 +1208,68 @@
 (test (bytes 97 0 98) bytes-copy (bytes 97 0 98))
 (bytes-fill! s (char->integer #\x))
 (test #"xxxxx" 'bytes-fill! s)
+(let ([bstr (make-bytes 10)])
+  (test (void) bytes-copy! bstr 1 #"testing" 2 6)
+  (test #"\0stin\0\0\0\0\0" values bstr)
+  (test (void) bytes-copy! bstr 0 #"testing")
+  (test #"testing\0\0\0" values bstr))
 (arity-test bytes-copy 1 1)
 (arity-test bytes-fill! 2 2)
 (err/rt-test (bytes-copy 'blah))
 (err/rt-test (bytes-fill! 'sym 1))
 (err/rt-test (bytes-fill! #"static" 1))
 (err/rt-test (bytes-fill! (bytes-copy #"oops") #\5))
+(err/rt-test (bytes-copy! (bytes-copy #"oops") #\5))
+(err/rt-test (bytes-copy! (bytes-copy #"oops") 0 -1))
+(err/rt-test (bytes-copy! (bytes-copy #"oops") 0 #"src" #f))
+(err/rt-test (bytes-copy! (bytes-copy #"oops") 0 #"src" -1))
+(err/rt-test (bytes-copy! (bytes-copy #"oops") 0 #"src" 1 #f))
+(err/rt-test (bytes-copy! (bytes-copy #"oops") 0 #"src" 1 0))
+(err/rt-test (bytes-copy! (bytes-copy #"oops") 0 #"src" 1 17))
+(err/rt-test (bytes-copy! (bytes-copy #"o") 0 #"src"))
+(err/rt-test (bytes-copy! (bytes-copy #"o") 0 #"src" 1))
+(test #t bytes=? #"a" #"a" #"a")
+(test #t bytes=? #"a" #"a")
+(test #t bytes=? #"a")
+(test #f bytes=? #"a" #"a" #"c")
+(test #f bytes=? #"a" #"b" #"c")
+(test #f bytes=? #"a" #"b")
+(test #f bytes=? #"c" #"a" #"a")
+(test #f bytes=? #"c" #"b" #"a")
+(test #f bytes=? #"b" #"a")
+(err/rt-test (bytes=? 1))
+(err/rt-test (bytes=? #"a" 1))
+(err/rt-test (bytes=? #"a" #"a" 1))
+(err/rt-test (bytes=? #"a" #"b" 1))
+
+(test #f bytes<? #"a" #"a" #"a")
+(test #f bytes<? #"a" #"a")
+(test #t bytes<? #"a")
+(test #f bytes<? #"a" #"a" #"c")
+(test #t bytes<? #"a" #"b" #"c")
+(test #t bytes<? #"a" #"b")
+(test #f bytes<? #"c" #"a" #"a")
+(test #f bytes<? #"c" #"b" #"a")
+(test #f bytes<? #"b" #"a")
+(err/rt-test (bytes<? 1))
+(err/rt-test (bytes<? #"a" 1))
+(err/rt-test (bytes<? #"a" #"a" 1))
+(err/rt-test (bytes<? #"b" #"a" 1))
+
+(test #f bytes>? #"a" #"a" #"a")
+(test #f bytes>? #"a" #"a")
+(test #t bytes>? #"a")
+(test #f bytes>? #"a" #"a" #"c")
+(test #f bytes>? #"a" #"b" #"c")
+(test #f bytes>? #"a" #"b")
+(test #f bytes>? #"c" #"a" #"a")
+(test #t bytes>? #"c" #"b" #"a")
+(test #t bytes>? #"b" #"a")
+(err/rt-test (bytes>? 1))
+(err/rt-test (bytes>? #"a" 1))
+(err/rt-test (bytes>? #"a" #"a" 1))
+(err/rt-test (bytes>? #"a" #"b" 1))
+
 
 (define r (regexp "(-[0-9]*)+"))
 (test '("-12--345" "-345") regexp-match r "a-12--345b")
@@ -1416,6 +1568,8 @@
 (err/rt-test (apply (lambda x x) 1))
 (err/rt-test (apply (lambda x x) 1 2))
 (err/rt-test (apply (lambda x x) 1 '(2 . 3)))
+(err/rt-test (apply 10 '(2 . 3)))
+(err/rt-test (apply 10 0 '(2 . 3)))
 
 (test '(b e h) map cadr '((a b) (d e) (g h)))
 (test '(5 7 9) map + '(1 2 3) '(4 5 6))
@@ -1424,11 +1578,17 @@
 		(for-each (lambda (i) (vector-set! v i (* i i)))
 			'(0 1 2 3 4))
 		v))
-
+(test '(1 2 3) map (lambda (s #:c [c string->number]) (c s)) '("1" "2" "3"))
 
 (define (map-tests map)
-  (let ([size? exn:application:mismatch?]
-	[non-list? type?])
+  (define ((name-and pred) exn)
+    (and (pred exn)
+         (regexp-match? (format "^~a:" name) (exn-message exn))))
+  (let ([size? (name-and exn:application:mismatch?)]
+	[non-list? (name-and type?)]
+        [keywords? (lambda (exn)
+                     (and (exn:fail:contract? exn)
+                          (regexp-match #rx"expects keyword arguments" (exn-message exn))))])
     (err/rt-test (map (lambda (x y) (+ x y)) '(1 2) '1))
     (err/rt-test (map (lambda (x y) (+ x y)) '2 '(1 2)))
     (err/rt-test (map (lambda (x y) (+ x y)) '(1 2) '(1 2 3)) size?)
@@ -1442,7 +1602,9 @@
     (err/rt-test (map (lambda (x y) (+ x y))) exn:application:arity?)
     (err/rt-test (map (lambda () 10) null) exn:application:mismatch?)
     (err/rt-test (map (case-lambda [() 9] [(x y) 10]) '(1 2 3)) exn:application:mismatch?)
-    (err/rt-test (map (lambda (x) 10) '(1 2) '(3 4)) exn:application:mismatch?)))
+    (err/rt-test (map (lambda (x) 10) '(1 2) '(3 4)) exn:application:mismatch?)
+    (err/rt-test (map (lambda (x #:y y) 10) '(1 2)) keywords?)
+    (err/rt-test (map (lambda (x #:y y) 10) '()) keywords?)))
 (map-tests map)
 (map-tests for-each)
 (map-tests andmap)
@@ -1511,21 +1673,21 @@
       (with-handlers ([void (lambda (x) (list x))])
         (with-handlers ([integer? (lambda (x) 10)])
           (raise 'apple))))
-(test '((10)) 'exns
+(test '((20)) 'exns
       (with-handlers ([void (lambda (x) (list x))])
         (with-handlers ([integer? (lambda (x) (raise (list x)))])
-          (raise 10))))
-(test '((10)) 'exns
+          (raise 20))))
+(test '((30)) 'exns
       (let/ec esc
         (parameterize ([uncaught-exception-handler (lambda (x) (esc (list x)))])
           (with-handlers ([integer? (lambda (x) (raise (list x)))])
-            (raise 10)))))
-(test '#((10)) 'exns
+            (raise 30)))))
+(test '#((40)) 'exns
       (let/ec esc
         (with-handlers ([void (lambda (x) (vector x))])
           (parameterize ([uncaught-exception-handler (lambda (x) (esc (list x)))])
             (with-handlers ([integer? (lambda (x) (raise (list x)))])
-              (raise 10))))))
+              (raise 40))))))
 
 (test '(except) 'escape
       (let/ec k
@@ -1975,7 +2137,7 @@
 
 (test 1 procedure-arity procedure-arity)
 (test 2 procedure-arity cons)
-(test (make-arity-at-least 2) procedure-arity >)
+(test (make-arity-at-least 1) procedure-arity >)
 (test (list 0 1) procedure-arity current-output-port)
 (test (list 1 3 (make-arity-at-least 5))
       procedure-arity (case-lambda [(x) 0] [(x y z) 1] [(x y z w u . rest) 2]))
@@ -2114,6 +2276,13 @@
 (err/rt-test (raise-arity-error + (make-arity-at-least 5)) exn:fail:contract:arity?)
 (err/rt-test (raise-arity-error + (list 1 (make-arity-at-least 5))) exn:fail:contract:arity?)
 
+(err/rt-test (raise-result-arity-error 'f 5 #f) exn:fail:contract:arity?)
+(err/rt-test (raise-result-arity-error #f 5 #f) exn:fail:contract:arity?)
+(err/rt-test (raise-result-arity-error #f (expt 2 100) #f) exn:fail:contract:arity?)
+(err/rt-test (raise-result-arity-error #f (expt 2 100) "\n  in: extra") exn:fail:contract:arity?)
+(err/rt-test (raise-result-arity-error #f (expt 2 100) "\n  in: extra" 1 2 3 4 5) exn:fail:contract:arity?)
+(err/rt-test (raise-result-arity-error 'oops 5 "%") exn:fail:contract:arity?)
+
 (define (exn:fail:contract:arity?/#f e) (not (exn:fail:contract:arity? e)))
 
 (err/rt-test (raise-arity-error 'f -5) exn:fail:contract:arity?/#f)
@@ -2123,7 +2292,19 @@
 (err/rt-test (raise-arity-error 1 1) exn:fail:contract:arity?/#f)
 (err/rt-test (raise-arity-error 1 1) exn:fail:contract?)
 
+(err/rt-test (raise-result-arity-error "f" 7 #f) exn:fail:contract:arity?/#f)
+(err/rt-test (raise-result-arity-error 'f -7 #f) exn:fail:contract:arity?/#f)
+(err/rt-test (raise-result-arity-error 'f 7 #"oops") exn:fail:contract:arity?/#f)
 
+
+(err/rt-test (raise-arity-mask-error 'f 4) exn:fail:contract:arity?)
+(err/rt-test (raise-arity-mask-error 'f -8) exn:fail:contract:arity?)
+(err/rt-test (raise-arity-mask-error 'f 5) exn:fail:contract:arity?)
+(err/rt-test (raise-arity-mask-error 'f -5) exn:fail:contract:arity?)
+
+(err/rt-test (raise-arity-mask-error 'f (arity-at-least 7)) exn:fail:contract:arity?/#f)
+(err/rt-test (raise-arity-mask-error 'f -5.0) exn:fail:contract?)
+(err/rt-test (raise-arity-mask-error 1 1) exn:fail:contract?)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; continuations
@@ -2167,7 +2348,7 @@
       (test #t eq? (equal-hash-code l) (equal-hash-code (list 1 2 3)))
       (hash-set! h1 l 'ok)
       (test 'ok hash-ref h1 l)
-      (err/rt-test (hash-ref h1 'nonesuch (lambda (x) 'bad-proc)) exn:fail:contract:arity?)
+      (err/rt-test (hash-ref h1 'nonesuch (lambda (x) 'bad-proc)) exn:fail:contract:arity? "hash-ref")
       (test #t hash-has-key? h1 l)
       (test #f hash-has-key? h1 (cdr l))
       (when hash-ref!
@@ -2204,7 +2385,8 @@
           [v (vector 5 6 7)]
           [a (make-a 1 (make-a 2 3))]
           [b (box (list 1 2 3))]
-          [fl (flvector 1.0 +nan.0 0.0)])
+          [fl (flvector 1.0 +nan.0 0.0)]
+          [cyclic-list (read (open-input-string "#2=(#1=(#2#) #2#)"))])
 
       (test 0 hash-count h1)
 
@@ -2225,11 +2407,12 @@
                      (hash-set! h1 (save v) 'vector)
                      (hash-set! h1 (save a) 'struct)
                      (hash-set! h1 (save an-ax) 'structx)
-                     (hash-set! h1 (save b) 'box))])
+                     (hash-set! h1 (save b) 'box)
+                     (hash-set! h1 (save cyclic-list) 'cyclic-list))])
         (if reorder?
           (begin
             (puts2)
-            (test 6 hash-count h1)
+            (test 7 hash-count h1)
             (puts1))
           (begin
             (puts1)
@@ -2245,7 +2428,7 @@
             (loop (add1 i))
             (hash-remove! h1 i))))
 
-      (test 14 hash-count h1)
+      (test 15 hash-count h1)
       (test 'list hash-ref h1 l)
       (test 'list hash-ref h1 (list 1 2 3))
       (test 'another-list hash-ref h1 (list 5 7))
@@ -2265,6 +2448,7 @@
       (test 'box hash-ref h1 #&(1 2 3))
       (test 'char hash-ref h1 (integer->char 955))
       (test 'flvector hash-ref h1 (flvector 1.0 +nan.0 0.0))
+      (test 'cyclic-list hash-ref h1 cyclic-list)
       (test #t
             andmap
             (lambda (i)
@@ -2283,13 +2467,15 @@
               (,an-ax . structx)
               (#\u3BB . char)
               (#&(1 2 3) . box)
-              (,(flvector 1.0 +nan.0 0.0) . flvector)))
+              (,(flvector 1.0 +nan.0 0.0) . flvector)
+              (,cyclic-list . cyclic-list)))
+
       (hash-remove! h1 (list 1 2 3))
-      (test 13 hash-count h1)
+      (test 14 hash-count h1)
       (test 'not-there hash-ref h1 l (lambda () 'not-there))
       (let ([c 0])
         (hash-for-each h1 (lambda (k v) (set! c (add1 c))))
-        (test 13 'count c))
+        (test 14 'count c))
       ;; return the hash table:
       h1))
 
@@ -2568,18 +2754,45 @@
 
 (test #f hash-iterate-first (make-hasheq))
 (test #f hash-iterate-first (make-weak-hasheq))
-(err/rt-test (hash-iterate-next (make-hasheq) 0))
-(err/rt-test (hash-iterate-next (make-weak-hasheq) 0))
+(test #f hash-iterate-next (make-hasheq) 0)
+(test #f hash-iterate-next (make-weak-hasheq) 0)
 
-(let ([check-all-bad
-       (lambda (op)
-         (err/rt-test (op #f 0))
-         (err/rt-test (op (make-hasheq) -1))
-         (err/rt-test (op (make-hasheq) (- (expt 2 100))))
-         (err/rt-test (op (make-hasheq) 1.0)))])
-  (check-all-bad hash-iterate-next)
-  (check-all-bad hash-iterate-key)
-  (check-all-bad hash-iterate-value))
+(let ([hts (list (make-hash)
+                 (make-hasheq)
+                 (make-hasheqv)
+                 (make-weak-hash)
+                 (make-weak-hasheq)
+                 (make-weak-hasheqv)
+                 (hash)
+                 (hasheq)
+                 (hasheqv))])
+  (let* ([check-all-bad
+          (lambda (op)
+            (err/rt-test (op #f 0))
+            (err/rt-test (op (make-hasheq) -1))
+            (err/rt-test (op (make-hasheq) (- (expt 2 100))))
+            (err/rt-test (op (make-hasheq) 1.0)))]
+         [check-all-bad-v
+          (lambda (op)
+            (check-all-bad op)
+            (for ([ht (in-list hts)])
+              (test 'nope op ht 17 'nope)))]
+         [check-all-bad-pair
+          (lambda (op)
+            (check-all-bad op)
+            (for ([ht (in-list hts)])
+              (test '(nope . nope) op ht 17 'nope)))]
+         [check-all-bad-values
+          (lambda (op)
+            (check-all-bad op)
+            (for ([ht (in-list hts)])
+              (test-values '(nope nope)
+                           (lambda () (op ht 17 'nope)))))])
+    (check-all-bad hash-iterate-next)
+    (check-all-bad-v hash-iterate-key)
+    (check-all-bad-v hash-iterate-value)
+    (check-all-bad-pair hash-iterate-pair)
+    (check-all-bad-values hash-iterate-key+value)))
 
 (test (list 1 2 3) sort (hash-keys #hasheq((1 . a) (2 . b) (3 . c))) <)
 (test (list 'a 'b 'c) 
@@ -2886,17 +3099,20 @@
                                                    (cons 1 (loop (sub1 i))))))
                                     exn:fail:contract?)))
                    not-inc)))
-          (list proc (procedure-reduce-arity proc ar))))])
+          (list proc (procedure-reduce-arity proc ar))))]
+      [representable-arity? (lambda (a)
+                              (a . < . 4096))])
   (let ([check-all-but-one
          (lambda (+)
            (check-ok + 0 '(0) '(1))
            (check-ok + 2 '(2) '(0 1 3 4))
-           (check-ok + 10 '(10) (list 0 11 (expt 2 70)))
-           (check-ok + (expt 2 70) (list (expt 2 70)) (list 0 10  (add1 (expt 2 70))))
-           (check-ok + (make-arity-at-least 2) (list 2 5 (expt 2 70)) (list 0 1))
+           (check-ok + 10 '(10) (filter representable-arity? (list 0 11 (expt 2 70))))
+           (when (representable-arity? (expt 2 70))
+             (check-ok + (expt 2 70) (list (expt 2 70)) (filter representable-arity? (list 0 10 (add1 (expt 2 70))))))
+           (check-ok + (make-arity-at-least 2) (filter representable-arity? (list 2 5 (expt 2 70))) (list 0 1))
            (check-ok + (list 2 4) '(2 4) '(0 3))
            (check-ok + (list 2 4) '(4 2) '(0 3))
-           (check-ok + (list 0 (make-arity-at-least 2)) (list 0 2 5 (expt 2 70)) (list 1))
+           (check-ok + (list 0 (make-arity-at-least 2)) (filter representable-arity? (list 0 2 5 (expt 2 70))) (list 1))
            (check-ok + (list 4 (make-arity-at-least 2)) '(2 3 4 10) '(0 1))
            (check-ok + (list 2 (make-arity-at-least 4)) '(2 4 10) '(0 1 3)))])
     (check-all-but-one +)
@@ -2927,6 +3143,33 @@
 (test 'again object-name (procedure-rename (procedure-rename + 'plus) 'again))
 (test 'again object-name (procedure-rename (procedure-reduce-arity + 3) 'again))
 (test 3 procedure-arity (procedure-rename (procedure-reduce-arity + 3) 'again))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(test #f equal?/recur 1 2 (lambda (a b) 'yes))
+(test #t equal?/recur 1 1 (lambda (a b) 'yes))
+(test #t equal?/recur '(1 . 2) '(1 . 2) (lambda (a b) 'yes))
+(test #f equal?/recur '(1 . 2) '(1 . 2) (lambda (a b) (eq? a 1)))
+(test #t equal?/recur '(1 . 1) '(1 . 2) (lambda (a b) (or (eq? a b) (eq? a 1))))
+
+(test #t equal?/recur '#(1 2 3) '#(1 2 3) (lambda (a b) 'yes))
+(test #f equal?/recur '#(1 2 3) '#(1 2 3) (lambda (a b) (not (eqv? a 2))))
+
+(test #t equal?/recur '#&1 '#&1 (lambda (a b) 'yes))
+(test #f equal?/recur '#&1 '#&1 (lambda (a b) #f))
+
+(test #t equal?/recur '#hash((1 . x)) '#hash((1 . x)) (lambda (a b) 'yes))
+(test #t equal?/recur '#hash((1 . x)) '#hash((1 . z)) (lambda (a b) (or (eq? a b) (eq? 'z b))))
+(test #f equal?/recur '#hash(("2" . x)) (hash (string-copy "2") 'x) (lambda (a b) (eq? a b)))
+(test #t equal?/recur '#hash(("2" . x)) (hash (string-copy "2") 'x) (lambda (a b) (or (eq? a b) (eq? "2" a))))
+(test #f equal?/recur '#hash((1 . x)) '#hash((1 . x)) (lambda (a b) #f))
+(test #f equal?/recur '#hash((1 . x)) '#hash((1 . x)) (lambda (a b) (eq? a 1)))
+(test #f equal?/recur '#hash((1 . x)) '#hash((1 . x)) (lambda (a b) (eq? a 'x)))
+
+(let ()
+  (struct a (x) #:transparent)
+  (test #t equal?/recur (a 1) (a 2) (lambda (a b) 'yes))
+  (test #f equal?/recur (a 1) (a 1) (lambda (a b) (not (eq? a 1)))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

@@ -2,6 +2,10 @@
 
 ;; Foreign Racket interface
 (require '#%foreign setup/dirs racket/unsafe/ops racket/private/for
+         (only-in '#%unsafe
+                  unsafe-thread-at-root
+                  unsafe-make-security-guard-at-root
+                  unsafe-add-post-custodian-shutdown)
          (for-syntax racket/base racket/list syntax/stx racket/syntax
                      racket/struct-info))
 
@@ -13,13 +17,14 @@
          vector->cpointer flvector->cpointer extflvector->cpointer saved-errno lookup-errno
          ctype? make-ctype make-cstruct-type make-array-type make-union-type
          make-sized-byte-string ctype->layout
-         _void _int8 _uint8 _int16 _uint16 _int32 _uint32 _int64 _uint64
+         _void _int8 _uint8 _int16 _uint16 _int32 _uint32 _int64 _uint64 _wchar
          _fixint _ufixint _fixnum _ufixnum
          _float _double _longdouble _double*
          _bool _stdbool _pointer _gcpointer _scheme (rename-out [_scheme _racket]) _fpointer function-ptr
          memcpy memmove memset
          malloc-immobile-cell free-immobile-cell
-         make-late-weak-box make-late-weak-hasheq)
+         make-late-weak-box make-late-weak-hasheq
+         void/reference-sink)
 
 (define-syntax define*
   (syntax-rules ()
@@ -57,6 +62,13 @@
                            (lambda (v) v)))
 (define* _uword _uint16)
 (define* _sword _int16)
+
+(define* _wchar (case (compiler-sizeof 'wchar)
+                  [(1) _uint8]
+                  [(2) _uint16]
+                  [(4) _uint32]
+                  [(8) _uint64]
+                  [else (error '_wchar "implausible 'wchar size")]))
 
 ;; utility for the next few definitions
 (define (sizeof->3ints c-type)
@@ -112,12 +124,15 @@
                                     (not (equal? lib-suffix "dll"))))
 (define version-sep (if (equal? lib-suffix "dll") "-" "."))
 
+(define-logger ffi-lib)
+
 (provide (protect-out (rename-out [get-ffi-lib ffi-lib]))
          ffi-lib? ffi-lib-name)
 (define (get-ffi-lib name [version/s ""]
 		     #:fail [fail #f]
 		     #:get-lib-dirs [get-lib-dirs get-lib-search-dirs]
-                     #:global? [global? (eq? (system-type 'so-mode) 'global)])
+                     #:global? [global? (eq? (system-type 'so-mode) 'global)]
+                     #:custodian [custodian #f])
   (cond
    [(not name) (ffi-lib name)] ; #f => NULL => open this executable
    [(not (or (string? name) (path? name)))
@@ -132,13 +147,24 @@
     ;; file-not-found error.  This is because the dlopen doesn't provide a
     ;; way to distinguish different errors (only dlerror, but that's
     ;; unreliable).
+    (define (fullpath p) (path->complete-path (cleanse-path p)))
+    (define tried '()) ;; (listof path-string), mutated
+    (define (try-lib name)
+      (let ([lib (ffi-lib name #t global?)])
+        (cond [lib (log-ffi-lib-debug "loaded ~e" name)]
+              [else (set! tried (cons name tried))])
+        lib))
+    (define (skip-lib name)
+      (begin (set! tried (cons name tried)) #f))
+    (define (try-lib-if-exists? name)
+      (cond [(file-exists?/insecure name) (try-lib (fullpath name))]
+            [else (skip-lib (fullpath name))]))
     (let* ([versions (if (list? version/s) version/s (list version/s))]
 	   [versions (map (lambda (v)
 			    (if (or (not v) (zero? (string-length v)))
 				""
                                 (string-append version-sep v)))
 			  versions)]
-	   [fullpath (lambda (p) (path->complete-path (cleanse-path p)))]
 	   [absolute? (absolute-path? name)]
 	   [name0 (path->string (cleanse-path name))]     ; orig name
 	   [names (map (if (regexp-match lib-suffix-re name0) ; name+suffix
@@ -147,31 +173,49 @@
 			     (if suffix-before-version?
 				 (string-append name0 "." lib-suffix v)
 				 (string-append name0 v "." lib-suffix))))
-		       versions)]
-	   [ffi-lib*  (lambda (name) (ffi-lib name #t global?))])
-      (or ;; try to look in our library paths first
-       (and (not absolute?)
-	    (ormap (lambda (dir)
-		     ;; try good names first, then original
-		     (or (ormap (lambda (name)
-				  (ffi-lib* (build-path dir name)))
-				names)
-			 (ffi-lib* (build-path dir name0))))
-		   (get-lib-dirs)))
-       ;; try a system search
-       (ormap ffi-lib* names)    ; try good names first
-       (ffi-lib* name0)          ; try original
-       (ormap (lambda (name)     ; try relative paths
-		(and (file-exists? name) (ffi-lib* (fullpath name))))
-	      names)
-       (and (file-exists? name0) ; relative with original
-	    (ffi-lib* (fullpath name0)))
-       ;; give up: by default, call ffi-lib so it will raise an error
-       (if fail
-	   (fail)
-	   (if (pair? names)
-	       (ffi-lib (car names) #f global?)
-	       (ffi-lib name0 #f global?)))))]))
+		       versions)])
+      (define lib
+        (or ;; try to look in our library paths first
+         (and (not absolute?)
+              (ormap (lambda (dir)
+                       ;; try good names first, then original
+                       (or (ormap (lambda (name) (try-lib (build-path dir name)))
+                                  names)
+                           (try-lib (build-path dir name0))))
+                     (get-lib-dirs)))
+         ;; try a system search
+         (ormap try-lib names)              ; try good names first
+         (try-lib name0)                    ; try original
+         (ormap try-lib-if-exists? names)   ; try relative paths
+         (try-lib-if-exists? name0)         ; relative with original
+         ;; give up: by default, call ffi-lib so it will raise an error
+         (begin
+           (log-ffi-lib-debug
+            "failed for (ffi-lib ~v ~v), tried: ~a"
+            name0 version/s
+            (apply
+             string-append
+             (for/list ([attempt (reverse tried)])
+               (format "\n  ~e~a" attempt
+                       (cond [(absolute-path? attempt)
+                              (cond [(file-exists?/insecure attempt) " (exists)"]
+                                    [else " (no such file)"])]
+                             [else " (using OS library search path)"])))))
+           (and (not fail)
+                (if (pair? names)
+                    (ffi-lib (car names) #f global?)
+                    (ffi-lib name0 #f global?))))))
+      (cond
+        [lib
+         (when custodian
+           (unsafe-add-post-custodian-shutdown (lambda () (ffi-lib-unload lib))
+                                               (if (eq? custodian 'place)
+                                                   #f
+                                                   custodian)))
+         lib]
+        [fail
+         (fail)]
+        [else (error 'ffi-lib "internal error; shouldn't get here")]))]))
 
 (define (get-ffi-lib-internal x)
   (if (ffi-lib? x) x (get-ffi-lib x)))
@@ -247,13 +291,12 @@
   (syntax-case stx ()
     [(_ var-name lib-name type-expr)
      (with-syntax ([(p) (generate-temporaries (list #'var-name))])
-       (namespace-syntax-introduce
-        #'(begin (define p (make-c-parameter 'var-name lib-name type-expr))
-                 (define-syntax var-name
-                   (syntax-id-rules (set!)
-                     [(set! var val) (p val)]
-                     [(var . xs) ((p) . xs)]
-                     [var (p)])))))]))
+       #'(begin (define p (make-c-parameter 'var-name lib-name type-expr))
+                (define-syntax var-name
+                  (syntax-id-rules (set!)
+                    [(set! var val) (p val)]
+                    [(var . xs) ((p) . xs)]
+                    [var (p)]))))]))
 
 ;; Used to convert strings and symbols to a byte-string that names an object
 (define (get-ffi-obj-name who objname)
@@ -265,6 +308,14 @@
 ;; This table keeps references to values that are set in foreign libraries, to
 ;; avoid them being GCed.  See set-ffi-obj! above.
 (define ffi-objects-ref-table (make-hasheq))
+
+;; Like `file-exists?`, but avoid security-guard checks on the grounds
+;; that it's being called from an already-allowed unsafe operation ---
+;; so a sandbox doesn't have to make additional allowances for the
+;; check.
+(define (file-exists?/insecure path)
+  (parameterize ([current-security-guard (unsafe-make-security-guard-at-root)])
+    (file-exists? path)))
 
 ;; ----------------------------------------------------------------------------
 ;; Compile-time support for fun-expanders
@@ -456,19 +507,39 @@
                       #:keep        [keep    #t]
                       #:atomic?     [atomic? #f]
                       #:in-original-place? [orig-place? #f]
+                      #:blocking?   [blocking? #f]
                       #:lock-name   [lock-name #f]
                       #:async-apply [async-apply #f]
                       #:save-errno  [errno   #f])
-  (_cprocedure* itypes otype abi wrapper keep atomic? orig-place? async-apply errno lock-name))
+  (_cprocedure* itypes otype abi wrapper keep atomic? orig-place? blocking? async-apply errno lock-name))
+
+;; A lightwegith delay meachnism for a single-argument function when
+;; it's ok (but unlikely) to evaluate `expr` more than once and keep
+;; the first result:
+(define-syntax-rule (delay/cas expr)
+  (let ([b (box #f)])
+    (lambda (arg)
+      (define f (unbox b))
+      (cond
+        [f (f arg)]
+        [else
+         (define v expr)
+         (let loop ()
+           (unless (box-cas! b #f v)
+             (unless (unbox b)
+               (loop))))
+         ((unbox b) arg)]))))
 
 ;; for internal use
 (define held-callbacks (make-weak-hasheq))
-(define (_cprocedure* itypes otype abi wrapper keep atomic? orig-place? async-apply errno lock-name)
+(define (_cprocedure* itypes otype abi wrapper keep atomic? orig-place? blocking? async-apply errno lock-name)
+  (define make-ffi-callback (delay/cas (ffi-callback-maker itypes otype abi atomic? async-apply)))
+  (define make-ffi-call (delay/cas (ffi-call-maker itypes otype abi errno orig-place? lock-name blocking?)))
   (define-syntax-rule (make-it wrap)
     (make-ctype _fpointer
       (lambda (x)
         (and x
-             (let ([cb (ffi-callback (wrap x) itypes otype abi atomic? async-apply)])
+             (let ([cb (make-ffi-callback (wrap x))])
                (cond [(eq? keep #t) (hash-set! held-callbacks x (make-ephemeron x cb))]
                      [(box? keep)
                       (let ([x (unbox keep)])
@@ -476,7 +547,7 @@
                                   (if (or (null? x) (pair? x)) (cons cb x) cb)))]
                      [(procedure? keep) (keep cb)])
                cb)))
-      (lambda (x) (and x (wrap (ffi-call x itypes otype abi errno orig-place? lock-name))))))
+      (lambda (x) (and x (wrap (make-ffi-call x))))))
   (if wrapper (make-it wrapper) (make-it begin)))
 
 ;; Syntax for the special _fun type:
@@ -500,7 +571,7 @@
 (provide _fun)
 (define-for-syntax _fun-keywords
   `([#:abi ,#'#f] [#:keep ,#'#t] [#:atomic? ,#'#f]
-    [#:in-original-place? ,#'#f] [#:lock-name ,#'#f]
+    [#:in-original-place? ,#'#f] [#:blocking? ,#'#f] [#:lock-name ,#'#f]
     [#:async-apply ,#'#f] [#:save-errno ,#'#f]
     [#:retry #f]))
 (define-syntax (_fun stx)
@@ -546,7 +617,7 @@
         ;; disappear from the inputs.
         (unless use-expr?
           (if (and (pair? no-expr?) (car no-expr?) expr)
-            (err "got an expression for a custom type that do not use it"
+            (err "got an expression for a custom type that does not use it"
                  clause)
             (set! expr (void))))
         (when use-expr?
@@ -663,6 +734,7 @@
                              #,(kwd-ref '#:keep)
                              #,(kwd-ref '#:atomic?)
                              #,(kwd-ref '#:in-original-place?)
+                             #,(kwd-ref '#:blocking?)
                              #,(kwd-ref '#:async-apply)
                              #,(kwd-ref '#:save-errno)
                              #,(kwd-ref '#:lock-name)))])
@@ -751,16 +823,25 @@
 ;; utf-16 type
 (provide _string/ucs-4 _string/utf-16)
 
+(define _bytes+nul
+  (make-ctype _bytes
+              (lambda (x)
+                (and x (let* ([len (bytes-length x)]
+                              [s (make-bytes (add1 len))])
+                         (bytes-copy! s 0 x 0 len)
+                         s)))
+              (lambda (x) x)))
+
 ;; 8-bit string encodings, #f is NULL
 (define ((false-or-op op) x) (and x (op x)))
 (define* _string/utf-8
-  (make-ctype _bytes
+  (make-ctype _bytes+nul
     (false-or-op string->bytes/utf-8) (false-or-op bytes->string/utf-8)))
 (define* _string/locale
-  (make-ctype _bytes
+  (make-ctype _bytes+nul
     (false-or-op string->bytes/locale) (false-or-op bytes->string/locale)))
 (define* _string/latin-1
-  (make-ctype _bytes
+  (make-ctype _bytes+nul
     (false-or-op string->bytes/latin-1) (false-or-op bytes->string/latin-1)))
 
 ;; 8-bit string encodings, #f is NULL, can also use bytes and paths
@@ -770,13 +851,13 @@
         [(path?  x) (path->bytes x)]
         [else (op x)]))
 (define* _string*/utf-8
-  (make-ctype _bytes
+  (make-ctype _bytes+nul
     (any-string-op string->bytes/utf-8) (false-or-op bytes->string/utf-8)))
 (define* _string*/locale
-  (make-ctype _bytes
+  (make-ctype _bytes+nul
     (any-string-op string->bytes/locale) (false-or-op bytes->string/locale)))
 (define* _string*/latin-1
-  (make-ctype _bytes
+  (make-ctype _bytes+nul
     (any-string-op string->bytes/latin-1) (false-or-op bytes->string/latin-1)))
 
 ;; A generic _string type that usually does the right thing via a parameter
@@ -865,7 +946,7 @@
           (raise-arguments-error s->c (format "argument does not fit ~a" (or name "enum")) 
                                  "argument" x))))
     (lambda (x)
-      (cond [(assq x int->sym) => cdr]
+      (cond [(assv x int->sym) => cdr]
             [(eq? unknown _enum)
              (error c->s "expected a known ~a, got: ~s" basetype x)]
             [(procedure? unknown) (unknown x)]
@@ -883,8 +964,7 @@
 ;; the above with '= -- but the numbers have to be specified in some way.  The
 ;; generated type will convert a list of these symbols into the logical-or of
 ;; their values and back.
-(define (_bitmask name orig-s->i . base?)
-  (define basetype (if (pair? base?) (car base?) _uint))
+(define (_bitmask/named name orig-s->i [basetype _uint])
   (define s->c
     (if name (string->symbol (format "bitmask:~a->int" name)) 'bitmask->int))
   (define symbols->integers
@@ -924,12 +1004,15 @@
                       (cons (caar s->i) l)
                       l)))))))))
 
+(define (_bitmask orig-s->i [base _uint])
+  (_bitmask/named #f orig-s->i base))
+
 ;; Macro wrapper -- no need for a name
 (provide (rename-out [_bitmask* _bitmask]))
 (define-syntax (_bitmask* stx)
   (syntax-case stx ()
     [(_ x ...)
-     (with-syntax ([name (syntax-local-name)]) #'(_bitmask 'name x ...))]
+     (with-syntax ([name (syntax-local-name)]) #'(_bitmask/named 'name x ...))]
     [id (identifier? #'id) #'_bitmask]))
 
 ;; ----------------------------------------------------------------------------
@@ -977,13 +1060,19 @@
 (define-fun-syntax _?
   (syntax-id-rules () [(_ . xs) ((type: #f) . xs)] [_ (type: #f)]))
 
+(begin-for-syntax
+  (define-syntax-rule (syntax-rules/symbol-literals (lit ...) [pat tmpl] ...)
+    (lambda (stx)
+      (syntax-case* stx (lit ...) (lambda (a b) (eq? (syntax-e a) (syntax-e b)))
+        [pat (syntax-protect (syntax/loc stx tmpl))] ...))))
+
 ;; (_ptr <mode> <type>)
 ;; This is for pointers, where mode indicates input or output pointers (or
 ;; both).  If the mode is `o' (output), then the wrapper will not get an
 ;; argument for it, instead it generates the matching argument.
 (provide _ptr)
 (define-fun-syntax _ptr
-  (syntax-rules (i o io)
+  (syntax-rules/symbol-literals (i o io)
     [(_ i  t) (type: _pointer
                pre:  (x => (let ([p (malloc t)]) (ptr-set! p t x) p)))]
     [(_ o  t) (type: _pointer
@@ -1013,29 +1102,65 @@
 ;; the C function will most likely require.
 (provide _list)
 (define-fun-syntax _list
-  (syntax-rules (i o io)
-    [(_ i  t  ) (type: _pointer
-                 pre:  (x => (list->cblock x t)))]
-    [(_ o  t n) (type: _pointer
-                 pre:  (malloc n t)
-                 post: (x => (cblock->list x t n)))]
-    [(_ io t n) (type: _pointer
-                 pre:  (x => (list->cblock x t))
-                 post: (x => (cblock->list x t n)))]))
+  (syntax-rules/symbol-literals (i o io)
+    [(_ i  t  )      (type: _pointer
+                      pre:  (x => (list->cblock x t)))]
+    [(_ i  t mode)   (type: _pointer
+                      pre:  (x => (list->cblock x t #:malloc-mode (check-malloc-mode _list mode))))]
+    [(_ o  t n)      (type: _pointer
+                      pre:  (malloc n t)
+                      post: (x => (cblock->list x t n)))]
+    [(_ o  t n mode) (type: _pointer
+                      pre:  (malloc n t (check-malloc-mode _list mode))
+                      post: (x => (cblock->list x t n)))]
+    [(_ io t n)      (type: _pointer
+                      pre:  (x => (list->cblock x t))
+                      post: (x => (cblock->list x t n)))]
+    [(_ io t n mode) (type: _pointer
+                      pre:  (x => (list->cblock x t #:malloc-mode (check-malloc-mode _list mode)))
+                      post: (x => (cblock->list x t n)))]))
 
 ;; (_vector <mode> <type> [<len>])
 ;; Same as _list, except that it uses Scheme vectors.
 (provide _vector)
 (define-fun-syntax _vector
-  (syntax-rules (i o io)
-    [(_ i  t  ) (type: _pointer
-                 pre:  (x => (vector->cblock x t)))]
-    [(_ o  t n) (type: _pointer
-                 pre:  (malloc n t)
-                 post: (x => (cblock->vector x t n)))]
-    [(_ io t n) (type: _pointer
-                 pre:  (x => (vector->cblock x t))
-                 post: (x => (cblock->vector x t n)))]))
+  (syntax-rules/symbol-literals (i o io)
+    [(_ i  t  )      (type: _pointer
+                      pre:  (x => (vector->cblock x t)))]
+    [(_ i  t mode)   (type: _pointer
+                      pre:  (x => (vector->cblock x t #:malloc-mode (check-malloc-mode _vector mode))))]
+    [(_ o  t n)      (type: _pointer
+                      pre:  (malloc n t)
+                      post: (x => (cblock->vector x t n)))]
+    [(_ o  t n mode) (type: _pointer
+                      pre:  (malloc n t (check-malloc-mode _vector mode))
+                      post: (x => (cblock->vector x t n)))]
+    [(_ io t n)      (type: _pointer
+                      pre:  (x => (vector->cblock x t))
+                      post: (x => (cblock->vector x t n)))]
+    [(_ io t n mode) (type: _pointer
+                      pre:  (x => (vector->cblock x t #:malloc-mode (check-malloc-mode _vector mode)))
+                      post: (x => (cblock->vector x t n)))]))
+
+(define-syntax (check-malloc-mode stx)
+  (syntax-case stx ()
+    [(_ _ mode)
+     (memq (syntax-e #'mode)
+           '(raw atomic nonatomic tagged
+                 atomic-interior interior
+                 stubborn uncollectable eternal))
+     #'(quote mode)]
+    [(_ who mode)
+     (raise-syntax-error (syntax-e #'who)
+                         "invalid malloc mode"
+                         #'mode)]))
+
+;; Reflect the difference between 'racket and 'chez-scheme
+;; VMs for `_bytes` in `_bytes*`:
+(define _pointer/maybe-gcable
+  (if (eq? 'racket (system-type 'vm))
+      _gcpointer
+      _pointer))
 
 ;; _bytes or (_bytes o n) is for a memory block represented as a Scheme byte
 ;; string.  _bytes is just like a byte-string, and (_bytes o n) is for
@@ -1046,16 +1171,50 @@
 (provide (rename-out [_bytes* _bytes]))
 (define-fun-syntax _bytes*
   (syntax-id-rules (o)
-    [(_ o n) (type: _gcpointer
-              pre:  (let ([bstr (make-sized-byte-string (malloc (add1 n)) n)])
-                      ;; Ensure a null terminator, so that the result is
-                      ;; compatible with `_bytes`:
-                      (ptr-set! bstr _byte n 0)
-                      bstr)
+    [(_ o n) (type: _pointer/maybe-gcable
+              pre:  (make-bytes-argument n)
               ;; post is needed when this is used as a function output type
-              post: (x => (make-sized-byte-string x n)))]
+              post: (x => (receive-bytes-result x n)))]
     [(_ . xs) (_bytes . xs)]
     [_ _bytes]))
+
+(define (make-bytes-argument n)
+  (cond
+    [(eq? 'racket (system-type 'vm))
+     (define bstr (make-sized-byte-string (malloc (add1 n)) n))
+     ;; Ensure a null terminator, so that the result is
+     ;; compatible with `_bytes`:
+     (ptr-set! bstr _byte n 0)
+     bstr]
+    [else (make-bytes n)]))
+
+(define (receive-bytes-result x n)
+  (cond
+    [(eq? 'racket (system-type 'vm))
+     (make-sized-byte-string x n)]
+    [else
+     (define bstr (make-bytes n))
+     (memcpy bstr x n)
+     bstr]))
+
+;; _bytes/nul-terminated copies and includes a nul terminator in a
+;; way that will be more consistent across Racket implementations
+(define _bytes/nul-terminated
+  (make-ctype _bytes
+              (lambda (bstr) (and bstr (bytes-append bstr #"\0")))
+              (lambda (bstr) (and bstr (bytes-copy bstr)))))
+(provide (rename-out [_bytes/nul-terminated* _bytes/nul-terminated]))
+(define-fun-syntax _bytes/nul-terminated*
+  (syntax-id-rules (o)
+    [(_ o n) (type: _pointer
+              pre:  (make-bytes n)
+              ;; post is needed when this is used as a function output type
+              post: (x => (and x
+                               (let ([s (make-bytes n)])
+                                 (memcpy s x n)
+                                 s))))]
+    [(_ . xs) (_bytes/nul-teriminated . xs)]
+    [_ _bytes/nul-terminated]))
 
 ;; (_array <type> <len> ...+)
 (provide _array
@@ -1120,7 +1279,7 @@
 ;; in-vector like sequence over array
 (define-:vector-like-gen :array-gen array-ref)
 
-(define-in-vector-like in-array
+(define-in-vector-like (in-array check-array)
   "array" array? array-length :array-gen)
 
 (define-sequence-syntax *in-array
@@ -1130,6 +1289,7 @@
                        #'array?
                        #'array-length
                        #'in-array
+                       #'check-array
                        #'array-ref))
 
 ;; (_array/list <type> <len> ...+)
@@ -1162,6 +1322,8 @@
          (protect-out union-ref union-set!))
 
 (define (_union t . ts)
+  (unless (and (ctype? t) (andmap ctype? ts))
+    (raise-argument-error '_union "list of c types" (cons t ts)))
   (let ([ts (cons t ts)])
     (make-ctype (apply make-union-type ts)
                 (lambda (v) (union-ptr v))
@@ -1169,8 +1331,26 @@
 
 (define-struct union (ptr types))
 (define (union-ref u i)
+  (unless (union? u)
+    (raise-argument-error 'union-ref "union value" 0 u i))
+  (unless (exact-nonnegative-integer? i)
+    (raise-argument-error 'union-ref "exact-nonnegative-integer?" 1 u i))
+  (unless (< i (length (union-types u)))
+    (raise-arguments-error 'union-ref
+                           "index too large for union"
+                           "index"
+                           i))
   (ptr-ref (union-ptr u) (list-ref (union-types u) i)))
 (define (union-set! u i v)
+  (unless (union? u)
+    (raise-argument-error 'union-ref "union value" 0 u i))
+  (unless (exact-nonnegative-integer? i)
+    (raise-argument-error 'union-ref "exact-nonnegative-integer?" 1 u i))
+  (unless (< i (length (union-types u)))
+    (raise-arguments-error 'union-ref
+                           "index too large for union"
+                           "index"
+                           i))
   (ptr-set! (union-ptr u) (list-ref (union-types u) i) v))
 
 ;; ----------------------------------------------------------------------------
@@ -1324,14 +1504,15 @@
    [(eq? t 'gcpointer) ctype]
    [(eq? t 'pointer)
     (let loop ([ctype ctype])
-      (if (eq? ctype 'pointer)
+      (if (or (eq? ctype _pointer)
+              (eq? ctype 'pointer))
           _gcpointer
           (make-ctype
            (loop (ctype-basetype ctype))
            (ctype-scheme->c ctype)
            (ctype-c->scheme ctype))))]
    [else
-    (raise-argument-error '_or-null "(and/c ctype? (lambda (ct) (memq (ctype-coretype ct) '(pointer gcpointer))))"
+    (raise-argument-error '_gcable "(and/c ctype? (lambda (ct) (memq (ctype-coretype ct) '(pointer gcpointer))))"
                           ctype)]))
 
 (define (ctype-coretype c)
@@ -1399,10 +1580,14 @@
 ;; ----------------------------------------------------------------------------
 ;; Struct wrappers
 
-(define (compute-offsets types alignment declared)
-  (let ([alignment (if (memq alignment '(#f 1 2 4 8 16))
-                       alignment
-                       #f)])
+(define* (compute-offsets types [alignment #f] [declared '()])
+  (unless (and (list? types) (map ctype? types))
+    (raise-argument-error 'compute-offsets "(listof ctype?)" types))
+  (unless (memq alignment '(#f 1 2 4 8 16))
+    (raise-argument-error 'compute-offsets "(or/c #f 1 2 4 8 16)" alignment))
+  (unless (and (list? declared) (map (λ (v) (or (not v) (exact-integer? v))) declared))
+    (raise-argument-error 'compute-offsets "(listof (or/c exact-integer? #f))" declared))
+  (let ([declared (append declared (build-list (- (length types) (length declared)) (λ (n) #f)))])
     (let loop ([ts types] [ds declared] [cur 0] [r '()])
       (if (null? ts)
           (reverse r)
@@ -1422,7 +1607,7 @@
                        #:malloc-mode [malloc-mode 'atomic]
                        type . types)
   (let* ([types   (cons type types)]
-         [stype   (make-cstruct-type types #f alignment)]
+         [stype   (make-cstruct-type types #f alignment malloc-mode)]
          [offsets (compute-offsets types alignment (map (lambda (x) #f) types))]
          [len     (length types)])
     (make-ctype stype
@@ -1602,7 +1787,7 @@
             (define all-tags (cons ^TYPE-tag super-tags))
             (define _TYPE
               ;; c->scheme adjusts all tags
-              (let* ([cst (make-cstruct-type types #f alignment-v)]
+              (let* ([cst (make-cstruct-type types #f alignment-v malloc-mode)]
                      [t (_cpointer ^TYPE-tag cst)]
                      [c->s (ctype-c->scheme t)])
                 (wrap-TYPE-type
@@ -1882,14 +2067,17 @@
       (values x type))))
 
 ;; Converting Scheme lists to/from C vectors (going back requires a length)
-(define* (list->cblock l type [need-len #f])
+(define* (list->cblock l type [need-len #f]
+                       #:malloc-mode [mode #f])
   (define len (length l))
   (when need-len
     (unless (= len need-len)
       (error 'list->cblock "list does not have the expected length: ~e" l)))
   (if (null? l)
     #f ; null => NULL
-    (let ([cblock (malloc len type)])
+    (let ([cblock (if mode
+                      (malloc len type mode)
+                      (malloc len type))])
       (let loop ([l l] [i 0])
         (unless (null? l)
           (ptr-set! cblock type i (car l))
@@ -1907,14 +2095,17 @@
                      "expecting a non-void pointer, got ~s" cblock)]))
 
 ;; Converting Scheme vectors to/from C vectors
-(define* (vector->cblock v type [need-len #f])
+(define* (vector->cblock v type [need-len #f]
+                         #:malloc-mode [mode #f])
   (let ([len (vector-length v)])
     (when need-len
       (unless (= need-len len)
         (error 'vector->cblock "vector does not have the expected length: ~e" v)))
     (if (zero? len)
       #f ; #() => NULL
-      (let ([cblock (malloc len type)])
+      (let ([cblock (if mode
+                        (malloc len type mode)
+                        (malloc len type))])
         (let loop ([i 0])
           (when (< i len)
             (ptr-set! cblock type i (vector-ref v i))
@@ -1939,8 +2130,8 @@
   ;; We bind `killer-executor' as a location variable, instead of a module
   ;; variable, so that the loop for `killer-thread' doesn't have a namespace
   ;; (via a prefix) in its continuation:
-  (let ([killer-executor (make-stubborn-will-executor)])
-    ;; The "stubborn" kind of will executor (for `killer-executor') is
+  (let ([killer-executor (make-late-will-executor)])
+    ;; The "late" kind of will executor (for `killer-executor') is
     ;; provided by '#%foreign, and it doesn't get GC'ed if any
     ;; finalizers are attached to it (while the normal kind can get
     ;; GCed even if a thread that is otherwise inaccessible is blocked
@@ -1951,39 +2142,38 @@
         ;; We need to make a thread that runs in a privildged custodian and
         ;; that doesn't retain the current namespace --- either directly
         ;; or indirectly through some parameter setting in the current thread.
-        (let ([priviledged-custodian ((get-ffi-obj 'scheme_make_custodian #f (_fun _pointer -> _scheme)) #f)]
-              [no-cells ((get-ffi-obj 'scheme_empty_cell_table #f (_fun -> _gcpointer)))]
-              [min-config ((get-ffi-obj 'scheme_minimal_config #f (_fun -> _gcpointer)))]
-              [thread/details (get-ffi-obj 'scheme_thread_w_details #f (_fun _scheme 
-                                                                             _gcpointer ; config
-                                                                             _gcpointer ; cells
-                                                                             _pointer ; break_cell
-                                                                             _scheme ; custodian
-                                                                             _int ; suspend-to-kill?
-                                                                             -> _scheme))]
-              [logger (current-logger)]
+        (let ([logger (current-logger)]
               [cweh #f]) ; <- avoids a reference to a module-level binding
           (set! cweh call-with-exception-handler)
           (set! killer-thread
-                (thread/details (lambda ()
-                                  (let retry-loop ()
-                                    (call-with-continuation-prompt
-                                     (lambda ()
-                                       (cweh
-                                        (lambda (exn)
-                                          (log-message logger
-                                                       'error
-                                                       (if (exn? exn)
-                                                           (exn-message exn)
-                                                           (format "~s" exn))
-                                                       #f)
-                                          (abort-current-continuation void))
-                                        (lambda ()
-                                          (let loop () (will-execute killer-executor) (loop))))))
-                                    (retry-loop)))
-                                min-config
-                                no-cells
-                                #f ; default break cell
-                                priviledged-custodian
-                                0))))
+                (unsafe-thread-at-root
+                 (lambda ()
+                   (let retry-loop ()
+                     (call-with-continuation-prompt
+                      (lambda ()
+                        (cweh
+                         (lambda (exn)
+                           (log-message logger
+                                        'error
+                                        (if (exn? exn)
+                                            (exn-message exn)
+                                            (format "~s" exn))
+                                        #f)
+                           (abort-current-continuation void))
+                         (lambda ()
+                           (let loop () (will-execute killer-executor) (loop))))))
+                     (retry-loop)))))))
       (will-register killer-executor obj finalizer))))
+
+;; The same as `void`, but written so that the compiler cannot
+;; optimize away the call or arguments, so that calling
+;; `void/reference-sink` ensures that arguments are retained.
+(define* void/reference-sink
+  (let ([e (make-ephemeron (void) (void))])
+    (case-lambda
+      [(v) (ephemeron-value e (void) v)]
+      [(v1 v2)
+       (ephemeron-value e (ephemeron-value e (void) v1) v2)]
+      [args
+       (for/fold ([r (void)]) ([v (in-list args)])
+         (ephemeron-value e r v))])))

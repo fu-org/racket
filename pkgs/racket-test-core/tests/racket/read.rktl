@@ -110,6 +110,23 @@
   (err/rt-test (readstr "#fals")  exn:fail:read:eof?)
   (err/rt-test (readstr "#falser") exn:fail:read?))
 
+(parameterize ([read-decimal-as-inexact #f])
+  (test 1 readstr "1.0")
+  (test 100000 readstr "1e5")
+  (test 100000 readstr "1#e4")
+  (test 10 readstr "1#")
+  (test 1/2 readstr "1#/20")
+  (test 1/2 readstr "10/2#")
+  (test 1/2 readstr "1#/2#")
+  (test 1/2 string->number "1#/2#")
+  (test 10+3i readstr "1#+3i")
+  (test 1+30i readstr "1+3#i")
+  (err/rt-test (readstr "1#/0") exn:fail:read?)
+  (err/rt-test (readstr "1/0#") exn:fail:read?)
+  (err/rt-test (readstr "1#/0#") exn:fail:read?)
+  (test #f string->number "1#/0")
+  (test #f string->number "1/0#"))
+
 (test (integer->char 0) readstr "#\\nul")
 (test (integer->char 0) readstr "#\\Nul")
 (test (integer->char 0) readstr "#\\NuL")
@@ -213,6 +230,16 @@
 (err/rt-test (readstr "\"\\uD800\\uDD\"") exn:fail:read?)
 (err/rt-test (readstr "\"\\uD800\\uDD1\"") exn:fail:read?)
 
+(test "abc" readstr "#<<EOS\nabc\nEOS\n")
+(test "abc\ndef" readstr "#<<EOS\nabc\ndef\nEOS\n")
+(test "\n" readstr "#<<EOS\n\n\nEOS\n")
+(test "abc" readstr "#<<EOS\nabc\nEOS\n   ")
+(test "abc" readstr "#<<EOS\nabc\nEOS")
+(test "ok\r\nmore\r" readstr "#<<EOS\r\nok\r\nmore\r\nEOS\r")
+(test "" readstr "#<<EOS\nEOS\n")
+(err/rt-test (readstr "#<<EOS\nabc\nEO") exn:fail:read?)
+(err/rt-test (readstr "#<<EOS\r\nabc\nEOS") exn:fail:read?)
+
 (test (bytes 7) readstr "#\"\\a\"")
 (test (bytes 8) readstr "#\"\\b\"")
 (test (bytes 9) readstr "#\"\\t\"")
@@ -236,30 +263,69 @@
 (err/rt-test (readstr "#\"\u0100\"") exn:fail:read?)
 (err/rt-test (readstr "#\"\u03BB\"") exn:fail:read?)
 
+(define (check-all-numbers number-table)
+  (let loop ([l number-table])
+    (unless (null? l)
+      (let* ([pair (car l)]
+             [v (car pair)]
+             [s (cadr pair)])
+        (for ([s (in-list (list s (string-upcase s)))])
+          (cond
+            [(memq v '(X DBZ NOE))
+             (err/rt-test (readstr s) exn:fail:read?)
+             (test #f string->number s)
+             (test #t string? (string->number s 10 'read))]
+            [v 
+             (test v readstr s)
+             (test (if (symbol? v) #f v) string->number s)
+             (test (if (symbol? v) #f v) string->number s 10 'read)]
+            [else 
+             (test (string->symbol s) readstr s)
+             (test #f string->number s)
+             (test #f string->number s 10 'read)
+             (unless (regexp-match "#" s)
+               (err/rt-test (readstr (string-append "#d" s)) exn:fail:read?)
+               (test #f string->number (string-append "#d" s))
+               (test #t string? (string->number (string-append "#d" s) 10 'read)))])))
+      (loop (cdr l)))))
+
 (load-relative "numstrs.rktl")
-(let loop ([l number-table])
-  (unless (null? l)
-    (let* ([pair (car l)]
-           [v (car pair)]
-           [s (cadr pair)])
-      (cond
-       [(memq v '(X DBZ NOE))
-        (err/rt-test (readstr s) exn:fail:read?)
-        (test #f string->number s)
-        (test #t string? (string->number s 10 'read))]
-       [v 
-        (test v readstr s)
-        (test (if (symbol? v) #f v) string->number s)
-        (test (if (symbol? v) #f v) string->number s 10 'read)]
-       [else 
-        (test (string->symbol s) readstr s)
-        (test #f string->number s)
-        (test #f string->number s 10 'read)
-        (unless (regexp-match "#" s)
-          (err/rt-test (readstr (string-append "#d" s)) exn:fail:read?)
-          (test #f string->number (string-append "#d" s))
-          (test #t string? (string->number (string-append "#d" s) 10 'read)))]))
-    (loop (cdr l))))
+(check-all-numbers number-table)
+
+;; single-flonums disabled by default
+(check-all-numbers '((10.0 "1f1")
+                     (10.0 "#i1f1")))
+
+(when (single-flonum-available?)
+  (parameterize ([read-single-flonum #t])
+    (define def (call-with-input-file*
+                 (build-path (or (current-load-relative-directory)
+                                 (current-directory))
+                             "numstrs.rktl")
+                 (lambda (i) (read i))))
+    (check-all-numbers (eval (caddr def)))))
+
+(unless (single-flonum-available?)
+  (parameterize ([read-single-flonum #t])
+    (err/rt-test (read (open-input-string "3.4f5"))
+                 exn:fail:unsupported?)))
+
+(test 5 string->number "5" 10 'number-or-false)
+(test 5 string->number "5.0" 10 'number-or-false 'decimal-as-exact)
+(test 5.0 string->number "5.0" 10 'number-or-false 'decimal-as-inexact)
+(test 5.0 string->number "5.0f0" 10 'number-or-false 'decimal-as-inexact 'double)
+(if (single-flonum-available?)
+    (test (real->single-flonum 5.0) string->number "5.0f0" 10 'number-or-false 'decimal-as-inexact 'single)
+    (err/rt-test (string->number "5.0f0" 10 'number-or-false 'decimal-as-inexact 'single)
+                 exn:fail:unsupported?))
+
+(define (make-exn:fail:read:eof?/span start span)
+  (lambda (exn)
+    (and (exn:fail:read:eof? exn)
+         (pair? (exn:fail:read-srclocs exn))
+         (let ([srcloc (car (exn:fail:read-srclocs exn))])
+           (and (equal? start (srcloc-position srcloc))
+                (equal? span (srcloc-span srcloc)))))))
 
 (test 5 readstr "#| hi |# 5")
 (test 5 readstr "#| #| #| #| hi |# |# |# |# 5")
@@ -281,27 +347,33 @@
 (err/rt-test (readstr "#\\bcase") exn:fail:read?)
 (err/rt-test (readstr "#\\lcase") exn:fail:read?)
 
-(err/rt-test (readstr "(hi") exn:fail:read:eof?)
-(err/rt-test (readstr "\"hi") exn:fail:read:eof?)
+(err/rt-test (readstr "(hi") (make-exn:fail:read:eof?/span 1 1))
+(err/rt-test (readstr "\"hi") (make-exn:fail:read:eof?/span 1 1))
 (err/rt-test (readstr "\"hi\\") exn:fail:read:eof?)
-(err/rt-test (readstr "#(hi") exn:fail:read:eof?)
+(err/rt-test (readstr "#(hi") (make-exn:fail:read:eof?/span 1 2))
 (err/rt-test (readstr "#[hi") exn:fail:read:eof?)
 (err/rt-test (readstr "#{hi") exn:fail:read:eof?)
 (err/rt-test (readstr "#4(hi") exn:fail:read:eof?)
 (err/rt-test (readstr "#4[hi") exn:fail:read:eof?)
 (err/rt-test (readstr "#4{hi") exn:fail:read:eof?)
-(err/rt-test (readstr "|hi") exn:fail:read:eof?)
+(err/rt-test (readstr "|hi") (make-exn:fail:read:eof?/span 1 3))
 (err/rt-test (readstr "hi\\") exn:fail:read:eof?)
-(err/rt-test (readstr "#\\") exn:fail:read:eof?)
+(err/rt-test (readstr "#\\") (make-exn:fail:read:eof?/span 1 2))
 (err/rt-test (readstr "#\\12") exn:fail:read:eof?)
 (err/rt-test (readstr "#| hi") exn:fail:read:eof?)
 (err/rt-test (readstr "(1 #| hi") exn:fail:read:eof?)
-(err/rt-test (readstr "'") exn:fail:read:eof?)
-(err/rt-test (readstr "`") exn:fail:read:eof?)
-(err/rt-test (readstr ",@") exn:fail:read:eof?)
-(err/rt-test (readstr ",") exn:fail:read:eof?)
-(err/rt-test (readstr "#'") exn:fail:read:eof?)
-(err/rt-test (readstr "#&") exn:fail:read:eof?)
+(err/rt-test (readstr "'") (make-exn:fail:read:eof?/span 1 1))
+(err/rt-test (readstr "' ") (make-exn:fail:read:eof?/span 1 1))
+(err/rt-test (readstr "`") (make-exn:fail:read:eof?/span 1 1))
+(err/rt-test (readstr "` ") (make-exn:fail:read:eof?/span 1 1))
+(err/rt-test (readstr ",@") (make-exn:fail:read:eof?/span 1 2))
+(err/rt-test (readstr ",@ ") (make-exn:fail:read:eof?/span 1 2))
+(err/rt-test (readstr ",") (make-exn:fail:read:eof?/span 1 1))
+(err/rt-test (readstr ", ") (make-exn:fail:read:eof?/span 1 1))
+(err/rt-test (readstr "#'") (make-exn:fail:read:eof?/span 1 2))
+(err/rt-test (readstr "#' ") (make-exn:fail:read:eof?/span 1 2))
+(err/rt-test (readstr "#&") (make-exn:fail:read:eof?/span 1 2))
+(err/rt-test (readstr "#& ") (make-exn:fail:read:eof?/span 1 2))
 
 (err/rt-test (readstr ".") exn:fail:read?)
 (err/rt-test (readstr "a .") exn:fail:read?)
@@ -363,7 +435,7 @@
 (err/rt-test (readstr "#hashe") exn:fail:read:eof?)
 (err/rt-test (readstr "#hasheq") exn:fail:read:eof?)
 (err/rt-test (readstr "#hasheqv") exn:fail:read:eof?)
-(err/rt-test (readstr "#hash(") exn:fail:read:eof?)
+(err/rt-test (readstr "#hash(") (make-exn:fail:read:eof?/span 1 6))
 (err/rt-test (readstr "#hash((1") exn:fail:read:eof?)
 (err/rt-test (readstr "#hash((1 .") exn:fail:read:eof?)
 (err/rt-test (readstr "#hash((1 . 2)") exn:fail:read:eof?)
@@ -384,6 +456,10 @@
 (err/rt-test (readstr "#0=#hash#0#") exn:fail:read?)
 (err/rt-test (readstr "#0=#hash(#0#)") exn:fail:read?)
 (err/rt-test (readstr "#hash([1 . 2))") exn:fail:read?)
+
+(test #t eq? (readstr "#hash()") (hash))
+(test #t eq? (readstr "#hasheq()") (hasheq))
+(test #t eq? (readstr "#hasheqv()") (hasheqv))
 
 (define (test-ht t size eq? key val)
   (test #t hash? t)
@@ -455,9 +531,10 @@
 (test #t byte-pregexp? (readstr "#px#\".\""))
 (test '(#"abc") regexp-match #px#"a.." "123abcdef")
 
-(err/rt-test (readstr "#r") exn:fail:read:eof?)
+(err/rt-test (readstr "#r") (make-exn:fail:read:eof?/span 1 2))
 (err/rt-test (readstr "#rx") exn:fail:read:eof?)
-(err/rt-test (readstr "#rx\"") exn:fail:read:eof?)
+(err/rt-test (readstr "#rx\"") (make-exn:fail:read:eof?/span 1 4))
+(err/rt-test (readstr "#rx\"x") (make-exn:fail:read:eof?/span 1 4))
 (err/rt-test (readstr "#ra") exn:fail:read?)
 (err/rt-test (readstr "#rxa") exn:fail:read?)
 (err/rt-test (readstr "#rx\"?\"") exn:fail:read?)
@@ -483,7 +560,7 @@
 (test 0 syntax->datum (vector-ref (syntax-e (read-syntax #f (open-input-string "#2()"))) 1))
 
 (err/rt-test (readstr "#2(1 2 3)") exn:fail:read?)
-(err/rt-test (readstr "#200000000000(1 2 3)") (readerrtype exn:fail:out-of-memory?))
+(err/rt-test (readstr "#2000000000000000(1 2 3)") (readerrtype exn:fail:out-of-memory?))
 (err/rt-test (readstr "#111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111x1(1 2 3)") exn:fail:read?)
 
 (test #t (lambda (x) (eq? (car x) (cdr x))) (readstr "(#1=(1 2) . #0001#)"))
@@ -496,6 +573,14 @@
 (test #f 
       (lambda (x) (and (vector? x) (eq? (vector-ref x 0) (vector-ref x 1)))) 
       #2((1 2)))
+
+;; Immutable vectors and boxes from `read-syntax`
+(test #t immutable? (syntax-e (read-syntax #f (open-input-string "#(a b c)"))))
+(test #t immutable? (syntax-e (read-syntax #f (open-input-string "#5(a b c)"))))
+(test #t immutable? (syntax-e (read-syntax #f (open-input-string "#&a"))))
+(test #f immutable? (read (open-input-string "#(a b c)")))
+(test #f immutable? (read (open-input-string "#5(a b c)")))
+(test #f immutable? (read (open-input-string "#&a")))
 
 (define (graph-error-tests readstr graph-ok?)
   (err/rt-test (readstr "#0#") exn:fail:read?)
@@ -566,14 +651,35 @@
 		    (string-append "\\" (cadar l)) 
 		    (cadar l))
     (loop (cdr l))]
-   [else 
+   [else
     (test-write-sym (cadar l) (cadar l) (cadar l))
     (loop (cdr l))]))
+
+(let ()
+  (define BOM-utf8 (bytes #xEF #xBB #xBF))
+  
+  (test "it-works" symbol->string
+        (read (open-input-bytes
+               (bytes-append BOM-utf8 #"it-works"))))
+
+  (test '(1 2 3) read (open-input-bytes
+                       (bytes-append BOM-utf8
+                                     #"(" BOM-utf8 BOM-utf8
+                                     #"1" BOM-utf8
+                                     #"2" BOM-utf8
+                                     #"3" BOM-utf8 BOM-utf8 #")"
+                                     BOM-utf8)))
+
+  (test #t procedure?
+        (parameterize ([read-accept-reader #t])
+          (read-language (open-input-bytes
+                          (bytes-append BOM-utf8 #"#lang racket/base"))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Test mid-stream EOF
 
 (define (test-mid-stream-eof use-peek?)
+(define no-peek? #f)
   (define chars (map (lambda (x)
 		       (if (char? x) (char->integer x) x))
 		     (append
@@ -941,6 +1047,49 @@
   (test #\y read-char-or-special p)
   (test 3 file-position p))
 
+;; Test read-char-or-special:
+(let ([p (make-p (list #"x" a-special #"y") (lambda (x) 5) void)])
+  (test #\x peek-char-or-special p)
+  (test 0 file-position p)
+  (test #\x peek-char-or-special p 0)
+  (test a-special peek-char-or-special p 1)
+  (test #\y peek-char-or-special p 2)
+  (test 0 file-position p)
+  (test #\x read-char-or-special p)
+  (test 1 file-position p)
+  (test a-special peek-char-or-special p)
+  (test 1 file-position p)
+  (test a-special read-char-or-special p)
+  (test 2 file-position p)
+  (test #\y peek-char-or-special p)
+  (test 2 file-position p)
+  (test #\y read-char-or-special p)
+  (test 3 file-position p))
+
+;; Reading something like a symbol should stop at a special
+;; without calling the special-producing procedure:
+(let* ([pos 0]
+       [p (make-input-port
+           'voids
+           (lambda (s)
+             (if (pos . < . 3)
+                 (begin
+                   (set! pos (add1 pos))
+                   (bytes-set! s 0 (char->integer #\a))
+                   1)
+                 (lambda args (error "oops/read"))))
+           (lambda (s skip progress-evt)
+             (cond
+              [((+ skip pos) . < . 3)
+               (begin
+                 (bytes-set! s 0 (char->integer #\a))
+                 1)]
+              [((+ skip pos) . < . 4)
+               (lambda args (error "oops/peek"))]
+              [else eof-object]))
+           void)])
+  (test 'aaa read p))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Test read-syntax offsets:
 
@@ -993,7 +1142,8 @@
 		 (parameterize ([print-unreadable #f])
 		   (display x p)))
 	   (err/rt-test (parameterize ([print-unreadable #f])
-			  (write x p))))]
+			  (write x p))
+                        exn:fail?))]
 	[try-good
 	 (lambda (x)
 	   (test (void) (list x)
@@ -1055,6 +1205,26 @@
 (test #\[ syntax-property (read-syntax 'x (open-input-string "#[1 2]")) 'paren-shape)
 (test #\{ syntax-property (read-syntax 'x (open-input-string "{1 2 3}")) 'paren-shape)
 (test #\{ syntax-property (read-syntax 'x (open-input-string "#{1 2}")) 'paren-shape)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check `read/recursive`
+
+(let ()
+  (define in (open-input-string "abc"))
+  (test 'abc read/recursive in))
+
+(let ()
+  (define in2 (open-input-string "(#0=(abc) #z(#0#))"))
+  (parameterize ([current-readtable
+                  (make-readtable (current-readtable)
+                                  #\z
+                                  'dispatch-macro
+                                  (lambda (char in name line col pos)
+                                    (define v (read/recursive in))
+                                    v))])
+    (define v (read in2))
+    (test '((abc) ((abc))) values v)
+    (test #t eq? (car v) (caadr v))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Test read error on a character not in any port
@@ -1181,7 +1351,7 @@
 (test (void) read-language (open-input-string ";;\n;\n#xa") void)
 ;; Check error-message formatting:
 (err/rt-test (read (open-input-string "#l"))
-             (lambda (exn) (regexp-match? #rx"`#l'" (exn-message exn))))
+             (lambda (exn) (regexp-match? #rx"`#l`" (exn-message exn))))
 ;; Make sure read-language error here is this can comes from read-language
 ;; and not from an ill-formed srcloc construction:
 (let ()
@@ -1189,6 +1359,26 @@
   (port-count-lines! p)
   (err/rt-test (read-language p)
                (lambda (exn) (regexp-match? #rx"read-language" (exn-message exn)))))
+
+(parameterize ([read-accept-reader #t])
+  (err/rt-test (read (open-input-string "#lang"))
+               (lambda (exn) (regexp-match? #rx"expected a single space" (exn-message exn))))
+  (err/rt-test (read (open-input-string "#lang "))
+               (lambda (exn) (regexp-match? #rx"expected a non-empty sequence of" (exn-message exn))))
+  (err/rt-test (read (open-input-string "#lang  "))
+               (lambda (exn) (regexp-match? #rx"expected a single space" (exn-message exn))))
+  (err/rt-test (read (open-input-string "#lang  x"))
+               (lambda (exn) (regexp-match? #rx"expected a single space" (exn-message exn))))
+  (err/rt-test (read (open-input-string "#lang ."))
+               (lambda (exn) (regexp-match? #rx"expected only" (exn-message exn))))
+  (err/rt-test (read (open-input-string "#lang x."))
+               (lambda (exn) (regexp-match? #rx"expected only" (exn-message exn))))
+  (err/rt-test (read (open-input-string "#lang \n"))
+               (lambda (exn) (regexp-match? #rx"expected only" (exn-message exn))))
+  (err/rt-test (read (open-input-string "#lang \nx"))
+               (lambda (exn) (regexp-match? #rx"expected only" (exn-message exn)))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (require racket/flonum
          racket/fixnum)
@@ -1265,7 +1455,19 @@
   (test '(#%dot (f a) (m b c))               readstr "(f a).(m b c)")
   (test '(#%dot (#%dot (f a) (m b c)) (n d e)) readstr "(f a).(m b c).(n d e)")
   (test '(#%dot (#%dot (#%dot (#%dot (#%dot (f a) (m b c)) x) (n d e)) y) z)
-        readstr "(f a).(m b c).x.(n d e).y.z"))
+        readstr "(f a).(m b c).x.(n d e).y.z")
+  (test '(#%dot 1.2 a) readstr "#i1.2 .a")
+  (test '(#%dot 1.0 a) readstr "#b1.0 .a")
+  (test '(#%dot 1.25 a) readstr "#o1.2 .a")
+  (test '(#%dot 1.2 a) readstr "#d1.2 .a")
+  (test '(#%dot 1.125 a) readstr "#x1.2 .a")
+  (test '(#%dot (#%dot 1 2) a) readstr "1.2 .a")
+  (test 'a.b readstr "|a.b|")
+  (test 'a.b readstr "a|.|b")
+  (test 'a.b readstr "a|.b|")
+  (test 'a.b readstr "a\\.b")
+  (err/rt-test (readstr "x.") exn:fail:read:eof?)
+  (err/rt-test (readstr "1.") exn:fail:read:eof?))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; srcloc->string
@@ -1276,8 +1478,83 @@
                                                     srcloc-line (lambda (s v) v)))
 (err/rt-test (srcloc->string 1))
 
+(let ([go (lambda (adjust)
+            (parameterize ([current-directory-for-user (adjust (build-path (car (filesystem-root-list)) "Users" "robby"))])
+              (test
+               "tmp.rkt:1:2"
+               srcloc->string
+               (srcloc (build-path (car (filesystem-root-list)) "Users" "robby" "tmp.rkt")
+                       1 2 3 4))))])
+  (go values)
+  (go path->directory-path))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that a module load triggered by `#lang` or `#reader` is in
+;; a root namespace, including the call to the loaded function
+
+(module provides-a-reader-to-check-phase racket/base
+  (provide read read-syntax)
+
+  (define (check)
+    (unless (zero? (namespace-base-phase (current-namespace)))
+      (error "reader callback with current namespace at the wrong phase:"
+             (namespace-base-phase (current-namespace)))))
+
+  (check)
+
+  (define (read . args) (check) 'ok)
+  (define (read-syntax . args) (check) #''ok))
+
+;; Check in top level:
+(test 'ok
+      'reader-module-phase
+      (let-syntax ([anything
+                    (lambda (stx)
+                      (parameterize ([read-accept-reader #t])
+                        (read-syntax 'm (open-input-string "#lang reader 'provides-a-reader-to-check-phase"))))])
+        (anything)))
+
+;; Check module:
+(module m racket/base
+  (require (for-syntax racket/base))
+  (let-syntax ([anything
+                (lambda (stx)
+                  (parameterize ([read-accept-reader #t])
+                    (read-syntax 'm (open-input-string "#lang reader 'provides-a-reader-to-check-phase"))))])
+    (anything)))
+
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(report-errs)
+(parameterize ([read-case-sensitive #t])
+  (define (myread [in (current-input-port)])
+    (parameterize-read
+     (lambda () (read in))))
 
+  (define (parameterize-read do-read)
+    (parameterize ([current-readtable (make-a-readtable (current-readtable))])
+      (do-read)))
+  
+  (define (make-a-readtable base)
+    (make-readtable base
+                    #\! 'dispatch-macro read-directive
+                    #f  'non-terminating-macro (reparameterize-read base)))
+
+  (define (reparameterize-read base)
+    (case-lambda
+      [(c in)                  (read/recursive in c base)]
+      [(c in src line col pos) (read-syntax/recursive src in c base)]))
+  
+  (define (read-directive c in src line col pos)
+    (read-case-sensitive #f)
+    (make-special-comment #f))
+
+  ;; Parameter change takes effect for recursive read:
+  (test 'abc myread (open-input-string "#!ABC"))
+  ;; Change also sticks:
+  (test 'abc myread (open-input-string "ABC")))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; readtable has `report-errs`:
 (load-relative "readtable.rktl")

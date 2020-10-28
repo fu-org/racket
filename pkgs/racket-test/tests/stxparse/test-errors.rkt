@@ -1,5 +1,6 @@
 #lang scheme
 (require syntax/parse
+         (only-in syntax/parse [syntax-parse renamed-syntax-parse])
          syntax/parse/debug
          rackunit
          "setup.rkt")
@@ -127,6 +128,18 @@
        #rx"^syntax-parse: "
        #rx"head pattern not allowed here")
 
+(tcerr "parse-pat:dots: alt, not list"
+       (syntax-parser
+        [((~alt . x) ...) 'ok])
+       #rx"^syntax-parser: "
+       #rx"expected sequence of patterns")
+
+(tcerr "parse-pat:dots: alt, empty"
+       (syntax-parser
+        [((~alt) ...) 'ok])
+       #rx"^syntax-parser: "
+       #rx"expected at least one pattern")
+
 (tcerr "parse-pat:dots: or, not list"
        (syntax-parser
         [((~or . x) ...) 'ok])
@@ -193,4 +206,8 @@
        #rx"^define-syntax-class: "
        #rx"expected attribute name")
 ;; two more
+
+(tcerr "renamed syntax-parse bad syntax"
+       (renamed-syntax-parse)
+       #rx"^renamed-syntax-parse: ")
 

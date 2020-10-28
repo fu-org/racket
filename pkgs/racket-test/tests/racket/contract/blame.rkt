@@ -3,7 +3,8 @@
 
 (parameterize ([current-contract-namespace
                 (make-basic-contract-namespace 'racket/contract
-                                               'racket/contract/private/blame)])
+                                               'racket/contract/private/blame
+                                               'syntax/srcloc)])
 
   (test/spec-passed/result
    'blame-selector.1
@@ -126,6 +127,57 @@
        'neg2)
       'no-exn-raised)
    #t)
+  (test/spec-passed/result
+   'blame-selector.16
+   '(blame-context
+     (blame-add-context
+      (blame-add-context
+       (blame-add-context
+        (blame-add-context
+         (blame-add-context
+          (make-blame (srcloc "src.rkt" #f #f #f #f)
+                      'whatever (λ () 'the-name) 'pos #f #t)
+          "1")
+         "2")
+        "3")
+       "4")
+      "5"))
+   '("5" "4" "3" "2" "1"))
+  (test/spec-passed/result
+   'blame-selector.17
+   '(blame-context
+     (blame-add-context
+      (blame-add-context
+       (blame-add-context
+        (blame-add-context
+         (blame-add-context
+          (make-blame (srcloc "src.rkt" #f #f #f #f)
+                      'whatever (λ () 'the-name) 'pos 'neg #t
+                      #:context-limit 2)
+          "1")
+         "2")
+        "3")
+       "4")
+      "5"))
+   '("5" "4"))
+  (test/spec-passed/result
+   'blame-selector.18
+   '(blame-positive
+     (blame-add-context
+      (blame-add-context
+       (blame-add-context
+        (blame-add-context
+         (blame-add-context
+          (blame-swap
+           (make-blame (srcloc "src.rkt" #f #f #f #f)
+                       'whatever (λ () 'the-name) 'pos 'neg #t
+                       #:context-limit 2))
+          "1")
+         "2")
+        "3")
+       "4")
+      "5"))
+   'neg)
 
   (contract-eval
    #:test-case-name "blame.rkt setup.1"
@@ -318,6 +370,115 @@
   (test/spec-passed/result
    'complete-prop-blame5
    '(has-complete-blame? (contract (vectorof integer?) (vector 1 2 3) 'pos 'neg))
+   #t)
+
+  (test/spec-passed/result
+   'complete-prop-blame-vector/c
+   '(let* ([ctc (vector/c (-> integer? integer?))]
+           [v (contract
+               ctc
+               (contract ctc (vector add1) 'inner-pos 'inner-neg)
+               'pos 'neg)])
+      (has-complete-blame? (vector-ref v 0)))
+   #t)
+
+  (test/spec-passed/result
+   'blame-selectors
+   '(let ()
+      (define source "dunno")
+      (define pos "dunno")
+      (define neg "dunno")
+      (define ctc "dunno")
+      (define val "dunno")
+      (define orig? "dunno")
+      (define swapped? "dunno")
+      (contract (make-contract #:name 'blame-selector-helper
+                               #:late-neg-projection
+                               (λ (blame)
+                                 (set! source (blame-source blame))
+                                 (set! pos (blame-positive blame))
+                                 (set! neg (blame-negative blame))
+                                 (set! ctc (blame-contract blame))
+                                 (set! val (blame-value blame))
+                                 (set! orig? (blame-original? blame))
+                                 (set! swapped? (blame-swapped? blame))
+                                 (λ (val np)
+                                   val)))
+                'whatevs
+                'pos 'neg
+                'there-is-no-name
+                (build-source-location #f))
+      (list source pos neg ctc val orig? swapped?))
+   (list (srcloc #f #f #f #f #f)
+         'pos #f 'blame-selector-helper 'there-is-no-name #t #f))
+
+  (test/spec-passed/result
+   'swapped-blame-selectors
+   '(let ()
+      (define source "dunno")
+      (define pos "dunno")
+      (define neg "dunno")
+      (define ctc "dunno")
+      (define val "dunno")
+      (define orig? "dunno")
+      (define swapped? "dunno")
+      (define the-ctc
+        (-> (make-contract #:name 'blame-selector-helper
+                           #:late-neg-projection
+                           (λ (blame)
+                             (set! source (blame-source blame))
+                             (set! pos (blame-positive blame))
+                             (set! neg (blame-negative blame))
+                             (set! ctc (blame-contract blame))
+                             (set! val (blame-value blame))
+                             (set! orig? (blame-original? blame))
+                             (set! swapped? (blame-swapped? blame))
+                             (λ (val np)
+                               val)))
+            any))
+      (contract the-ctc
+                (λ (x) 'whatevs)
+                'pos 'neg
+                'there-is-no-name
+                (build-source-location #f))
+      (list source pos neg ctc val orig? swapped?))
+   (list (srcloc #f #f #f #f #f)
+         #f 'pos '(-> blame-selector-helper any) 'there-is-no-name #f #t))
+
+  (test/spec-passed/result
+   'blame-equality
+   '(let ([b
+           (make-blame (srcloc "src.rkt" #f #f #f #f)
+                       'whatever (λ () 'the-name) 'pos 'neg #t)])
+      (equal? (blame-add-context b "thing" #:important 'yes!)
+              (blame-add-context b "thing" #:important 'yes!)))
+   #t)
+
+  (test/spec-passed/result
+   'blame-no-context
+   ;; when the "in" has the contract after it, there is no context
+   '(regexp-match? #rx"in: [(]list/c"
+                   (with-handlers ([exn:fail:contract:blame? exn-message])
+                     ((car (contract (list/c (-> integer? integer?))
+                                     (list (λ (x) x))
+                                     'pos
+                                     'neg
+                                     #:limit-context 0))
+                      #f)))
+   #t)
+
+  (test/spec-passed/result
+   'blame-1-context
+   ;; make sure that, when there is one frame of context,
+   ;; we do not see the `list/c` part of the context
+   '(regexp-match? #rx"element of"
+                   (with-handlers ([exn:fail:contract:blame? exn-message])
+                     ((car (contract (list/c (-> integer? integer?))
+                                     (list (λ (x) x))
+                                     'pos
+                                     'neg
+                                     #:limit-context 10))
+                      #f)))
    #t)
 
   )

@@ -9,7 +9,7 @@
 (define grammar @string-append{
   Regexp   ::= Pces               Match Pces                                      #co
             |  Regexp|Regexp      Match either Regexp, try left first             #co 1
-  Pces     ::= Pce                Match Pce                                       #co
+  Pces     ::=                    Match empty                                     #co
             |  PcePces            Match Pce followed by Pces                      #co
   Pce      ::= Repeat             Match Repeat, longest possible                  #co 3
             |  Repeat?            Match Repeat, shortest possible                 #co 6
@@ -22,6 +22,7 @@
             |  Atom{N,}           Match Atom N or more times                      #px 8
             |  Atom{,M}           Match Atom between 0 and M times                #px 9
             |  Atom{N,M}          Match Atom between N and M times                #px 10
+            |  Atom{}             Match Atom 0 or more times                      #px
   Atom     ::= (Regexp)           Match sub-expression Regexp and report          #co 11
             |  [Rng]              Match any character in Rng                      #co 2
             |  [^Rng]             Match any character not in Rng                  #co 12
@@ -34,6 +35,7 @@
             |  Look               Match empty if Look matches                     #co
             |  (?TstPces|Pces)    Match 1st Pces if Tst, else 2nd Pces            #co 36
             |  (?TstPces)         Match Pces if Tst, empty if not Tst             #co
+            |  \`at`end`of`pattern` Match the nul character (ASCII 0)             #co
   Atom     ::= ...                ...                                             #px
             |  \N                 Match latest reported match for N##th _(_       #px 16
             |  Class              Match any character in Class                    #px
@@ -64,7 +66,7 @@
             |  (?!Regexp)         Match if Regexp doesn't match                   #mode 32
             |  (?<=Regexp)        Match if Regexp matches preceding               #mode 33
             |  (?<!Regexp)        Match if Regexp doesn't match preceding         #mode 34
-  Tst      ::= (N)                True if Nth _(_ has a match                     #mode
+  Tst      ::= (N)                True if N##th _(_ has a match                   #mode
             |  Look               True if Look matches                            #mode 36
   Lirng    ::= ...                ...                                             #px
             |  Class              Lirng contains all characters in Class          #px
@@ -83,11 +85,11 @@
             |  Modem              Like Mode, but in multi mode                    #mode
             |  Mode-m             Like Mode, but not in multi mode                #mode
   Class    ::= \d                 Contains _0_-_9_                                #cat 23
-            |  \D                 Contains ASCII other than those in _\d_         #cat
+            |  \D                 Contains characters not in _\d_                 #cat
             |  \w                 Contains _a_-_z_, _A_-_Z_, _0_-_9_, ___         #cat 24
-            |  \W                 Contains ASCII other than those in _\w_         #cat
+            |  \W                 Contains characters not in _\w_                 #cat
             |  \s                 Contains space, tab, newline, formfeed, return  #cat 25
-            |  \S                 Contains ASCII other than those in _\s_         #cat
+            |  \S                 Contains characters not in _\s_                 #cat
   Posix    ::= [:alpha:]          Contains _a_-_z_, _A_-_Z_                       #cat
             |  [:upper:]          Contains _A_-_Z_                                #cat
             |  [:lower:]          Contains _a_-_z_                                #cat 26
@@ -170,6 +172,10 @@
     [(#rx"^(.*?)##(.*)$" X Y)
      `(,@(fixup-ids X) ,@(fixup-ids Y))]
     [(#rx"^\\.\\.\\.$") (list (element #f (list s)))]
+    [(#rx"^([^`]*)`(.*)`$" X Y) (append (fixup-ids X)
+                                        (list
+                                         (element #f " ")
+                                         (element #f (regexp-replace* #rx"`" Y " "))))]
     [(#rx"^$") null]
     [else (list s)]))
 

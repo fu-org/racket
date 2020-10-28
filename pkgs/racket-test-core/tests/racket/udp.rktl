@@ -55,6 +55,37 @@
 (test #f udp-bound? udp1)
 (test #f udp-connected? udp1)
 
+(define original-ttl (udp-ttl udp1))
+(test #t byte? original-ttl)
+(test (void) udp-set-ttl! udp1 255)
+(test 255 udp-ttl udp1)
+(test (void) udp-set-ttl! udp1 1)
+(test 1 udp-ttl udp1)
+(test (void) udp-set-ttl! udp1 original-ttl)
+(err/rt-test (udp-ttl 1))
+(err/rt-test (udp-ttl 'no))
+(err/rt-test (udp-set-ttl! 0 64))
+(err/rt-test (udp-set-ttl! udp1 -1))
+(err/rt-test (udp-set-ttl! udp1 256))
+(err/rt-test (udp-set-ttl! udp1 'x))
+
+(err/rt-test (udp-set-receive-buffer-size! udp1 -1))
+(err/rt-test (udp-set-receive-buffer-size! udp1 0))
+(err/rt-test (udp-set-receive-buffer-size! udp1 (expt 2 300))
+             exn:fail:network?)
+;; Something a user program might do to find the max allowed size
+(test-values
+ '(ok)
+ (λ ()
+   (let loop ([n 4096])
+     (with-handlers ([exn:fail:network?
+                      (λ _
+                        (let ([n (/ n 2)])
+                          (udp-set-receive-buffer-size! udp1 n)
+                          'ok))])
+       (udp-set-receive-buffer-size! udp1 n)
+       (loop (* 2 n))))))
+
 ;; not bound:
 (err/rt-test (udp-receive! udp1 us1) exn:fail:network?)
 (err/rt-test (udp-receive!* udp1 us1) exn:fail:network?)
@@ -317,7 +348,7 @@
 		((b) (make-bytes 8 0)))
     (test (void) udp-multicast-set-interface! s2 "localhost")
     (test (void) udp-send-to s2 "233.252.0.0" lp #"hi")
-    (sleep 0.05)
+    (sleep 0.05) ; (sync (udp-receive-ready-evt s))
     (let-values (((packet-length ra1 rp1) (udp-receive!* s b)))
       (test 2 values packet-length)
       (test #"hi\0\0\0\0\0\0" values b))
@@ -334,8 +365,7 @@
   (test (void) udp-close s)
   ;; It's closed
   (err/rt-test (udp-multicast-loopback? s) exn:fail:network?)
-  (err/rt-test (udp-multicast-set-loopback! s #t) exn:fail:network?)
-  )
+  (err/rt-test (udp-multicast-set-loopback! s #t) exn:fail:network?))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

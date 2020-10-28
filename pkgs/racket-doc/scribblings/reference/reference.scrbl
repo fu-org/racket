@@ -22,7 +22,7 @@
                    (make-css-addition "extras.css")
                    (make-tex-addition "extras.tex"))))
 
-@title[#:style (extras)]{@bold{The Racket Reference}}
+@title[#:style (extras)]{The Racket Reference}
 
 @author["Matthew Flatt" "PLT"]
 
@@ -86,7 +86,7 @@ The @racketmodname[racket] library combines
 
   (bib-entry #:key "C99"
              #:author "ISO/IEC"
-             #:title "ISO/IEC 9899:1999 Cor. 3:2007(E))"
+             #:title "ISO/IEC 9899:1999 Cor. 3:2007(E)"
              #:date "2007")
 
   (bib-entry #:key "Culpepper07"
@@ -113,24 +113,36 @@ The @racketmodname[racket] library combines
              #:location "LISP and Functional Programming"
              #:date "1988")
 
+  (bib-entry #:key "Feltey18"
+             #:author "Daniel Feltey, Ben Greenman, Christophe Scholliers, Robert Bruce Findler, and Vincent St-Amour"
+             #:title "Collapsible Contracts: Fixing a Pathology of Gradual Typing"
+             #:location "Object-Oriented Programming, Systems, and Languages (OOPSLA)"
+             #:date "2018")
+
   (bib-entry #:key "Flatt02"
              #:author "Matthew Flatt"
              #:title "Composable and Compilable Macros: You Want it When?"
              #:location "International Conference on Functional Programming (ICFP)"
              #:date "2002")
 
-  (bib-entry #:key "Friedman95" 
-             #:title "Exception system proposal" 
-             #:author "Daniel P. Friedman, C. T. Haynes, and R. Kent Dybvig" 
+  (bib-entry #:key "Friedman95"
+             #:title "Exception system proposal"
+             #:author "Daniel P. Friedman, C. T. Haynes, and R. Kent Dybvig"
              #:location "web page"
-             #:url "http://www.cs.indiana.edu/scheme-repository/doc.proposals.exceptions.html"
+             #:url "https://web.archive.org/web/20161012054505/http://www.cs.indiana.edu/scheme-repository/doc.proposals.exceptions.html"
              #:date "1995")
 
-  (bib-entry #:key "Gasbichler02" 
-             #:title "Processes vs. User-Level Threads in Scsh" 
-             #:author "Martin Gasbichler and Michael Sperber" 
+  (bib-entry #:key "Gasbichler02"
+             #:title "Processes vs. User-Level Threads in Scsh"
+             #:author "Martin Gasbichler and Michael Sperber"
              #:date "2002"
              #:location "Workshop on Scheme and Functional Programming")
+
+  (bib-entry #:key "Greenberg15"
+             #:author "Michael Greenberg"
+             #:title "Space-Efficient Manifest Contracts"
+             #:location "Principles of Programming Languages (POPL)"
+             #:date "2015")
 
  (bib-entry #:key "Gunter95"
             #:author "Carl Gunter, Didier Remy, and Jon Rieke"
@@ -143,20 +155,26 @@ The @racketmodname[racket] library combines
             #:title "Engines Build Process Abstractions"
             #:location "Symposium on LISP and Functional Programming"
             #:date "1984")
- 
+
  (bib-entry #:key "Hayes97"
             #:author "Barry Hayes"
             #:title "Ephemerons: a New Finalization Mechanism"
             #:location "Object-Oriented Languages, Programming, Systems, and Applications"
             #:date "1997")
- 
+
  (bib-entry #:key "Hieb90"
             #:author "Robert Hieb and R. Kent Dybvig"
             #:title "Continuations and Concurrency"
             #:location "Principles and Practice of Parallel Programming"
             #:date "1990")
 
- (bib-entry #:key "L'Ecuyer02"
+  (bib-entry #:key "Lamport79"
+             #:title "How to Make a Multiprocessor Computer That Correctly Executes Multiprocess Programs"
+             #:author "Leslie Lamport"
+             #:location "IEEE Transactions on Computers"
+             #:date "179")
+
+  (bib-entry #:key "L'Ecuyer02"
             #:author "Pierre L'Ecuyer, Richard Simard, E. Jack Chen, and W. David Kelton"
             #:title "An Object-Oriented Random-Number Package With Many Long Streams and Substreams"
             #:location "Operations Research, 50(6)"
@@ -167,6 +185,13 @@ The @racketmodname[racket] library combines
              #:title "A Dynamic Extent Control Operator for Partial Continuations"
              #:location "Principles of Programming Languages"
              #:date "1991")
+
+  (bib-entry #:key "Reppy99"
+             #:author "John H. Reppy"
+             #:title "Concurrent Programming in ML"
+             #:is-book? #t
+             #:location "Cambridge University Press"
+             #:date "1999")
 
   (bib-entry #:key "Shan04"
              #:author "Ken Shan"
@@ -186,10 +211,10 @@ The @racketmodname[racket] library combines
              #:location @italic{Lisp and Symbolic Computation}
              #:date "1990")
 
-  (bib-entry #:key "Sitaram93" 
-             #:title "Handling Control" 
+  (bib-entry #:key "Sitaram93"
+             #:title "Handling Control"
              #:author "Dorai Sitaram"
-             #:location "Programming Language Design and Implementation" 
+             #:location "Programming Language Design and Implementation"
              #:date "1993")
 
   (bib-entry #:key "SRFI-42"

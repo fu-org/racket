@@ -10,14 +10,18 @@
   (struct ts (a))
   (err/rt-test (place-channel-put in (ts "k")))
 
+  (define places-share-symbols?
+    (or (not (place-enabled?))
+        (eq? 'chez-scheme (system-type 'vm))))
+
   (let ()
     (define us (string->uninterned-symbol "foo"))
     (define us2 (string->uninterned-symbol "foo"))
     (place-channel-put in (cons us us))
     (define r (place-channel-get out))
     (test #t equal? (car r) (cdr r))
-    (test (not (place-enabled?)) equal? us (car r))
-    (test (not (place-enabled?)) equal? us (cdr r))
+    (test places-share-symbols? equal? us (car r))
+    (test places-share-symbols? equal? us (cdr r))
     (test #f symbol-interned? (car r))
     (test #f symbol-interned? (cdr r))
 
@@ -26,8 +30,8 @@
     (test #f symbol-interned? (car r2))
     (test #f symbol-interned? (cdr r2))
     (test #f equal? (car r2) (cdr r2))
-    (test (not (place-enabled?)) equal? us (car r2))
-    (test (not (place-enabled?)) equal? us2 (cdr r2)))
+    (test places-share-symbols? equal? us (car r2))
+    (test places-share-symbols? equal? us2 (cdr r2)))
 
   (let ()
     (define us (string->unreadable-symbol "foo2"))
@@ -48,8 +52,11 @@
     ;interned into the same table as us and us2
     ;because the same place sends and receives
     (test #t equal? us (car r2))
-    (test #t equal? us2 (cdr r2))))
-  
+    (test #t equal? us2 (cdr r2)))
+
+  (place-channel-put out (make-prefab-struct 'vec (vector) (vector)))
+  (test (make-prefab-struct 'vec (vector) (vector)) place-channel-get in))
+
 (let ([p (place/splat (p1 ch)
           (printf "Hello form place 2\n")
           (exit 99))])
@@ -93,6 +100,7 @@
   (test #t place-message-allowed? v)
   (test #t place-message-allowed? (list v))
   (test #t place-message-allowed? (vector v)))
+(test #t place-message-allowed? (vector))
 
 (for ([v (list (lambda () 10)
                add1)])
@@ -102,6 +110,90 @@
   (test (not (place-enabled?)) place-message-allowed? (cons v 1))
   (test (not (place-enabled?)) place-message-allowed? (vector v)))
 
+(let ()
+  (struct s (a) #:prefab)
+  (struct p (x))
+  (define c (chaperone-struct (p 1)
+                              p-x
+                              (lambda (s v) v)))
+  (test (not (place-enabled?)) place-message-allowed? (s (lambda () 1)))
+  (test (not (place-enabled?)) place-message-allowed? (s c))
+  (test (not (place-enabled?)) place-message-allowed? (hasheq c 5))
+  (test (not (place-enabled?)) place-message-allowed? (hasheq 5 c))
+  (test (not (place-enabled?)) place-message-allowed? (vector c))
+  (test (not (place-enabled?)) place-message-allowed? (cons c 6))
+  (test (not (place-enabled?)) place-message-allowed? (cons 6 c)))
+
+;; ----------------------------------------
+;; Place messages and chaperones
+
+(test #t place-message-allowed? (chaperone-vector (vector 1 2) (lambda (v i e) e) (lambda (v i e) e)))
+(test #t place-message-allowed? (chaperone-hash (hasheq 1 2 3 4)
+                                                (lambda (ht k) (values k (lambda (ht k v) v)))
+                                                (lambda (ht k v) (values k v))
+                                                (lambda (ht k) k)
+                                                (lambda (ht k) k)))
+(test #t place-message-allowed? (chaperone-hash (make-hash)
+                                                (lambda (ht k) (values k (lambda (ht k v) v)))
+                                                (lambda (ht k v) (values k v))
+                                                (lambda (ht k) k)
+                                                (lambda (ht k) k)))
+(let ()
+  (struct posn (x y) #:prefab)
+  (test #t place-message-allowed? (chaperone-struct '#s(posn 1 2)
+                                                    posn-x (lambda (p x) x))))
+
+(let ()
+  (define-values (in out) (place-channel))
+
+  (place-channel-put out (impersonate-vector (vector 1 2) (lambda (v i e) (add1 e)) (lambda (v i e) e)))
+  (test '#(2 3) place-channel-get in)
+
+  (let ([ht (make-hash)])
+    (hash-set! ht 1 2)
+    (hash-set! ht 3 4)
+    (place-channel-put out (impersonate-hash ht
+                                             (lambda (ht k) (values k (lambda (ht k v) (add1 v))))
+                                             (lambda (ht k v) (values k v))
+                                             (lambda (ht k) k)
+                                             (lambda (ht k) k)))
+    (test '#hash((1 . 3) (3 . 5))
+          place-channel-get in))
+
+  (let ()
+    (struct posn (x y) #:prefab)
+    (place-channel-put out (chaperone-struct (posn 1 2)
+                                             posn-x (lambda (p x) x)))
+    (test (posn 1 2) place-channel-get in))
+
+  ;; MAke sure large values are handled correctly
+  (let ([v (for/list ([i 10000])
+             (impersonate-vector (vector i
+                                         (impersonate-vector (vector (- i))
+                                                             (lambda (v i e) (sub1 e))
+                                                             (lambda (v i e) e)))
+                                 (lambda (v i e) (list e))
+                                 (lambda (v i e) e)))])
+    (test #t 'allowed? (place-message-allowed? v))
+    (place-channel-put out v)
+    (test #t 'equal? (equal? v (place-channel-get in))))
+
+  (void))
+
+;; ----------------------------------------
+
+(let ()
+  (define-values (in out) (place-channel))
+
+  (define (try v)
+    (place-channel-put in v)
+    (test #t eq? v (place-channel-get out)))
+
+  (try (shared-bytes 0))
+  (try (make-shared-bytes 10))
+  (try (make-shared-bytes 10 3)))
+
+;; ----------------------------------------
 
 (require (submod "place-utils.rkt" place-test-submod))
 (test 0 p 0)

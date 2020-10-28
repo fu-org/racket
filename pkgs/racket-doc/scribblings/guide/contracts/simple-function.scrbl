@@ -119,11 +119,13 @@ Note that this has two potentially important impacts on the use of
 @racket[deposit]:
 
 @itemlist[#:style 'ordered
-  @item{Since the contract will always be checked on calls to @racket[deposit],
-        even inside the module in which it is defined, this may increase
-        the number of times the contract is checked. This could lead to
+  @item{The contract will be checked on any call to @racket[deposit]
+        that is outside of the definition of @racket[deposit] --
+        even those inside the module in which it is defined. Because
+        there may be many calls inside the module, this checking may cause
+        the contract to be checked too often, which could lead to
         a performance degradation. This is especially true if the function
-        is called repeatedly in loops or using recursion.}
+        is called repeatedly from a loop.}
   @item{In some situations, a function may be written to accept a more
         lax set of inputs when called by other code in the same module.
         For such use cases, the contract boundary established by
@@ -363,7 +365,7 @@ on a value other than an integer, then the server is to blame.
 
 @; ----------------------------------------------------------------------
 
-@ctc-section[#:tag "flat-named-contracts"]{Contract Messages with ``tempN''}
+@ctc-section[#:tag "flat-named-contracts"]{Contract Messages with ``???''}
 
 You wrote your module. You added contracts. You put them into the interface
 so that client programmers have all the information from interfaces. It's a
@@ -389,7 +391,7 @@ message:
              (require 'bank-server)
              (deposit -10)]
 
-What is the @racketerror{temp7} doing there?  Wouldn't it be nice if
+What is the @racketerror{???} doing there?  Wouldn't it be nice if
 we had a name for this class of data much like we have string, number,
 and so on?
 

@@ -340,7 +340,7 @@
           (define new-url
             (url "https" #f "github.com" #f #t
                  (map (λ (x) (path/param x empty))
-                      (list user repo "tarball" checksum))
+                      (list user repo "legacy.tar.gz" checksum))
                  empty
                  #f))
           (define tmp.tgz
@@ -625,18 +625,25 @@
       (define pkg-dir
         (if in-place?
             (if strip-mode
-                (pkg-error "cannot strip directory in place")
+                (cond
+                  [in-place-clean?
+                   (unless force-strip?
+                     (check-strip-compatible strip-mode pkg-name pkg-path pkg-error))
+                   (generate-stripped-directory strip-mode pkg-path pkg-path)
+                   pkg-path]
+                  [else
+                   (pkg-error "cannot strip directory in place\n  path: ~a" pkg-path)])
                 pkg-path)
             (let ([pkg-dir (make-temporary-file "pkg~a" 'directory)])
-              (delete-directory pkg-dir)
               (if strip-mode
                   (begin
                     (unless force-strip?
-                      (check-strip-compatible strip-mode pkg-name pkg pkg-error))
+                      (check-strip-compatible strip-mode pkg-name pkg-path pkg-error))
                     (make-directory* pkg-dir)
-                    (generate-stripped-directory strip-mode pkg pkg-dir))
+                    (generate-stripped-directory strip-mode pkg-path pkg-dir))
                   (begin
                     (make-parent-directory* pkg-dir)
+                    (delete-directory pkg-dir)
                     (copy-directory/files pkg-path pkg-dir #:keep-modify-seconds? #t)))
               pkg-dir)))
       (when (or (not in-place?)
@@ -705,7 +712,7 @@
                                 #:given-checksum (pkg-desc-checksum desc)
                                 #:use-cache? use-cache?
                                 #t
-                                (if quiet? void printf)
+                                (if quiet? void printf/flush)
                                 metadata-ns
                                 #:in-place? in-place?
                                 #:strip strip-mode
@@ -745,15 +752,23 @@
            (git-checkout host #:port port repo
                          #:dest-dir #f
                          #:ref branch
-                         #:status-printf (lambda (fmt . args)
-                                           (define (strip-ending-newline s)
-                                             (regexp-replace #rx"\n$" s ""))
-                                           (log-pkg-debug (strip-ending-newline (apply format fmt args))))
-                         #:initial-error (lambda ()
-                                           (pkg-error (~a "Git checkout initial protocol failed;\n"
-                                                          " the given URL might not refer to a Git repository\n"
-                                                          "  given URL: ~a")
-                                                      pkg-url-str))
+                         #:status-printf
+                         (lambda (fmt . args)
+                           (define (strip-ending-newline s)
+                             (regexp-replace #rx"\n$" s ""))
+                           (log-pkg-debug
+                            (strip-ending-newline (apply format fmt args))))
+                         #:initial-error
+                         (lambda ()
+                           (raise
+                            ;; This is a git error so that 
+                            ;; call-with-git-checkout-credentials will retry 
+                            (exn:fail:git
+                             (~a "pkg: Git checkout initial protocol failed;\n"
+                                 " the given URL might not refer to a Git repository\n"
+                                 "  given URL: "
+                                 pkg-url-str)
+                             (current-continuation-marks))))
                          #:transport transport)))))]
     [(github)
      (match-define (list* user repo branch path)
@@ -889,10 +904,11 @@
 
 (define (drop-redundant-files pkg-dir)
   ;; Ad hoc space-saving rule: for an installation-wide package, remove
-  ;; any redundant "COPYING.txt" or "COPYING_LESSER.txt" files.
+  ;; any redundant license files.
   (when (and (eq? 'installation (current-pkg-scope))
              (find-share-dir))
-    (for ([i (in-list '("COPYING.txt" "COPYING_LESSER.txt"))])
+    (for ([i (in-list '("COPYING.txt" "COPYING_LESSER.txt" "COPYRIGHT.txt"
+                                      "LICENSE-APACHE" "LICENSE-MIT"))])
       (define pkg-file (build-path pkg-dir i))
       (define share-file (build-path (find-share-dir) i))
       (when (and (file-exists? pkg-file)

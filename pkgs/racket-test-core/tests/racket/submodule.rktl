@@ -3,6 +3,8 @@
 
 (Section 'submodule)
 
+(require racket/file)
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (test #t module-path? '(submod "."))
@@ -125,14 +127,18 @@
               (read (open-input-bytes (get-output-bytes o)))))
   (test 'subm-example-0 values (module-compiled-name c))
   (test 2 values (length (module-compiled-submodules c #f)))
+  (define (sort-by-name l)
+    (sort l (lambda (a b) (symbol<? (last (module-compiled-name a))
+                                    (last (module-compiled-name b))))))
+  (define post-submods (sort-by-name (module-compiled-submodules c #f)))
   (for ([sub (in-list (append (module-compiled-submodules c #t)
-                              (module-compiled-submodules c #f)))]
+                              post-submods))]
         [name '(z a b)])
     (test (list 'subm-example-0 name) values (module-compiled-name sub))
     (when (eq? name 'a)
       (test 1 values (length (module-compiled-submodules sub #f)))
       (test '(subm-example-0 a i) values (module-compiled-name (car (module-compiled-submodules sub #f))))))
-  (define a (module-compiled-name (car (module-compiled-submodules c #f))
+  (define a (module-compiled-name (car post-submods)
                                   'reset))
   (test 'reset values (module-compiled-name a))
   (test '(reset i) values (module-compiled-name (car (module-compiled-submodules a #f))))
@@ -141,14 +147,14 @@
   (test '(reset again i) values (module-compiled-name (car (module-compiled-submodules (car (module-compiled-submodules aa #f)) #f))))
 
   (define also-c (module-compiled-submodules c #f (module-compiled-submodules c #f)))
-  (test '(subm-example-0 a) values (module-compiled-name (car (module-compiled-submodules also-c #f))))
+  (test '(subm-example-0 a) values (module-compiled-name (car (sort-by-name (module-compiled-submodules also-c #f)))))
   (define re-c
     (let ([s (open-output-bytes)])
       (write also-c s)
       (parameterize ([read-accept-compiled #t])
         (read (open-input-bytes (get-output-bytes s))))))
-  ;; Marshaling flips the order, which is ok:
-  (test '(subm-example-0 b) values (module-compiled-name (car (module-compiled-submodules re-c #f)))))
+  ;; Marshaling preserves the order:
+  (test '(subm-example-0 a) values (module-compiled-name (car (sort-by-name (module-compiled-submodules re-c #f))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -606,7 +612,7 @@
   (#%printing-module-begin
    (require (for-syntax racket/base))
    (provide x)
-   (define-syntax (m stx) #`(quote #,(syntax-local-submodules)))
+   (define-syntax (m stx) #`(quote #,(sort (syntax-local-submodules) symbol<?)))
    (module m1 racket/base)
    (module m2 racket/base)
    (module* m3 racket/base)
@@ -630,10 +636,7 @@
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Directory for testing
 
-(define temp-dir
-  (build-path (find-system-path 'temp-dir)
-              (format "submodule-tests-~s" (current-seconds))))
-(make-directory temp-dir)
+(define temp-dir (make-temporary-file "submodule-tests-~s" 'directory))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check submodule resolution of relative paths:
@@ -654,9 +657,9 @@
                         (define name ',n)
                         (provide name)))))
     (define fn (build-path temp-dir "has-submod.rkt"))
-    (define dir (build-path temp-dir "compiled"))
+    (define dir (build-path temp-dir (car (use-compiled-file-paths))))
     (define fn-zo (build-path dir "has-submod_rkt.zo"))
-    (unless (directory-exists? dir) (make-directory dir))
+    (unless (directory-exists? dir) (make-directory* dir))
     (with-output-to-file fn-zo
       #:exists 'truncate
       (lambda () (write (compile e))))
@@ -696,11 +699,7 @@
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Delete the temp-dir
 
-(let loop ([x temp-dir])
-  (cond [(file-exists? x) (delete-file x)]
-        [(directory-exists? x) (parameterize ([current-directory x])
-                                 (for-each loop (directory-list)))
-                               (delete-directory x)]))
+(delete-directory/files temp-dir)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Module attach
@@ -977,13 +976,13 @@
     (set! x 2)
     (define x 1)))
 
-(err/rt-test
+(err/rt-test/once
  (dynamic-require '(submod 'variable-error-message-in-submodule m1) #f)
  (λ (x) (and (exn:fail? x)
              (regexp-match (regexp-quote "(submod 'variable-error-message-in-submodule m1)")
                            (exn-message x)))))
 
-(err/rt-test
+(err/rt-test/once
  (dynamic-require '(submod 'variable-error-message-in-submodule m2) #f)
  (λ (x) (and (exn:fail? x)
              (regexp-match (regexp-quote "(submod 'variable-error-message-in-submodule m2)")

@@ -319,7 +319,7 @@
                 (if (null? l)
                     v
                     (apply f v (append l (list impersonator-prop:contracted ctc
-                                               impersonator-prop:blame (blame-add-missing-party blame neg-party))))))
+                                               impersonator-prop:blame (cons blame neg-party))))))
               (app* chaperone-struct
                     (app* impersonate-struct
                           v
@@ -673,7 +673,44 @@
                  (procedure-closure-contents-eq?
                   (dep-dep-proc this-subcontract)
                   (dep-dep-proc that-subcontract)))]
-           [else #t]))))
+           [else #f]))))
+
+(define (struct/dc-equivalent? this that)
+  (and (base-struct/dc? that)
+       (eq? (base-struct/dc-pred this) (base-struct/dc-pred that))
+       (let ([this-inv (get-invariant this)]
+             [that-inv (get-invariant that)])
+         (cond
+           [(and (not this-inv) (not that-inv)) #t]
+           [(and this-inv that-inv)
+            (procedure-closure-contents-eq? (invariant-dep-proc this-inv)
+                                            (invariant-dep-proc that-inv))]
+           [else #f]))
+       (for/and ([this-subcontract (in-list (base-struct/dc-subcontracts this))]
+                 [that-subcontract (in-list (base-struct/dc-subcontracts that))])
+         (cond
+           [(and (indep? this-subcontract)
+                 (indep? that-subcontract))
+            (and (or (and (mutable? this-subcontract)
+                          (mutable? that-subcontract))
+                     (and (immutable? this-subcontract)
+                          (immutable? that-subcontract))
+                     (and (lazy-immutable? this-subcontract)
+                          (lazy-immutable? that-subcontract)))
+                 (contract-struct-equivalent? (indep-ctc this-subcontract)
+                                              (indep-ctc that-subcontract)))]
+           [(and (dep? this-subcontract)
+                 (dep? that-subcontract))
+            (and (or (and (dep-mutable? this-subcontract)
+                          (dep-mutable? that-subcontract))
+                     (and (dep-immutable? this-subcontract)
+                          (dep-immutable? that-subcontract))
+                     (and (dep-lazy-immutable? this-subcontract)
+                          (dep-lazy-immutable? that-subcontract)))
+                 (procedure-closure-contents-eq?
+                  (dep-dep-proc this-subcontract)
+                  (dep-dep-proc that-subcontract)))]
+           [else #f]))))
 
 (define (get-invariant sc)
   (for/or ([sub (base-struct/dc-subcontracts sc)]
@@ -696,30 +733,36 @@
 (define-struct (struct/dc base-struct/dc) ()
   #:property prop:chaperone-contract
   (build-chaperone-contract-property
+   #:trusted trust-me
    #:name struct/dc-name
    #:first-order struct/dc-first-order
    #:late-neg-projection struct/dc-late-neg-proj
    #:stronger struct/dc-stronger?
+   #:equivalent struct/dc-equivalent?
    #:generate struct/dc-generate
    #:exercise struct/dc-exercise))
 
 (define-struct (flat-struct/dc base-struct/dc) ()
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:name struct/dc-name
    #:first-order struct/dc-flat-first-order
    #:late-neg-projection struct/dc-late-neg-proj
    #:stronger struct/dc-stronger?
+   #:equivalent struct/dc-equivalent?
    #:generate struct/dc-generate
    #:exercise struct/dc-exercise))
 
 (define-struct (impersonator-struct/dc base-struct/dc) ()
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:name struct/dc-name
    #:first-order struct/dc-first-order
    #:late-neg-projection struct/dc-late-neg-proj
    #:stronger struct/dc-stronger?
+   #:equivalent struct/dc-equivalent?
    #:generate struct/dc-generate
    #:exercise struct/dc-exercise))
 
@@ -1031,6 +1074,10 @@
                           
        (values info #'id all-clauses))]))
 
+(define-for-syntax (disarm stx)
+  (syntax-disarm stx (variable-reference->module-declaration-inspector
+                      (#%variable-reference))))
+
 ;; name->sel-id : identifier syntax -> identifier
 ;; returns the identifier for the selector, where the 'id'
 ;; argument is either an identifier or a #'(id #:parent id)
@@ -1038,7 +1085,7 @@
 (define-for-syntax (name->sel-id struct-id id)
   (define (combine struct-id id)
     (datum->syntax
-     id
+     (disarm id)
      (string->symbol
       (format "~a-~a" 
               (syntax-e struct-id)
@@ -1056,7 +1103,7 @@
 (define-for-syntax (name->mut-id stx struct-id id)
   (define (combine struct-id id)
     (datum->syntax
-     id
+     (disarm id)
      (string->symbol
       (format "set-~a-~a!"
               (syntax-e struct-id)
@@ -1525,7 +1572,7 @@
                         (regexp (format "^~a-" (regexp-quote (symbol->string (syntax-e struct-id))))))
                       (define field-name
                         (datum->syntax 
-                         sel
+                         (disarm sel)
                          (string->symbol (regexp-replace strip-reg
                                                          (symbol->string (syntax-e sel))
                                                          ""))))

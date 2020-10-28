@@ -9,6 +9,7 @@
          racket/place
          racket/future
          racket/file
+         racket/string
          compiler/find-exe
          raco/command-name
          racket/system
@@ -35,12 +36,14 @@
 (define empty-input? #f)
 (define heartbeat-secs #f)
 (define ignore-stderr-patterns null)
+(define extra-command-line-args null)
 
 (define jobs 0) ; 0 mean "default"
 (define task-sema (make-semaphore 1))
 
 (define default-timeout #f) ; #f means "none"
 (define default-mode #f) ; #f => depends on how many files are provided
+(define default-output-file #f) ; #f means no --output option specified
 
 (define single-file? #t)
 
@@ -91,9 +94,9 @@
   (provide go)
   (define (go pch)
     (define l (place-channel-get pch))
+    (define args (cadddr (cdr l)))
     ;; Run the test:
-    (parameterize ([current-command-line-arguments (list->vector
-                                                    (cadddr (cdr l)))]
+    (parameterize ([current-command-line-arguments (list->vector args)]
                    [current-directory (cadddr l)])
       (when (cadr l) (dynamic-require (cadr l) (caddr l)))
       (dynamic-require (car l) (caddr l))
@@ -583,7 +586,7 @@
           ;; make sure "info.rkt" information is loaded:
           (check-info p))
         (define norm-p (normalize-info-path p))
-        (define args (get-cmdline norm-p))
+        (define args (append (get-cmdline norm-p) (reverse extra-command-line-args)))
         (define timeout (get-timeout norm-p))
         (define ignore-stderr (get-ignore-stderr norm-p))
         (define lock-name (get-lock-name norm-p))
@@ -970,6 +973,21 @@
                       s))
   n)
 
+(define check-pkg-deps? #f)
+(define (maybe-expand-package-deps l)
+  (cond
+    [(and packages? check-pkg-deps?)
+     (hash-keys
+      (for/fold ([h (hash)]) ([p (in-list l)])
+        (define-values (sum _ deps)
+          (get-pkg-content (pkg-desc p 'name p #f #f)
+                           #:extract-info extract-pkg-dependencies
+                           #:use-cache? #t))
+        (for/fold ([h h]) ([d (in-list (cons p deps))])
+          (hash-set h d #t))))]
+    [else
+     l]))
+
 (command-line
  #:program (short-program+command-name)
  #:once-any
@@ -1004,9 +1022,16 @@
     (set! default-mode 'process))]
  #:multi
  [("--submodule" "-s") name
-  "Runs submodule <name>\n    (defaults to running just the `test' submodule)"
+  "Runs submodule <name>\n    (defaults to running just the `test` submodule)"
   (let ([n (string->symbol name)])
     (set! submodules (cons n submodules)))]
+ [("++arg") arg
+  "Adds <arg> to the end of `current-command-line-arguments`"
+  (set! extra-command-line-args (cons arg extra-command-line-args))]
+ [("++args") args
+  "Adds each whitespace-delimited in <args> like ++arg"
+  (set! extra-command-line-args
+        (append (reverse (string-split args)) extra-command-line-args))]
  #:once-any
  [("--run-if-absent" "-r")
   "Require module if submodule is absent (on by default)"
@@ -1050,14 +1075,17 @@
  [("--check-stderr" "-e")
   "Treat stderr output as a test failure"
   (set! check-stderr? #t)]
+ [("--deps")
+  "If treating arguments as packages, also test dependencies"
+  (set! check-pkg-deps? #t)]
  #:multi
  [("++ignore-stderr") pattern
-  "Ignore standard error output if it matches #px\"<pattern>\""
+  "Ignore stderr output that matches #px\"<pattern>\""
   (set! ignore-stderr-patterns
         (cons (pregexp pattern) ignore-stderr-patterns))]
  #:once-each
  [("--quiet" "-q")
-  "Suppress `raco test: ...' message"
+  "Suppress `raco test: ...` message"
   (set! quiet? #t)]
  [("--heartbeat")
   "Periodically report that a test is still running"
@@ -1065,38 +1093,59 @@
  [("--table" "-t")
   "Print a summary table"
   (set! table? #t)]
- #:args file-or-directory
- (begin (unless (= 1 (length file-or-directory))
-          (set! single-file? #f))
-        (when (and (eq? configure-runtime 'default)
-                   (or (and (not single-file?)
-                            (not (memq default-mode '(process place))))
-                       (not (null? submodules))))
-          (set! configure-runtime #f))
-        (define sum
-          ;; The #:sema argument everywhre makes tests start
-          ;; in a deterministic order:
-          (map/parallel (lambda (f #:sema s)
-                          (test-top f
-                                    #:check-suffix? check-top-suffix?
-                                    #:sema s))
-                        file-or-directory
-                        #:sema (make-semaphore)))
-        (when table?
-          (display-summary sum))
-        (unless (or (eq? default-mode 'direct)
-                    (and (not default-mode) single-file?))
-          ;; Re-log failures and successes, and then report using `test-log`.
-          ;; (This is awkward; is it better to not try to use `test-log`?)
-          (for ([s (in-list sum)])
-            (for ([i (in-range (summary-failed s))])
-              (test-log! #f))
-            (for ([i (in-range (- (summary-total s)
-                                  (summary-failed s)))])
-              (test-log! #t))))
-        (test-log #:display? #t #:exit? #f)
-        (define sum1 (call-with-summary #f (lambda () sum)))
-        (exit (cond
-               [(positive? (summary-timeout sum1)) 2]
-               [(positive? (summary-failed sum1)) 1]
-               [else 0]))))
+ #:once-each
+ [("--output" "-o") file
+  "Save stdout and stderr to file, overwrite if it exists."
+  (set! default-output-file file)]
+ #:args file-or-directory-or-collects-or-pkgs
+ (define (test)
+   (define file-or-directory
+     (maybe-expand-package-deps file-or-directory-or-collects-or-pkgs))
+   (unless (= 1 (length file-or-directory))
+     (set! single-file? #f))
+   (when (and (eq? configure-runtime 'default)
+              (or (and (not single-file?)
+                       (not (memq default-mode '(process place))))
+                  (not (null? submodules))))
+     (set! configure-runtime #f))
+   (define sum
+     ;; The #:sema argument everywhre makes tests start
+     ;; in a deterministic order:
+     (map/parallel (lambda (f #:sema s)
+                     (test-top f
+                               #:check-suffix? check-top-suffix?
+                               #:sema s))
+                   file-or-directory
+                   #:sema (make-semaphore)))
+   (when table?
+     (display-summary sum))
+   (unless (or (eq? default-mode 'direct)
+               (and (not default-mode) single-file?))
+     ;; Re-log failures and successes, and then report using `test-log`.
+     ;; (This is awkward; is it better to not try to use `test-log`?)
+     (for ([s (in-list sum)])
+       (for ([i (in-range (summary-failed s))])
+         (test-log! #f))
+       (for ([i (in-range (- (summary-total s)
+                             (summary-failed s)))])
+         (test-log! #t))))
+   (test-log #:display? #t #:exit? #f)
+   (define sum1 (call-with-summary #f (lambda () sum)))
+   (exit (cond
+           [(positive? (summary-timeout sum1)) 2]
+           [(positive? (summary-failed sum1)) 1]
+           [else 0])))
+
+ ;; Save the stdout/stderr into a file.
+ (define (test-with-output-file file-name)
+   (call-with-output-file*
+      (string->path file-name)
+      (lambda (out)
+        (parameterize ([current-output-port out]
+                       [current-error-port  out])
+          (test)))
+       #:exists 'truncate))
+
+ (if (string? default-output-file)
+     (test-with-output-file default-output-file)
+     (test)))

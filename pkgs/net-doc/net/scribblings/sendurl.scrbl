@@ -20,16 +20,7 @@ manner. For some platforms and configurations, the
 @racket[separate-window?] parameter determines if the browser creates
 a new window to display the URL or not.
 
-On Windows, @racket[send-url] normally uses @racket[shell-execute]
-to launch a browser. (If the URL appears to contain a fragment, it may
-use an intermediate redirecting file due to a bug in IE7.)
-
-On Mac OS, @racket[send-url] runs @exec{osascript} to start the
-user's chosen browser.
-
-On Unix, @racket[send-url] uses a user-preference, or when none is
-set, it will look for a known browser.  See the description of
-@racket[external-browser] for details.
+On Mac OS, @racket[send-url] calls @racket[send-url/mac].
 
 If @racket[escape?] is true, then @racket[str] is escaped (by UTF-8
 encoding followed by ``%'' encoding) to avoid dangerous shell
@@ -38,9 +29,9 @@ backslashes, non-ASCII characters, and non-graphic characters. Note
 that escaping does not affect already-encoded characters in
 @racket[str].
 
-On all platforms, @racket[external-browser] parameter can be set to a
-procedure to override the above behavior --- the procedure will be
-called with the @racket[url] string.}
+On all platforms, the @racket[external-browser] parameter can be set to a
+procedure to override the above behavior, and the procedure will be
+called with the URL @racket[str].}
 
 @defproc[(send-url/file [path path-string?] [separate-window? any/c #t]
                         [#:fragment fragment (or/c string? false/c) #f]
@@ -84,7 +75,7 @@ above.}
 
  The optional @racket[browser] argument, if present, should be the name
  of a browser installed on the system. For example,
- @racketblock[(send-url/mac "http://www.google.com/" #:browser "Firefox")]
+ @racketblock[(send-url/mac "https://www.google.com/" #:browser "Firefox")]
  would open the url in Firefox, even if that's not the default browser.
  Passing @racket[#f] means to use the default browser.
 }
@@ -94,16 +85,16 @@ above.}
 A parameter that can hold a procedure to override how a browser is
 started, or @racket[#f] to use the default platform-dependent command.
 
-On Unix, the command that is used depends on the
-@racket['external-browser] preference.  If the preference is unset,
-@racket[send-url] uses the first of the browsers from
-@racket[unix-browser-list] for which the executable is found.
-Otherwise, the preference should hold a symbol indicating a known
-browser (from the @racket[unix-browser-list]), or it a pair of a prefix
-and a suffix string that are concatenated around the @racket[url] string
-to make up a shell command to run.  In addition, the
-@racket[external-browser] paremeter can be set to one of these values,
-and @racket[send-url] will use it instead of the preference value.
+On Unix, the command that is used depends on the @racket['external-browser]
+preference.  It's recommended not to use this preference, but to rely on
+@tt{xdg-open}.  If the preference is unset, @racket[send-url] uses the first
+of the browsers from @racket[unix-browser-list] for which the executable is
+found.  Otherwise, the preference should hold a symbol indicating a known
+browser (from the @racket[unix-browser-list]), or it a pair of a prefix and
+a suffix string that are concatenated around the @racket[url] string to make
+up a shell command to run.  In addition, the @racket[external-browser]
+paremeter can be set to one of these values, and @racket[send-url] will use
+it instead of the preference value.
 
 Note that the URL is encoded to make it work inside shell double-quotes:
 URLs can still hold characters like @litchar{#}, @litchar{?}, and
@@ -126,4 +117,3 @@ A list of symbols representing Unix executable names that may be tried
 in order by @racket[send-url]. The @racket[send-url] function
 internally includes information on how to launch each executable with
 a URL.}
-

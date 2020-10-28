@@ -27,6 +27,12 @@
 (err/rt-test (foldl cons 0 '() '()))
 (err/rt-test (foldl list 0 '() 10))
 (err/rt-test (foldl list 0 '() '() 10))
+(err/rt-test (foldl list 0 '() '() 10)
+             exn:fail:contract?
+             "expected.*list\\?.*5th")
+(err/rt-test (foldl list 0 '() '() '() 10)
+             exn:fail:contract?
+             "expected.*list\\?.*6th")
 (err/rt-test (let/ec k (foldl k 0 '(1 2) '(1 2 3))))
 (err/rt-test (let/ec k (foldl k 0 '(1 2) '(1 2) '(1 2 3))))
 (err/rt-test (foldr 'list 0 10))
@@ -35,6 +41,12 @@
 (err/rt-test (foldr cons 0 '() '()))
 (err/rt-test (foldr list 0 '() 10))
 (err/rt-test (foldr list 0 '() '() 10))
+(err/rt-test (foldr list 0 '() '() 10)
+             exn:fail:contract?
+             "expected.*list\\?.*5th")
+(err/rt-test (foldr list 0 '() '() '() 10)
+             exn:fail:contract?
+             "expected.*list\\?.*6th")
 (err/rt-test (let/ec k (foldr k 0 '(1 2) '(1 2 3))))
 (err/rt-test (let/ec k (foldr k 0 '(1 2) '(1 2) '(1 2 3))))
 
@@ -336,6 +348,9 @@
 (test 'a check-duplicates '(a a b))
 (test '(a 3) check-duplicates '((a 1) (b 2) (a 3)) #:key car)
 (test 4 check-duplicates '(1 2 3 4 5 6) (lambda (x y) (equal? (modulo x 3) (modulo y 3))))
+(test #f check-duplicates '(#t #f #f) #:default "no dups")
+(test "no dups" check-duplicates '(#t #f) #:default "no dups")
+(test "no dups" check-duplicates '(#t #f) #:default (lambda () "no dups"))
 (err/rt-test (check-duplicates 'a))
 (err/rt-test (check-duplicates '(1) #f))
 (err/rt-test (check-duplicates '(1) #:key #f))

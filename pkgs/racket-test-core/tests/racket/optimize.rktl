@@ -152,6 +152,10 @@
            '(if (pair? null) 89 88))
 (test-comp 89
            '(if (list? null) 89 88))
+(test-comp 0
+           '(length '()))
+(test-comp 3
+           '(length '(1 2 3)))
 
 (test-comp '(lambda (x) (if x 2 1))
            '(lambda (x) (if (not x) 1 2)))
@@ -530,13 +534,13 @@
 (test-comp '(lambda (w z) (pair? (list w (random) w)))
            '(lambda (w z) (random) #t))
 (test-comp '(lambda (w z) (pair? (list (read) (random) w)))
-           '(lambda (w z) (read) (random) #t))
+           '(lambda (w z) (values (read)) (random) #t))
 (test-comp '(lambda (w z) (pair? (list z (random) (read))))
-           '(lambda (w z) (random) (read) #t))
+           '(lambda (w z) (random) (values (read)) #t))
 (test-comp '(lambda (w z) (pair? (list (if z (random) (error 'e)) (read))))
-           '(lambda (w z) (if z (random) (error 'e)) (read) #t))
+           '(lambda (w z) (if z (random) (error 'e)) (values (read)) #t))
 (test-comp '(lambda (w z) (pair? (list (with-continuation-mark 'k 'v (read)) (random))))
-           '(lambda (w z) (with-continuation-mark 'k 'v (read)) (random) #t))
+           '(lambda (w z) (values (with-continuation-mark 'k 'v (read))) (random) #t))
 (test-comp '(lambda (w z) (vector? (vector w z)))
            '(lambda (w z) #t))
 (test-comp '(lambda (w z) (vector? (vector-immutable w z)))
@@ -605,6 +609,17 @@
            '(lambda (z) (let ([f (lambda (i) (car i))]) (f z) (pair? z))))
 (test-comp '(lambda (z) (let ([f (lambda (i) (car i))]) (f z)) #t)
            '(lambda (z) (let ([f (lambda (i) (car i))]) (f z)) (pair? z)))
+
+(test-comp '(lambda (z) (fl+ z z))
+           '(lambda (z) (real->double-flonum (fl+ z z))))
+(test-comp '(lambda (z) (fl+ z z))
+           '(lambda (z) (exact->inexact (fl+ z z))))
+(test-comp '(lambda (z) (real->double-flonum z))
+           '(lambda (z) (real->double-flonum (real->double-flonum z))))
+(test-comp '(lambda (z) (unsafe-fx->fl (fx+ z z)))
+           '(lambda (z) (real->double-flonum (fx+ z z))))
+(test-comp '(lambda (z) (unsafe-fx->fl (fx+ z z)))
+           '(lambda (z) (exact->inexact (fx+ z z))))
 
 ; Test that the optimizer infers correctly the type of all the arguments
 ; and the type of the return value. Use #f in case the type is unknown.
@@ -713,8 +728,11 @@
 ;The optimizer is not capable of figuring out that the result of map is a list?
 (test-arg-types '(k:map procedure? list?) 'list?)
 (test-arg-types '(k:map procedure? list? list?) 'list?)
-(test-arg-types '(map procedure? list?) #f) ;should be list?
-(test-arg-types '(map procedure? list? list?) #f) ;should be list? 
+
+;Non-inlined slow-path means that the optimizer cannot infer for
+;non-built-in `map`:
+;(test-arg-types '(map procedure? list?) #f) ;should be list?
+;(test-arg-types '(map procedure? list? list?) #f) ;should be list? 
 
 (test-comp '(lambda (w z)
               (let ([x (list* w z)]
@@ -896,7 +914,7 @@
 (test-comp '(lambda (w) (cons))
            '(lambda (w) (cons) (k:random)))
 
-; test for unary aplications
+; test for unary applications
 (test-comp -1
            '(- 1))
 (test-comp '(lambda (f) (begin (f) -1))
@@ -1186,6 +1204,9 @@
                       (begin (quote-syntax foo) 3))])
               x)
            '3)
+
+;; The compiler doesn't currently recognize the expansion of `quote-syntax`
+#;
 (test-comp '(if (lambda () 10)
                 'ok
                 (quote-syntax no!))
@@ -2140,6 +2161,8 @@
               (void 10))
            '(module m racket/base))
 
+;; The compiler doesn't currently recognize the expansion of `quote-syntax`
+#;
 (test-comp '(module m racket/base
               (void (quote-syntax unused!)))
            '(module m racket/base))
@@ -2522,6 +2545,25 @@
   (test-reduce 'k:list-pair? '(cdr (list 1 2)))
   (test-reduce 'k:list-pair? '(cdr (list 1)) #f)
 )
+
+(test-comp '(lambda (z)
+              (when (and (list? z) (pair? z))
+                (list? (cdr z))))
+           '(lambda (z)
+              (when (and (list? z) (pair? z))
+                #t)))
+(test-comp '(lambda (z)
+              (when (list? z)
+                (list? (unsafe-cdr z))))
+           '(lambda (z)
+              (when (list? z)
+                #t)))
+(test-comp '(lambda (z)
+              (when (list? z)
+                (list? (cdr z))))
+           '(lambda (z)
+              (when (list? z)
+                (begin (cdr z) #t))))
 
 (let ([test-bin
        (lambda (bin-name)
@@ -3003,6 +3045,7 @@
                (require (submod ".." a))
                (list b c (c)))))
 
+
 (test-comp `(module m racket/base
              (module a racket/base
                (provide b c)
@@ -3031,6 +3074,36 @@
              (module d racket/base
                (require (submod ".." a))
                (list b c (c 1)))))
+
+;; Use of `c` added to `a` via `b`
+(test-comp `(module m racket/base
+             (module c racket/base
+               (provide c)
+               (define c 'c)
+               (set! c c))
+             (module b racket/base
+               (require (submod ".." c))
+               (provide b)
+               (define (b) c))
+             (module a racket/base
+               (require (submod ".." b)
+                        (submod ".." c))
+               c
+               (b)))
+           `(module m racket/base
+             (module c racket/base
+               (provide c)
+               (define c 'c)
+               (set! c c))
+             (module b racket/base
+               (require (submod ".." c))
+               (provide b)
+               (define (b) c))
+             (module a racket/base
+               (require (submod ".." b)
+                        (submod ".." c))
+               c
+               c)))
 
 (module check-inline-request racket/base
   (require racket/performance-hint)
@@ -3217,6 +3290,74 @@
                        'missing
                        'UNEXPECTED!))
            #f)
+
+(let ()
+  (define (check-empty-allocation hash-sym)
+    (test-comp `(lambda () (,hash-sym) 5)
+               '(lambda () 5))
+    (test-comp `(lambda (x) (,hash-sym x) 5) ; x may not have the right shape
+               '(lambda (x) 5)
+               #f))
+  (check-empty-allocation 'hash)
+  (check-empty-allocation 'hasheqv)
+  (check-empty-allocation 'hasheq)
+  (check-empty-allocation 'make-hash)
+  (check-empty-allocation 'make-hasheqv)
+  (check-empty-allocation 'make-hasheq)
+  (check-empty-allocation 'make-weak-hash)
+  (check-empty-allocation 'make-weak-hasheqv)
+  (check-empty-allocation 'make-weak-hasheq)
+  (check-empty-allocation 'make-immutable-hash)
+  (check-empty-allocation 'make-immutable-hasheqv)
+  (check-empty-allocation 'make-immutable-hasheq)
+
+  (test-comp `(lambda (x y) (hash x y) 5) ; can trigger equal callbacks
+             '(lambda () 5)
+             #f)
+  (test-comp `(lambda (x y) (hasheqv x y) 5)
+             '(lambda (x y) 5))
+  (test-comp `(lambda (x y) (hasheq x y) 5)
+             '(lambda (x y) 5))
+
+  ;; Wrong arity
+  (test-comp `(lambda (x y) (hash x) 5)
+             '(lambda (x) 5)
+             #f)
+  (test-comp `(lambda (x) (hasheqv x) 5)
+             '(lambda (x) 5)
+             #f)
+  (test-comp `(lambda (x) (hasheq x) 5)
+             '(lambda (x) 5)
+             #f))
+
+(let ()
+  ;; Although these are unsafe operations, they are obliged to
+  ;; raise an exception if the iteration value used to be
+  ;; ok and has become not ok due to a mutation (possibly
+  ;; by the GC to drop a weakly held key)
+  (define (check-keep-iterate op-name)
+    (test-comp `(lambda (ht i) (,op-name ht i) 5)
+               `(lambda (ht i) 5)
+               #f))
+  (check-keep-iterate 'unsafe-mutable-hash-iterate-next)
+  (check-keep-iterate 'unsafe-weak-hash-iterate-next)
+  (check-keep-iterate 'unsafe-mutable-hash-iterate-key)
+  (check-keep-iterate 'unsafe-weak-hash-iterate-key)
+  (check-keep-iterate 'unsafe-mutable-hash-iterate-value)
+  (check-keep-iterate 'unsafe-weak-hash-iterate-value)
+  (check-keep-iterate 'unsafe-mutable-hash-iterate-key+value)
+  (check-keep-iterate 'unsafe-weak-hash-iterate-key+value)
+  (check-keep-iterate 'unsafe-mutable-hash-iterate-pair)
+  (check-keep-iterate 'unsafe-weak-hash-iterate-pair)
+
+  (define (check-discard-iterate op-name)
+    (test-comp `(lambda (ht i) (,op-name ht i) 5)
+               `(lambda (ht i) 5)))
+  (check-discard-iterate 'unsafe-immutable-hash-iterate-next)
+  (check-discard-iterate 'unsafe-immutable-hash-iterate-key)
+  (check-discard-iterate 'unsafe-immutable-hash-iterate-value)
+  (check-discard-iterate 'unsafe-immutable-hash-iterate-key+value)
+  (check-discard-iterate 'unsafe-immutable-hash-iterate-pair))
 
 ;; Check elimination of ignored structure predicate
 ;; and constructor applications:
@@ -3430,6 +3571,22 @@
 
 (test-comp '(module m racket/base
              (require racket/unsafe/ops)
+             (struct a (x y) #:authentic)
+             (define (f v)
+               (if (a? v)
+                   (list (a-x v) (a-y v))
+                   (void))))
+           '(module m racket/base
+             (require racket/unsafe/ops)
+             (struct a (x y) #:authentic)
+             (define (f v)
+               (if (a? v)
+                   (list (unsafe-struct*-ref v 0)
+                         (unsafe-struct*-ref v 1))
+                   (void)))))
+
+(test-comp '(module m racket/base
+             (require racket/unsafe/ops)
              (struct a (x y))
              (define (f v)
                (list (a-x v) (a-y v))))
@@ -3557,7 +3714,18 @@
              (make-struct-type-property 'a)
              10)
            '(lambda ()
-             10))
+              10))
+
+(test-comp '(lambda ()
+              (make-struct-type-property 'a (lambda () 'was-wrong-arity))
+              5)
+           '(lambda () 5)
+           #f)
+(test-comp '(lambda ()
+              (make-struct-type-property 'a (lambda (x) 'was-wrong-arity))
+              5)
+           '(lambda () 5)
+           #f)
 
 (test-comp '(module m racket/base
              (define-values (prop:a a? a-ref) (make-struct-type-property 'a))
@@ -3620,6 +3788,13 @@
              (define (g y) (list y)))
            #f)
 
+(test-comp '(lambda ()
+              ;; The built-in `prop:object-name` property has a guard:
+              (make-struct-type 'bad #f 2 0 #f (list (cons prop:object-name 'bad-spec)))
+              5)
+           '(lambda () 5)
+           #f)
+
 (module struct-type-property-a racket/base
   (provide prop:a)
   (define-values (prop:a a? a-ref) (make-struct-type-property 'a)))
@@ -3649,6 +3824,26 @@
              (define (f x) (list (list x) g))
              (struct b () #:property prop:a 'a)
              (define (g y) (list y)))
+           #f)
+
+(test-comp '(module m racket/base
+              (struct posn (x y) #:prefab)
+              (let ()
+                ;; Should be able to tell that `struct:posn` is prefab
+                (make-struct-type 'also-posn struct:posn 2 0 #f null 'prefab)
+                (void))
+              (posn 1 2))
+           '(module m racket/base
+              (struct posn (x y) #:prefab)
+              (let ()
+                (void))
+              (posn 1 2)))
+
+(test-comp '(lambda ()
+              ;; `struct:date` is not prefab
+              (make-struct-type 'bad struct:date 2 0 #f null 'prefab)
+              5)
+           '(lambda () 5)
            #f)
 
 ;; A function with a required optional argument creates a pattern like
@@ -3764,32 +3959,44 @@
 ;; Types related to arithmetic
 
 (let ()
-  (define (check-real-op op [can-omit? #t] [can-multi? #t])
+  (define (check-real-op op [can-omit? #t] [can-multi? #t]
+                         #:implies-real? [implies-real? #t]
+                         #:needs-two-args? [needs-two-args? #f])
     (test-comp `(lambda (x y)
                  (list (,op x y)
-                       (real? x)
-                       (real? y)
                        (number? x)
                        (number? y)))
                `(lambda (x y)
                  (list (,op x y)
                        #t
-                       #t
-                       #t
                        #t)))
+    (when implies-real?
+      (test-comp `(lambda (x y)
+                    (list (,op x y)
+                          (real? x)
+                          (real? y)
+                          (number? x)
+                          (number? y)))
+                 `(lambda (x y)
+                    (list (,op x y)
+                          #t
+                          #t
+                          #t
+                          #t))))
     (when can-multi?
-      (test-comp `(lambda (x y z w)
-                   (list (,op x y z w)
-                         (real? x)
-                         (real? y)
-                         (real? z)
-                         (real? w)))
-                 `(lambda (x y z w)
-                   (list (,op x y z w)
-                         #t
-                         #t
-                         #t
-                         #t))))
+      (let ([? (if implies-real? 'real? 'number?)])
+        (test-comp `(lambda (x y z w)
+                      (list (,op x y z w)
+                            (,? x)
+                            (,? y)
+                            (,? z)
+                            (,? w)))
+                   `(lambda (x y z w)
+                      (list (,op x y z w)
+                            #t
+                            #t
+                            #t
+                            #t)))))
     (when can-omit?
       (test-comp `(lambda (x y)
                    (if (and (real? x) (real? y))
@@ -3800,12 +4007,26 @@
                  `(lambda (x y)
                    (if (and (real? x) (real? y))
                        (,op x y)
-                       (error "bad"))))))
+                       (error "bad"))))
+      ;; Make sure error is not discarded when the number
+      ;; of arguments is wrong
+      (when needs-two-args?
+        (test-comp `(lambda (x)
+                      (if (real? x)
+                          (let ([tmp (,op x)])
+                            'whatever)
+                          (error "bad")))
+                 `(lambda (x)
+                    (if (real? x)
+                        (,op x)
+                        (error "bad")))))))
+
   (check-real-op 'quotient #f #f)
   (check-real-op 'remainder #f #f)
   (check-real-op 'modulo #f #f)
   (check-real-op 'max)
   (check-real-op 'min)
+  (check-real-op '= #:implies-real? #f)
   (check-real-op '<)
   (check-real-op '>)
   (check-real-op '<=)
@@ -3884,6 +4105,13 @@
   (check-number-op-unary 'add1)
   (check-number-op-unary 'sub1)
   (check-number-op-unary 'abs))
+
+;; `abs` wants and produces reals, not arbitrary numbers:
+(test-comp '(lambda (x) (when (number? x) (abs x)) 5)
+           '(lambda (x) 5)
+           #f)
+(test-comp '(lambda (x) (real? (abs x)))
+           '(lambda (x) (abs x) #t))
 
 (test-comp '(lambda () (-) (void))
            '(lambda () (void))
@@ -4037,19 +4265,19 @@
 (test-comp '(letrec-values ([(x y) (error "oops")]) 11)
            '(error "oops"))
 (test-comp '(let-values (((y) (read)) (() (error "oops"))) 11)
-           '(let () (begin (read) (error "oops"))))
+           '(let () (begin (values (read)) (error "oops"))))
 (test-comp '(let-values (((y) (read)) (() (error "oops"))) 11)
-           '(let () (begin (read) (error "oops"))))
+           '(let () (begin (values (read)) (error "oops"))))
 (test-comp '(let-values ((() (error "oops")) ((x) 9)) 11)
            '(error "oops"))
 (test-comp '(let-values ((() (error "oops")) (() (values))) 11)
            '(error "oops"))
 (test-comp '(let-values (((y) (read)) (() (error "oops")) ((x) 9)) 11)
-           '(let () (begin (read) (error "oops"))))
+           '(let () (begin (values (read)) (error "oops"))))
 (test-comp '(let-values (((y) (read)) (() (error "oops")) (() (values))) 11)
-           '(let () (begin (read) (error "oops"))))
+           '(let () (begin (values (read)) (error "oops"))))
 (test-comp '(error "oops")
-           '(let () (begin (read) (error "oops")))
+           '(let () (begin (values (read)) (error "oops")))
            #f)
 
 (test-comp '(with-continuation-mark
@@ -4265,6 +4493,23 @@
            '(lambda () #f))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check inlining with optional arguments
+
+(test-comp '(lambda (x)
+              (define (f z [y 2])
+                (+ z y))
+              (f x))
+           '(lambda (x)
+              (+ x 2)))
+
+(test-comp '(lambda (x)
+              (define (f z [y (+ 1 1)])
+                (+ z y))
+              (f x))
+           '(lambda (x)
+              (+ x 2)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check that the type information is shifted in the
 ;; right direction while inlining.
 ;; The first example triggered a bug in 6.3.
@@ -4364,7 +4609,7 @@
   (f)
   (define i 9)
   (set! i 10))
-(err/rt-test (dynamic-require ''bad-order #f))
+(err/rt-test/once (dynamic-require ''bad-order #f))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -4482,7 +4727,7 @@
 (err/rt-test (cwv-2-5-f (lambda () (values 1 2 3)) (lambda (y z) (+ y 2))) exn:fail:contract:arity?)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Transform call-with-values to direct aplication:
+;; Transform call-with-values to direct application:
 (test-comp '(lambda (f) (f 7))
            '(lambda (f) (call-with-values (lambda () 7) (lambda (x) (f x)))))
 (test-comp '(lambda () (car 7))
@@ -4920,8 +5165,8 @@
 (err/rt-test (do-test-of-lift-fixpoint) exn:fail?)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; generate byecode with a lifted function that has
-;; a boxed argument and rest args, to test that case
+;; generate bytecode with a lifted function that has
+;; a boxed argument and rest args, originally to test that case
 ;; of the validator
 
 (parameterize ([current-namespace (make-base-namespace)])
@@ -4959,65 +5204,14 @@
   (set! s? f) ; break the JIT's optimistic assumption
   
   (define (go)
+    (define init-size
+      (let ([vec (make-vector 6)])
+        (vector-set-performance-stats! vec (current-thread))
+        (vector-ref vec 3)))
     (define size (f 500000)) ; make sure that this still leads to a tail loop
-    (size . < . 80000)))
+    ((- size init-size) . < . 20000)))
 
 (test #t (dynamic-require ''check-tail-call-by-jit-for-struct-predicate 'go))
-
-;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Test bytecode validator's checking of constantness
-
-(let ()
-  (define c1
-    '(module c1 racket/kernel
-       ((if (zero? (random 1))
-            (lambda (f) (display (f)))
-            #f)
-        (lambda ()
-          ;; This access of i should raise an exception:
-          i))
-       (define-values (i) (random 1))))
-
-  (define o (open-output-bytes))
-
-  (parameterize ([current-namespace (make-base-namespace)])
-    (write (compile c1) o))
-
-  (define m (zo-parse (open-input-bytes (get-output-bytes o))))
-
-  (define o2 (open-output-bytes))
-
-  ;; construct bytecode that is broken by claiming that `i' is constant
-  ;; in the too-early reference:
-  (void
-   (write-bytes
-    (zo-marshal
-     (match m
-       [(compilation-top max-let-depth binding-namess prefix code)
-        (compilation-top max-let-depth binding-namess prefix 
-                         (let ([body (mod-body code)])
-                           (struct-copy mod code [body
-                                                  (match body 
-                                                    [(list a b)
-                                                     (list (match a
-                                                             [(application rator (list rand))
-                                                              (application
-                                                               rator
-                                                               (list
-                                                                (struct-copy 
-                                                                 lam rand
-                                                                 [body
-                                                                  (match (lam-body rand)
-                                                                    [(toplevel depth pos const? ready?)
-                                                                     (toplevel depth pos #t #t)])])))])
-                                                           b)])])))]))
-    o2))
-
-  ;; validator should reject this at read or eval time (depending on how lazy validation is):
-  (err/rt-test (parameterize ([current-namespace (make-base-namespace)]
-                              [read-accept-compiled #t])
-                 (eval (read (open-input-bytes (get-output-bytes o2)))))
-               exn:fail:read?))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; make sure sfs pass doesn't add a nested begin0
@@ -5038,7 +5232,8 @@
 
   ; extract the content of the begin0 expression
   (define (analyze-beg0 m)
-    (define def-z (car (mod-body (compilation-top-code m))))
+    (define lb (hash-ref (linkl-directory-table m)'()))
+    (define def-z (car (linkl-body (hash-ref (linkl-bundle-table lb) 0))))
     (define body-z (let-one-body (def-values-rhs def-z)))
     (define expr-z (car (beg0-seq body-z)))
     (cond
@@ -5059,8 +5254,8 @@
                    list)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Make sure compiler isn't too agressive for the validator
-;;  in terms of typed arguments:
+;; Originally: make sure compiler isn't too aggressive for the
+;; validator in terms of typed arguments:
 
 (let ([m '(module m racket/base
             (require racket/flonum)
@@ -5076,7 +5271,7 @@
   (define o (open-output-bytes))
   (write (compile m) o)
   (parameterize ([read-accept-compiled #t])
-    ;; too-aggressive compilation produces a validator failure here
+    ;; too-aggressive compilation produced a validator failure here
     (read (open-input-bytes (get-output-bytes o)))))
 
 (when (extflonum-available?)
@@ -5094,7 +5289,7 @@
     (define o (open-output-bytes))
     (write (compile m) o)
     (parameterize ([read-accept-compiled #t])
-      ;; too-aggressive compilation produces a validator failure here
+      ;; too-aggressive compilation produced a validator failure here
       (read (open-input-bytes (get-output-bytes o))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -5144,6 +5339,10 @@
     (begin (test result (lambda () E))
            (test #t equal? output
                  (bytes->string/utf-8 (get-output-bytes O #t)))))
+  ;;
+  (define-inline (f0) (+ 1 0))
+  (test/output (f0)
+               1 "")
   ;;
   (define-inline (f x) (+ x x))
   (test/output (f (show 'arg1 1))
@@ -5252,8 +5451,9 @@
       (write (compile l) o)
       (parameterize ([read-accept-compiled #t])
         (zo-parse (open-input-bytes (get-output-bytes o))))))
-  (let* ([m (compilation-top-code b)]
-         [d (car (mod-body m))]
+  (let* ([lb (hash-ref (linkl-directory-table b) '())]
+         [m (hash-ref (linkl-bundle-table lb) 0)]
+         [d (car (linkl-body m))]
          [b (closure-code (def-values-rhs d))]
          [c (application-rator (lam-body b))]
          [l (closure-code c)]
@@ -5274,8 +5474,9 @@
       (write (compile l) o)
       (parameterize ([read-accept-compiled #t])
         (zo-parse (open-input-bytes (get-output-bytes o))))))
-  (let* ([m (compilation-top-code b)]
-         [d (car (mod-body m))]
+  (let* ([lb (hash-ref (linkl-directory-table b) '())]
+         [m (hash-ref (linkl-bundle-table lb) 0)]
+         [d (car (linkl-body m))]
          [rhs (def-values-rhs d)]
          [b (inline-variant-direct rhs)]
          [v (application-rator (lam-body b))])
@@ -5293,15 +5494,16 @@
       (write (compile l) o)
       (parameterize ([read-accept-compiled #t])
         (zo-parse (open-input-bytes (get-output-bytes o))))))
-  (let* ([m (compilation-top-code b)]
-         [d (cadr (mod-body m))]
+  (let* ([lb (hash-ref (linkl-directory-table b) '())]
+         [m (hash-ref (linkl-bundle-table lb) 0)]
+         [d (cadr (linkl-body m))]
          [rhs (def-values-rhs d)]
          [b (inline-variant-direct rhs)]
          [v (application-rator (lam-body b))])
     (test #t toplevel-const? v)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; The validator should understand that a structure
+;; Originally: The validator should understand that a structure
 ;; constructor always succeeds:
 
 (let ()
@@ -5389,7 +5591,7 @@
       (lambda ()
         (with-handlers ([exn:fail:out-of-memory? void])
           (arithmetic-shift 1 30070458541082)))))))
-(when (eq? '3m (system-type 'gc))
+(unless (eq? 'cgc (system-type 'gc))
   (void (dynamic-require ''uses-too-much-memory-for-shift #f)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -5406,7 +5608,7 @@
                          (define n (fxmax (length l) 1))
                          (lambda _ n))))
            o)
-    ;; Should succeed, as opposed to a validation error:
+    ;; Should succeed; once produced a validation error:
     (eval (read (open-input-bytes (get-output-bytes o))))))
 
 (parameterize ([current-namespace (make-base-namespace)]
@@ -5422,7 +5624,7 @@
                        (let ([n (fxmax (length '()) 1)])
                          (app (lambda _ (ident n))))))
            o)
-    ;; Should succeed, as opposed to a validation error:
+    ;; Should succeed; once produced a validation error:
     (eval (read (open-input-bytes (get-output-bytes o))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -5479,7 +5681,7 @@
         (check pred t1 e1)))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Check unboxing with mutual recusion:
+;; Check unboxing with mutual recursion:
 
 (let ()
   ;; Literal lists thwart inlining:
@@ -5541,8 +5743,8 @@
                    (void)))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Check that bytecode validator is consistent with respect to the
-;; optimizer and special-casing of bitwise operators:
+;; Originally: Check that bytecode validator is consistent with
+;; respect to the optimizer and special-casing of bitwise operators:
 
 (let ([o (open-output-bytes)])
   (write (compile
@@ -5810,8 +6012,8 @@
     (void proc proc)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Make sure validation doesn't fail for importing a setter of a
-;; structure type that has auto fields:
+;; Originally: Make sure validation doesn't fail for importing a
+;; setter of a structure type that has auto fields:
 
 (module provides-a-mutator-for-a-struct-with-an-auto-field racket/base
   (provide foo set-foo-y!)
@@ -5888,9 +6090,8 @@
   bar)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Check that `string-append` on a known-string argument
-;; is not treated consistently by the optimzier and
-;; validator
+;; Originally: Check that `string-append` on a known-string argument
+;; is not treated consistently by the optimzier and validator
 
 (let ([c (compile
           '(module m racket/base
@@ -5904,7 +6105,7 @@
     (void (read (open-input-bytes (get-output-bytes o))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Check for an optimizer regresssion
+;; Check for an optimizer regression
 
 (err/rt-test (+ (let-values (((x y) (let-values ((() 9)) 2))) x) (error))
              exn:fail?)
@@ -5973,6 +6174,472 @@
              'mongo-dict-pull!)]
       [#:pull* 'pull]
       [_ 'err])))
+
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; At the time of its addition, this example causes the
+;; optimizer to initially use the `random-configuration`
+;; variable, instead of substituting `(unknown)`, because it
+;; can't provide that the substitution is ok --- but later it
+;; learns enough to decide the the substitution is ok after
+;; all
+
+(module optimizer-decides-to-inline-once-use-after-all racket/base
+  (define unknown #f)
+  (set! unknown unknown)
+  (define (generate-samples)
+    (define random-configuration (unknown))
+    (for ([i 0])
+      (for ([s (in-list 'obviously-not-a-list)])
+        (unknown random-configuration)))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure the expander and compiler don't go quadratic
+;; for
+;;  (lambda (arg-id ...) (define def-id _rhs) ... (arg-id def-id) ...)
+
+(when (run-unreliable-tests? 'timing)
+  (define (gensym-n n)
+    (let loop ([i n])
+      (if (zero? i)
+          '()
+          (cons (gensym) (loop (sub1 i))))))
+
+  (define (time-it n)
+    (collect-garbage)
+    (let ([start (current-process-milliseconds)])
+      (let* ([args (gensym-n n)]
+             [defns (gensym-n n)])
+        (eval
+         `(lambda ,args
+            ,@(map (lambda (defn) `(define ,defn ',defn)) defns)
+            ,@(map (lambda (arg defn) `(,arg ,defn)) args defns))))
+      (- (current-process-milliseconds) start)))
+
+  (let loop ([tries 10])
+    (let ([a (time-it 100)]
+          [b (time-it 1000)])
+      (printf "~s ~s\n" a b)
+      ;; n lg(n) is ok, n^2 is not
+      (when (b . > . (* 50 a))
+        (if (zero? tries)
+            (test 'fail "compilation took too long" (/ b a 1.0))
+            (loop (sub1 tries)))))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure the optimizer doesn't assume that `bytes-utf-8-{length,index}`
+;; returns a fixnum:
+
+(test #f 'not-utf-8 (bytes-utf-8-length (bytes 255)))
+(test #t 'not-not-utf-8 (not (bytes-utf-8-length (bytes 255))))
+(test #f 'not-utf-8 (bytes-utf-8-index (bytes 255) 1))
+(test #t 'not-not-utf-8 (not (bytes-utf-8-index (bytes 255) 1)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Try a program that triggers lots of inlining, which at one point
+;; exposed a bug related to the closing of `lambda` forms within
+;; an inlined function. Thanks to Tom Gilray for the test.
+
+(module inline-a-lot racket/base
+  ((((((((((((((lambda (x84)
+                 (lambda (x85)
+                   (lambda (x86)
+                     (lambda (x87)
+                       (lambda (x88)
+                         (lambda (x89)
+                           (lambda (x90)
+                             (lambda (x91)
+                               (lambda (x92)
+                                 (lambda (x93)
+                                   (lambda (x94)
+                                     (lambda (x95)
+                                       (lambda (x96)
+                                         ((lambda (x97)
+                                            (x97
+                                             (lambda (x98)
+                                               (lambda (x99)
+                                                 (x98
+                                                  (x98
+                                                   (x98 (x98 (x98 x99)))))))))
+                                          (x84
+                                           (lambda (x100)
+                                             (lambda (x101)
+                                               ((((x95
+                                                   (lambda (x102)
+                                                     (lambda (x103) x103)))
+                                                  x101)
+                                                 (lambda (x104)
+                                                   (lambda (x105)
+                                                     (lambda (x106)
+                                                       (x105 x106)))))
+                                                (lambda (x107)
+                                                  ((x93 x101)
+                                                   (x100
+                                                    ((x92 x101)
+                                                     (lambda (x108)
+                                                       (lambda (x109)
+                                                         (x108
+                                                          x109)))))))))))))))))))))))))
+               ((lambda (x110) (x110 x110))
+                (lambda (x111)
+                  (lambda (x112)
+                    (x112 (lambda (x113) (((x111 x111) x112) x113)))))))
+              (lambda (x114)
+                ((x114
+                  (lambda (x115)
+                    (lambda (x116)
+                      (lambda (x117)
+                        (lambda (x118) (x118 (lambda (x119) x119)))))))
+                 (lambda (x120)
+                   (lambda (x121)
+                     (lambda (x122) (x121 (lambda (x123) x123))))))))
+             (lambda (x124)
+               (lambda (x125)
+                 (lambda (x126) (lambda (x127) ((x126 x124) x125))))))
+            (lambda (x128)
+              ((x128 (lambda (x129) (lambda (x130) x129)))
+               (lambda (x131) (lambda (x132) x132)))))
+           (lambda (x133)
+             ((x133 (lambda (x134) (lambda (x135) x135)))
+              (lambda (x136) (lambda (x137) x137)))))
+          (lambda (x138)
+            (lambda (x139) (lambda (x140) (x139 ((x138 x139) x140))))))
+         (lambda (x141)
+           (lambda (x142)
+             (lambda (x143)
+               (((x141 (lambda (x144) (lambda (x145) (x145 (x144 x142)))))
+                 (lambda (x146) x143))
+                (lambda (x147) x147))))))
+        (lambda (x148)
+          (lambda (x149)
+            (lambda (x150) (lambda (x151) ((x149 x150) ((x148 x150) x151)))))))
+       (lambda (x152)
+         (lambda (x153)
+           ((x153
+             (lambda (x154)
+               (lambda (x155)
+                 (lambda (x156)
+                   (((x154 (lambda (x157) (lambda (x158) (x158 (x157 x155)))))
+                     (lambda (x159) x156))
+                    (lambda (x160) x160))))))
+            x152))))
+      (lambda (x161)
+        (lambda (x162)
+          (lambda (x163) (lambda (x164) ((x161 (x162 x163)) x164))))))
+     (lambda (x165)
+       ((x165
+         (lambda (x166)
+           (lambda (x167) (lambda (x168) (x168 (lambda (x169) x169))))))
+        (lambda (x170) (lambda (x171) (x170 (lambda (x172) x172)))))))
+    (lambda (x173)
+      (lambda (x174)
+        ((((lambda (x175)
+             ((x175
+               (lambda (x176)
+                 (lambda (x177) (lambda (x178) (x178 (lambda (x179) x179))))))
+              (lambda (x180) (lambda (x181) (x180 (lambda (x182) x182))))))
+           (((lambda (x183)
+               (lambda (x184)
+                 ((x184
+                   (lambda (x185)
+                     (lambda (x186)
+                       (lambda (x187)
+                         (((x185
+                            (lambda (x188) (lambda (x189) (x189 (x188 x186)))))
+                           (lambda (x190) x187))
+                          (lambda (x191) x191))))))
+                  x183)))
+             x173)
+            x174))
+          (lambda (x192)
+            ((((lambda (x193)
+                 ((x193
+                   (lambda (x194)
+                     (lambda (x195)
+                       (lambda (x196) (x196 (lambda (x197) x197))))))
+                  (lambda (x198) (lambda (x199) (x198 (lambda (x200) x200))))))
+               (((lambda (x201)
+                   (lambda (x202)
+                     ((x202
+                       (lambda (x203)
+                         (lambda (x204)
+                           (lambda (x205)
+                             (((x203
+                                (lambda (x206)
+                                  (lambda (x207) (x207 (x206 x204)))))
+                               (lambda (x208) x205))
+                              (lambda (x209) x209))))))
+                      x201)))
+                 x174)
+                x173))
+              (lambda (x210)
+                (lambda (x211) (lambda (x212) (x211 (lambda (x213) x213))))))
+             (lambda (x214)
+               (lambda (x215) (lambda (x216) (x216 (lambda (x217) x217))))))))
+         (lambda (x218)
+           (lambda (x219) (lambda (x220) (x220 (lambda (x221) x221)))))))))
+   (lambda (x222)
+     ((x222
+       (lambda (x223)
+         (lambda (x224) (lambda (x225) (x225 (lambda (x226) x226))))))
+      (lambda (x227)
+        (lambda (x228) (lambda (x229) (x228 (lambda (x230) x230)))))))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test based on a program from Eric Dobson: at the time of
+;; writing provoked a compiler crash by setting up an unused
+;; self-reference in a `letrec`-bound function, where the compiler
+;; determined that the binding could be turned to a `let` because
+;; the self-reference is not reachable --- but for various reasons left
+;; the self-reference in bound `lambda`s set of free variables
+
+(letrec ([list-cmp348
+          (lambda ()
+            (let ((val (l1393 #f))
+                  (temp443
+                   (lambda ()
+                     (let ((val (cmp392 #f))
+                           (temp408
+                            (lambda ()
+                              (list-cmp348)))
+                           (temp409 (lambda (val401 success402 fail403) #f)))
+                       (temp409
+                        val
+                        temp407
+                        (lambda ()
+                          temp408)))))
+                  (temp446 (lambda () #f))
+                  (temp447
+                   (lambda (val415 success416 fail417)
+                     (list (variant-val-variant-name val415)
+                           (list (vector-ref (variant-val-fields val415) '1)
+                                 (if (equal? (variant-val-variant-name field421) #f)
+                                     (let ((field423
+                                            (list (variant-val-fields field421) '1)))
+                                       (let ((l2411 field423))
+                                         (let ((field422
+                                                (list (variant-val-fields field421) #f)))
+                                           (let ((e2412 field422))
+                                             (let ((field418
+                                                    (list
+                                                     (variant-val-fields val415)
+                                                     #f)))
+                                               (list
+                                                (list
+                                                 (variant-val-variant-name field418)
+                                                 'cons)
+                                                (let ((field420
+                                                       (list
+                                                        (variant-val-fields field418)
+                                                        '1)))
+                                                  (let ((l1413 field420))
+                                                    (let ((field419
+                                                           (list
+                                                            (variant-val-fields field418)
+                                                            #f)))
+                                                      (let ((e1414 field419))
+                                                        (success416
+                                                         l2411
+                                                         e2412
+                                                         l1413
+                                                         e1414)))))
+                                                (fail417)))))))
+                                     (fail417)))
+                           (fail417))))
+                  (temp448
+                   (lambda (val424 success425 fail426)
+                     (list (variant-val-variant-name val424)
+                           (list (list (variant-val-fields val424) '1)
+                                 (list (variant-val-variant-name field428)
+                                       (list
+                                        (list (variant-val-fields field428) '1)
+                                        (list
+                                         (list (variant-val-fields field428) #f)
+                                         (let ((field427
+                                                (list (variant-val-fields val424) #f)))
+                                           (list (variant-val-variant-name field427)
+                                                 (fail426)))))
+                                       (fail426)))
+                           (fail426))))
+                  (temp449
+                   (lambda (val431 success432 fail433)
+                     (list (variant-val-variant-name val431)
+                           (list (list (variant-val-fields val431) '1)
+                                 (list
+                                  (variant-val-variant-name field437)
+                                  (list
+                                   (list (variant-val-fields val431) #f)
+                                   (list (variant-val-variant-name field434)
+                                         (list
+                                          (list (variant-val-fields field434) '1)
+                                          (list (variant-val-fields field434)
+                                                (success432)))
+                                         (fail433)))
+                                  (fail433)))
+                           (fail433))))
+                  (temp450
+                   (lambda (val438 fail440)
+                     (list (variant-val-variant-name val438)
+                           (list (list (variant-val-fields val438) '1)
+                                 (fail440))
+                           (fail440)))))
+              (list
+               temp447
+               temp443
+               temp448
+               (list
+                temp449
+                (list
+                 (list
+                  temp450
+                  temp446))))))])
+  (lambda ()
+    (list-cmp348)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure conversion to internal `with-immediate-continuation-mark`
+;; correctly handles mutable variables
+
+(test #f
+      'wicm
+      (call-with-immediate-continuation-mark
+       'hello
+       (lambda (m)
+         (set! m m)
+         m)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test for an optimizer bug
+
+(define (late-inline-with-single-use-that-turns-out-to-be-movable g)
+  (let ([x (g)])
+    (let ([proc (lambda (y) (list x y))])
+      (let ([only (lambda () ((car (list proc)) '(5)))])
+        (let ([also-only only])
+          (also-only))))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(module optimizes-to-with-immediate-continuation-mark-in-noninlined racket/base
+  (define (call/icm proc)
+    (call-with-immediate-continuation-mark
+     'x
+     (lambda (v)
+       ;; The constant '(1 2 3) currently prevents inlining
+       (if (proc '(1 2 3))
+           (proc v)
+           #f))))
+
+  (define (call/cm proc)
+    (if (zero? (random 1))
+        (with-continuation-mark
+         'x 'y
+         (proc))
+        ;; disable inline:
+        '(3 4 5)))
+
+  (define result
+    (let ([in? #f]
+          [result #f])
+      (call/cm
+       (lambda ()
+         (set! in? #t)
+         (call/icm
+          (lambda (v)
+            (set! result v)))
+         (set! in? #f)))
+      result))
+
+  (provide result))
+
+(test #f dynamic-require ''optimizes-to-with-immediate-continuation-mark-in-noninlined 'result)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(module regression-for-letrec-check-non-app-tracking racket/base
+  (require racket/match)
+
+  (define (j-emit j)
+    (struct :ec (x defs) #:transparent)
+    (struct :def (x e) #:transparent)
+    (define (e->c^ j) '(1 2 3))
+    (define (es->c^ js)
+      (define n (gensym))
+      (match js
+        ['() (e->c '(:con 'void))]
+        [(cons a d)
+         (match-define (:ec ax adefs) (e->c a))
+         (match-define (:ec dx ddefs) (es->c d))
+         (:ec n (list* (:def n 9)
+                       (append ddefs adefs)))]))
+
+    (define ((make-e->c e->c^) j)
+      (match-define (and r (:ec n defs)) (e->c^ j))
+      r)
+    (define e->c (make-e->c e->c^))
+    (define es->c (make-e->c es->c^))
+
+    6))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(module regression-test-to-make-sure-inlining-does-not-go-crazy racket/base
+  (define (f x)
+    (lambda (y)
+      (letrec ([recursion (f x)])
+        (+ x y)))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test provided by @formalizm
+
+(parameterize ([compile-context-preservation-enabled #t])
+  (eval
+   '(module raises-should-be-reached-error racket/base
+      (define (return-false) #f)
+      (define foo
+        (let ([bar (return-false)])
+          (if bar
+              (string-append "bar: " bar)
+              (error "bar is false, so this error is reached")))))))
+(err/rt-test/once (dynamic-require ''raises-should-be-reached-error #f)
+                  exn:fail?
+                  #rx"this error is reached")
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test related to single-use variables
+;; and `with-continuation-mark`
+
+(test #t
+      procedure?
+      (let ((q #f)
+            (n (λ (x) #t)))
+        (let ([h (with-continuation-mark
+                  (set! q 1)
+                  #f
+                  n)])
+          (lambda (x) (h x)))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test related to single-use variables
+;; and disabled inlining
+
+(parameterize ([compile-context-preservation-enabled #t]
+               [current-namespace (make-base-namespace)])
+  (void
+   (compile
+    '(module m racket/base
+       (letrec ([f (lambda () 0)]
+                [g (let ([g2
+                          (lambda ()
+                            (let ([x (f)])
+                              (list (lambda () x) h)))])
+                     g2)]
+                [h (letrec ([loop
+                             (lambda ()
+                               (let ([y (g)])
+                                 (list y loop)))])
+                     loop)])
+         h)))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

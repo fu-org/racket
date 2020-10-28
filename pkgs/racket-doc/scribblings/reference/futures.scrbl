@@ -40,7 +40,8 @@ futures and threads. Furthermore, guarantees about the visibility of
 effects and ordering are determined by the operating system and
 hardware---which rarely support, for example, the guarantee of
 sequential consistency that is provided for @racket[thread]-based
-concurrency. At the same time, operations that seem obviously safe may
+concurrency; see also @secref["memory-order"]. At the same time, operations
+that seem obviously safe may
 have a complex enough implementation internally that they cannot run in
 parallel. See also @guidesecref["effective-futures"] in @|Guide|.
 
@@ -81,10 +82,12 @@ execute through a call to @racket[touch], however.
 @defproc[(current-future) (or/c #f future?)]{
 
   Returns the descriptor of the future whose thunk execution is the
-  current continuation.  If a future thunk itself uses @racket[touch],
+  current continuation; that is, if a future descriptor @racket[f] is returned,
+  @racket[(touch f)] will produce the result of the current continuation. 
+  If a future thunk itself uses @racket[touch],
   future-thunk executions can be nested, in which case the descriptor of
   the most immediately executing future is returned.  If the current
-  continuation is not a future-thunk execution, the result is
+  continuation does not return to the @racket[touch] of any future, the result is
   @racket[#f].
 }
 
@@ -150,6 +153,13 @@ the futures may be @racket[touch]ed in any order.
   parallel computations). In contrast, operations on plain @tech{semaphores}
   are not safe to perform in parallel, and they therefore prevent
   a computation from continuing in parallel.
+
+  Beware of trying to use an fsemaphore to implement a lock. A future
+  may run concurrently and in parallel to other futures, but a future
+  that is not demanded by a Racket thread can be suspended at any
+  time---such as just after it takes a lock and before it releases the
+  lock. If you must share mutable data among futures, lock-free data
+  structures are generally a better fit.
 
 }
 

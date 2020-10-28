@@ -39,6 +39,24 @@
 (syntax-test #'(quote-syntax))
 (syntax-test #'(quote-syntax . 7))
 
+;; Property is attached only to immediate syntax object:
+(test #f
+      syntax-property
+      (car (syntax-e (datum->syntax #f '(a) #f (syntax-property #'x 'ok 'value))))
+      'ok)
+(test 'value
+      syntax-property
+      (datum->syntax #f '(a) #f (syntax-property #'x 'ok 'value))
+      'ok)
+
+(let ([s (syntax-property #'s 'key 'val)])
+  (test 'val syntax-property s 'key)
+  (test #f syntax-property (syntax-property-remove s 'key) 'key))
+
+(test #t immutable? (syntax-e (datum->syntax #f (string #\a))))
+(test #t immutable? (syntax-e (syntax-case (datum->syntax #f (list (string #\a))) ()
+                                [(a) #'a])))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; some syntax-case patterns
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -228,6 +246,27 @@
 (define-define-stx stx-with-property)
 (test 'y syntax-property stx-with-property 'x)
 
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that protected references are annotated with a 'protected property
+
+(module exports-macros-that-expand-to-protected-references racket/base
+  (provide emtetpr-m1 emtetpr-m2 (protect-out x1))
+  (define x1 1)
+  (define x2 2)
+  (define-syntax-rule (emtetpr-m1) x1)
+  (define-syntax-rule (emtetpr-m2) x2))
+
+(require 'exports-macros-that-expand-to-protected-references)
+
+(test #t syntax-property (expand #'(emtetpr-m1)) 'protected)
+(test #t syntax-property (expand #'(emtetpr-m2)) 'protected)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check immutability
+
+(test #t immutable? (syntax-e #'#(1 2)))
+(test #t immutable? (syntax-e #'#&1))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Plain s, se derived from part of s
 
@@ -357,6 +396,108 @@
 (test '((mcr2 mcr5) mcr7)
       (tree-map syntax-e)
       (syntax-property se 'origin))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure `let-syntax` (which involves a rename transformer)
+;; attaches the right 'origin
+
+(test #t
+      syntax-original?
+      (let ([stx (expand #'(let-syntax ([m (lambda (stx) #''m)])
+                             m))])
+        (syntax-case stx ()
+          [(_ () (_ () e)) (car (syntax-property #'e 'origin))])))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check 'origin tracing for a set!-transformer
+
+(test #t
+      'has-do-not-forget-me-origin?
+      (let ([stx (expand #'(let-syntax ([do-not-forget-me (make-set!-transformer
+                                                           (lambda (stx)
+                                                             #'10))])
+                             (set! do-not-forget-me 5)))])
+        (let loop ([v stx])
+          (cond
+            [(syntax? v)
+             (or (loop (syntax-property v 'origin))
+                 (loop (syntax-e v)))]
+            [(pair? v) (or (loop (car v))
+                           (loop (cdr v)))]
+            [(eq? v 'do-not-forget-me) #t]
+            [else #f]))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that 'origin has the right source location,
+;; and that it doesn't have excessive properties
+
+(let ()
+  (define m #`(module m racket/base
+                (require (for-syntax racket/base))
+                (let ()
+                  #,(syntax-property #`(define-values (x y) (values 1 2))
+                                     'on-form
+                                     'dv)
+                  x)))
+  (define e (expand m))
+  (define dv-src
+    (let loop ([m m])
+      (cond
+        [(syntax? m)
+         (or (and (eq? (syntax-e m) 'define-values)
+                  m)
+             (loop (syntax-e m)))]
+        [(pair? m) (or (loop (car m)) (loop (cdr m)))]
+        [else #f])))
+  (define dv-origin
+    (let loop ([e e])
+      (cond
+        [(syntax? e)
+         (define p (syntax-property e 'origin))
+         (or (let loop ([p p])
+               (cond
+                 [(and (identifier? p)
+                       (eq? (syntax-e p) 'define-values))
+                  p]
+                 [(pair? p) (or (loop (car p)) (loop (cdr p)))]
+                 [else #f]))
+             (loop (syntax-e e)))]
+        [(pair? e) (or (loop (car e)) (loop (cdr e)))]
+        [else #f])))
+  (test (list (syntax-line dv-src)
+              (syntax-column dv-src)
+              (syntax-span dv-src))
+        list
+        (syntax-line dv-origin)
+        (syntax-column dv-origin)
+        (syntax-span dv-origin))
+  (test #f syntax-property dv-origin 'on-form))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check property tracking on `let[rec]-values` binding clauses
+
+(let ([mk-e (lambda (bind)
+              #`(let-syntax ([m (lambda (stx)
+                                  (syntax-case stx ()
+                                    [(_ e) (local-expand #'e 'expression '())]))])
+                  (m (#,bind (#,(syntax-property #'[(x) 0] 'keep-me #t)) 1))))])
+  (define (find-keep-me? s)
+    (cond
+      [(syntax? s) (or (syntax-property s 'keep-me)
+                       (find-keep-me? (syntax-e s)))]
+      [(pair? s) (or (find-keep-me? (car s))
+                     (find-keep-me? (cdr s)))]
+      [else #f]))
+  (test #t find-keep-me? (expand (mk-e #'let-values)))
+  (test #t find-keep-me? (expand (mk-e #'letrec-values))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure a language name via `#lang` is original
+
+(parameterize ([read-accept-reader #t])
+  (syntax-case (read-syntax 'hi (open-input-string "#lang racket/base 10")) ()
+    [(_ _ lang . _)
+     (test #t syntax-original? #'lang)]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; #%app, etc.
@@ -536,14 +677,14 @@
 
 (define base-lib (caddr (identifier-binding* #'lambda)))
 
-(test `('#%kernel case-lambda ,base-lib case-lambda 0 0 0)
+(test `('#%core case-lambda ,base-lib case-lambda 0 0 0)
       identifier-binding* #'case-lambda)
 (test `("private/promise.rkt" delay* ,base-lib delay 0 0 0)
       identifier-binding* #'delay)
-(test `('#%kernel #%module-begin ,base-lib #%plain-module-begin 0 0 0)
+(test `('#%core #%module-begin ,base-lib #%plain-module-begin 0 0 0)
       identifier-binding* #'#%plain-module-begin)
 (require (only-in racket/base [#%plain-module-begin #%pmb]))
-(test '('#%kernel #%module-begin racket/base #%plain-module-begin 0 0 0)
+(test '('#%core #%module-begin racket/base #%plain-module-begin 0 0 0)
       identifier-binding* #'#%pmb)
 
 (let ([b (identifier-binding
@@ -820,7 +961,8 @@
           ((current-eval) (datum->syntax #f 'eval))))
 
   (test eval 'compile (eval (compile 'eval)))
-  (test eval 'compile (eval (compile eval)))
+  (when (eq? 'racket (system-type 'vm))
+    (test eval 'compile (eval (compile eval))))
   (test eval 'compile (eval (compile #'eval)))
   (test eval 'compile (eval (compile (datum->syntax #f 'eval))))
 
@@ -1529,7 +1671,7 @@
 (test '(10 20 #t) '@!$get @!$get)
 |#
 
-(test '(12)
+(test '(1) ; old expander produced 12
       eval
       (expand
        #'(let ([b 12])
@@ -1604,6 +1746,20 @@
 (test #f free-identifier=? #'lambda #'lambda 0 4)
 (require (for-meta 4 racket/base))
 (test #t free-identifier=? #'lambda #'lambda 0 4)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Unbound and bound at toplevel are equivalent by `free-identifier=?`
+
+(test #t free-identifier=? #'defined-at-the-top-level (datum->syntax #f 'defined-at-the-top-level))
+(define defined-at-the-top-level 'yep)
+(test #t free-identifier=? #'defined-at-the-top-level (datum->syntax #f 'defined-at-the-top-level))
+
+(define-syntax-rule (define-defined-at-the-top-level)
+  (begin
+    (define defined-at-the-top-level 10)
+    (test #f free-identifier=? #'defined-at-the-top-level (datum->syntax #f 'defined-at-the-top-level))))
+(define-defined-at-the-top-level)
+(test #t free-identifier=? #'defined-at-the-top-level (datum->syntax #f 'defined-at-the-top-level))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;  certification example from the manual
@@ -1787,14 +1943,24 @@
                       s)
                (get-output-bytes s))
              exn:fail?)
-;; non-cyclic variant:
-(err/rt-test (let ([s (open-output-bytes)])
-               (write (compile `(quote ,(let ([ht (make-hasheq)])
-                                          (hash-set! ht #'bad 10)
-                                          ht)))
-                      s)
-               (get-output-bytes s))
-             exn:fail?)
+
+(unless (eq? 'chez-scheme (system-type 'vm))
+  ;; non-cyclic variant:
+  (err/rt-test (let ([s (open-output-bytes)])
+                 (write (compile `(quote ,(let ([ht (make-hasheq)])
+                                            (hash-set! ht #'bad 10)
+                                            ht)))
+                        s)
+                 (get-output-bytes s))
+               exn:fail?)
+  ;; non-transparent struct variant:
+  (err/rt-test (let ([s (open-output-bytes)])
+                 (write (compile `(quote ,(let ()
+                                            (struct a (x y))
+                                            (a 1 2))))
+                        s)
+                 (get-output-bytes s))
+               exn:fail?))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; define-syntax-rule
@@ -1816,6 +1982,61 @@
   (error-test #'a-rule-pattern no-match?)
   (error-test #'(a-rule-pattern) no-match?)
   (error-test #'(a-rule-pattern 1) no-match?))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Explicit binding sets
+
+(let ([bs (syntax-binding-set-extend
+           (syntax-binding-set-extend
+            (syntax-binding-set-extend
+             (syntax-binding-set)
+             'car 0 (module-path-index-join ''#%runtime #f))
+            'cdr 1 (module-path-index-join ''#%runtime #f)
+            #:source-phase 0
+            #:nominal-require-phase 1)
+           'items 0 (module-path-index-join ''#%runtime #f)
+           #:source-symbol 'list)])
+  (test #t free-identifier=?
+        (syntax-binding-set->syntax bs 'car)
+        #'car)
+  (test #f free-identifier=?
+        (syntax-binding-set->syntax bs 'cdr)
+        #'cdr)
+  (test #t free-identifier=?
+        (syntax-binding-set->syntax bs 'cdr)
+        #'cdr
+        1)
+  (test #f free-identifier=?
+        (syntax-binding-set->syntax bs 'list)
+        #'list)
+  (test #t free-identifier=?
+        (syntax-binding-set->syntax bs 'items)
+        #'list))
+
+(module synthesizes-self-reference racket/base
+  (require (for-syntax racket/base))
+  (provide results)
+
+  (define x 5)
+  
+  (define-syntax (f stx)
+    (define the-x
+      (syntax-binding-set->syntax
+       (syntax-binding-set-extend
+        (syntax-binding-set)
+        'x 0 (variable-reference->module-path-index
+              (#%variable-reference)))
+       'x))
+  
+    #`(list #,the-x
+            x
+            (eval (quote-syntax #,the-x))
+            (eval (quote-syntax x))))
+
+  (define results (f)))
+
+(dynamic-require ''synthesizes-self-reference 0)
+(test '(5 5 5 5) dynamic-require ''synthesizes-self-reference 'results)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Extra taint tests
@@ -1852,6 +2073,21 @@
                                      (syntax-arm #'(begin (define-values (x y z) (values 1 2 3)))
                                                  #f #t)))))))
 
+(let ()
+  (define i1 (make-inspector))
+  (define i2 (make-inspector))
+  
+  (define x (syntax-arm #'(x) i1))
+  
+  (test #f syntax-tainted? (car (syntax-e (syntax-disarm x i1))))
+  (test #t syntax-tainted? (car (syntax-e (syntax-disarm x i2))))
+  
+  (define y (syntax-rearm (syntax-arm #'(y) i2) x))
+  
+  (test #t syntax-tainted? (car (syntax-e (syntax-disarm y i1))))
+  (test #t syntax-tainted? (car (syntax-e (syntax-disarm y i2))))
+  (test #f syntax-tainted? (car (syntax-e (syntax-disarm (syntax-disarm y i1) i2)))))
+
 (let ([round-trip
        (lambda (stx)
          (parameterize ([current-namespace (make-base-namespace)])
@@ -1886,6 +2122,12 @@
     (eval '(require (prefix-in foo: racket/base)))
     (check (lambda (stx) (syntax-debug-info (namespace-syntax-introduce stx))))))
 
+(test #t
+      'syntax-debug-info-all-binding
+      (let ([y 10])
+        (for/or ([e (in-list (hash-ref (syntax-debug-info (quote-syntax x #:local) 0 #t) 'bindings null))])
+          (eq? 'y (hash-ref e 'name #f)))))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check that attacks are thwarted via `syntax-local-get-shadower'
 ;; or `make-syntax-delta-introducer':
@@ -1916,6 +2158,57 @@
 
 (syntax-test #'(evil-via-shadower (m)))
 (syntax-test #'(evil-via-delta-introducer (m)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that `syntax-make-delta-introducer` transfers
+;; shifts along with scopes [example by Alexis]
+
+(let ([m '(module defines-introducer-to-submodule-binding racket/base
+            (provide foo-val)
+
+            (module foo racket/base
+              (provide foo)
+              (define foo 42))
+
+            (module introducer racket/base
+              (require (for-syntax racket/base
+                                   racket/syntax)
+                       syntax/parse/define)
+
+              (provide begin-foo)
+
+              (begin-for-syntax
+                (define scopeless-stx (datum->syntax #f #f)))
+
+              (define-syntax-parser define-cached-require-introducer
+                [(_ x:id mod-path)
+                 #:with scoped-stx (syntax-local-introduce #'mod-path)
+                 #'(begin
+                     (require scoped-stx)
+                     (begin-for-syntax
+                       (define x (make-syntax-delta-introducer (quote-syntax scoped-stx) scopeless-stx))))])
+
+              (define-cached-require-introducer introduce-foo (submod ".." foo))
+
+              (define-syntax-parser begin-foo
+                [(_ form ...)
+                 (introduce-foo
+                  #'(begin form ...))]))
+
+            (require 'introducer)
+            (define foo-val (begin-foo foo)))])
+  (eval (expand m)))
+
+(test 42 dynamic-require ''defines-introducer-to-submodule-binding 'foo-val)
+
+(module uses-introducer-to-submodule-binding racket/base
+  (provide also-foo-val)
+  
+  (require (submod 'defines-introducer-to-submodule-binding introducer))
+
+  (define also-foo-val (begin-foo foo)))
+
+(test 42 dynamic-require ''uses-introducer-to-submodule-binding 'also-foo-val)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check that a for-syntax reference can precede a
@@ -1963,7 +2256,7 @@
              (require (for-syntax racket/base))
              (begin-for-syntax
               (displayln (syntax-transforming-module-expression?))))))
-  (test "#t\n#f\n" get-output-string o))
+  (test "#t\n#t\n" get-output-string o))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check that a common wraps encoding that is detected only
@@ -2062,8 +2355,9 @@
     (test '#(1 2 3 4 5) syntax->datum (quasisyntax #(a (unsyntax b) c ...)))
     (test '#s(PS 1 2) syntax->datum (quasisyntax #s(PS a (unsyntax b))))
     (test '#s(PS 1 2 3 4 5) syntax->datum (quasisyntax #s(PS a (unsyntax b) c ...)))
-    #|
     (test '#(1 2 3 4 5) syntax->datum (quasisyntax #(a (unsyntax b) (unsyntax-splicing ds))))
+    (test '#(3 4 5) syntax->datum (quasisyntax #((unsyntax-splicing ds))))
+    #|
     (test '#s(PS 1 2 3 4 5) syntax->datum
           (quasisyntax #s(PS a (unsyntax b) (unsyntax-splicing ds))))
     |#))
@@ -2471,8 +2765,24 @@
 (err/rt-test (syntax-property #'+ 1 #'+ #t)
              (lambda (exn)
                (regexp-match
-                #rx"expected an interned symbol key for a preserved property"
+                #rx"key for a preserved property must be an interned symbol"
                 (exn-message exn))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that paths from the current installation are not
+;; preserved in marshaled bytecode
+
+(let ([m '(module m racket/base
+            ;; Extending a primitive structure type tends to
+            ;; capture an identifier whose source is "kernstruct.rkt"
+            (define-struct (cookie-error exn:fail) ()))])
+  (define o (open-output-bytes))
+  (write (compile m) o)
+  (test #t
+        not
+        (regexp-match? (regexp-quote
+                        (path->bytes (collection-file-path "kernstruct.rkt" "racket/private")))
+                       (get-output-bytes o))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Make sure the srcloc encoding doesn't do something strange
@@ -2490,6 +2800,61 @@
     (eval (read in))
     (define src (syntax-source ((dynamic-require path 'f))))
     (test (path->string path) values src)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(test #t
+      'rename-transformer-srcloc
+      ;; make sure `cons` in the expansion gets the same source line as `1`
+      (let ([stx (expand #'(letrec-syntax ([kons (make-rename-transformer #'cons)])
+                             (kons 1 2)))])
+        (syntax-case stx ()
+          [(_ () (_app cons one . _))
+           (equal? (syntax-line #'cons) (syntax-line #'one))])))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Minimal tests for syntax and ~@, ~?
+;; More tests in pkgs/racket-test/tests/stxparse/test-syntax.rkt
+
+(test '(a 1 b 2 c 3)
+      'syntax
+      (with-syntax ([(x ...) #'(a b c)] [(y ...) #'(1 2 3)])
+        (syntax->datum #'((~@ x y) ...))))
+
+(test '(1 2 3 4)
+      'syntax
+      (with-syntax ([xs #'(2 3)])
+        (syntax->datum #'(1 (~@ . xs) 4))))
+
+(test '(1 2 3)
+      'syntax
+      (with-syntax ([x #'(1 2 3)])
+        (syntax->datum #'(~? x "missing"))))
+
+(test '(4 5 6)
+      'syntax
+      (with-syntax ([(x ...) #'(4 5 6)])
+        (syntax->datum #'((~? x) ...))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Tests for syntax/loc
+
+(let ()
+  (define (f stx) (list (syntax-source stx) (syntax-position stx)))
+  (define (same-src? x y) (equal? (syntax-source x) (syntax-source y)))
+  (define good1 (datum->syntax #f 'good '(source #f #f 1 4)))
+  (define good3 (datum->syntax #f 'good '(source #f #f #f #f)))
+  (define good4 (datum->syntax #f 'good '(#f #f #f 1 4)))
+  (define bad1  (datum->syntax #f 'bad #f))
+  (test '(source 1)  'syntax/loc (f (syntax/loc good1 (x))))
+  (test '(source #f) 'syntax/loc (f (syntax/loc good3 (x))))
+  (test '(#f 1)      'syntax/loc (f (syntax/loc good4 (x))))
+  (test #t 'syntax/loc (same-src? (syntax/loc bad1 (x)) (syntax (x))))
+  ;; syntax/loc only applies loc to *new* syntax
+  (with-syntax ([x #'here])
+    (test #t 'syntax/loc (same-src? (syntax/loc good1 x) (syntax x))))
+  (with-syntax ([(x ...) #'()] [y #'(here)])
+    (test #t 'syntax/loc (same-src? (syntax/loc good1 (x ... . y)) (syntax y)))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

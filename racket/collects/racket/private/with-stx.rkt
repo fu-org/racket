@@ -2,9 +2,9 @@
 ;; with-syntax, generate-temporaries
 
 (module with-stx '#%kernel
-  (#%require "stx.rkt" "small-scheme.rkt" "stxcase.rkt"
-             (for-syntax '#%kernel "stx.rkt" "stxcase.rkt" "stxloc.rkt" 
-                         "sc.rkt" "qq-and-or.rkt" "cond.rkt"))
+  (#%require "stx.rkt" "define-et-al.rkt" "qq-and-or.rkt" "cond.rkt" "stxcase.rkt"
+             (for-syntax '#%kernel "stxcase.rkt" "stxloc.rkt" 
+                         "gen-temp.rkt" "sc.rkt" "qq-and-or.rkt" "cond.rkt"))
 
   (-define (with-syntax-fail stx)
     (raise-syntax-error
@@ -25,7 +25,7 @@
        (lambda (x s-exp?)
          (syntax-case x ()
            ((_ () e1 e2 ...)
-            (syntax/loc x (begin e1 e2 ...)))
+            (syntax/loc x (let () e1 e2 ...)))
            ((_ ((out in) ...) e1 e2 ...)
             (let ([ins (syntax->list (syntax (in ...)))])
               ;; Check for duplicates or other syntax errors:

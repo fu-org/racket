@@ -73,6 +73,23 @@
 		    x
 		    x)))))
 
+(wcm-test '(#(no 12) #(10 no))
+	  (lambda ()
+	    (with-continuation-mark 'key1 10
+	      (let ([x (with-continuation-mark 'key2 12
+                         (let loop ([iter (continuation-mark-set->iterator (current-continuation-marks) '(key1 key2) 'no)])
+                           (let-values ([(vec next) (iter)])
+                             (if (not vec)
+                                 (let*-values ([(false next-again) (next)]
+                                               [(false2 next-again-again) (next-again)])
+                                   (test #f values false)
+                                   (test #f values false2)
+                                   null)
+                                 (cons vec (loop next))))))])
+		(if (void? x)
+		    x
+		    x)))))
+
 (wcm-test '(11) (lambda ()
 		  (with-continuation-mark 'key 10 
 		    (with-continuation-mark 'key 11
@@ -101,7 +118,7 @@
 					 (with-continuation-mark 'key 10 (extract-current-continuation-marks 'key))
 					 (extract-current-continuation-marks 'key)))))
 
-(require (prefix-in unit: scheme/unit))
+(require (prefix-in unit: racket/unit))
 
 ;; ;; Hide keywords from scheme/unit.rkt:
 (define import #f)
@@ -458,6 +475,14 @@
 (err/rt-test (call-with-parameterization 10 (lambda () 12)))
 (err/rt-test (call-with-parameterization (current-parameterization) (lambda (x) 12)))
 
+(err/rt-test (current-continuation-marks (make-continuation-prompt-tag 'px))
+             exn:fail:contract:continuation?)
+(err/rt-test (continuation-marks (let/cc k k) (make-continuation-prompt-tag 'px))
+             exn:fail:contract:continuation?)
+(err/rt-test (continuation-mark-set-first #f 'key #f (make-continuation-prompt-tag 'px))
+             exn:fail:contract:continuation?)
+(test 'nope continuation-mark-set-first (current-continuation-marks) 'key 'nope (make-continuation-prompt-tag 'px))
+
 ;; Create a deep stack with a deep mark stack
 
 (define (p-equal? a b)
@@ -690,6 +715,7 @@
 
 (test #f call-with-immediate-continuation-mark 'x (lambda (v) v))
 (test 10 call-with-immediate-continuation-mark 'x (lambda (v) v) 10)
+(test 10 'also-ten (call-with-immediate-continuation-mark 'x (lambda (v) v) 10))
 (test 12 'cwicm (with-continuation-mark 'x 12 (call-with-immediate-continuation-mark 'x (lambda (v) v))))
 (test '(#f) 'cwiwcm (with-continuation-mark 'x 12 (list (call-with-immediate-continuation-mark 'x (lambda (v) v)))))
 (test 12 'cwicm (with-continuation-mark 'x 12 
@@ -986,6 +1012,14 @@
        (current-continuation-marks)
        (list mark))))
 
+  (define (do-test-iterate mark val)
+    (with-continuation-mark mark val
+      (let ([iter (continuation-mark-set->iterator (current-continuation-marks)
+                                                   (list mark))])
+        (let loop ([iter iter])
+          (let-values ([(v iter) (iter)])
+            (if v (cons v (loop iter)) null))))))
+
   (define (do-test/first mark val)
     (with-continuation-mark mark val
       (continuation-mark-set-first (current-continuation-marks) mark)))
@@ -997,10 +1031,12 @@
 
   (wcm-test '(12) (lambda () (do-test imp-mark 5)))
   (wcm-test '(#(12)) (lambda () (do-test* imp-mark 5)))
+  (wcm-test '(#(12)) (lambda () (do-test-iterate imp-mark 5)))
   (wcm-test 12 (lambda () (do-test/first imp-mark 5)))
   (wcm-test 12 (lambda () (do-test/immediate imp-mark 5)))
   (wcm-test '(5) (lambda () (do-test cha-mark 5)))
   (wcm-test '(#(5)) (lambda () (do-test* cha-mark 5)))
+  (wcm-test '(#(5)) (lambda () (do-test-iterate cha-mark 5)))
   (wcm-test 5 (lambda () (do-test/first cha-mark 5)))
   (wcm-test 5 (lambda () (do-test/immediate cha-mark 5)))
   (err/rt-test (do-test cha-mark #t) exn:fail?)
@@ -1008,6 +1044,77 @@
   (err/rt-test (do-test/no-lookup cha2-mark #t) exn:fail?)
   (err/rt-test (do-test bad-mark 5) exn:fail?)
   (err/rt-test (do-test bad-mark-2 5) exn:fail?))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that caching works right for marks in continuations that
+;; capture metacontinuations
+
+(let ()
+  (define tag (make-continuation-prompt-tag 'tag))
+
+  (define comp-k
+    (call-with-continuation-prompt
+     (lambda ()
+       (with-continuation-mark
+        'key
+        'val
+        ((call-with-composable-continuation
+          (lambda (k)
+            (lambda () k))
+          tag))))
+     tag))
+
+  (define k
+    (call-with-continuation-prompt
+     (lambda ()
+       (with-continuation-mark
+        'other-key
+        'other-val
+        (comp-k (lambda ()
+                  (call/cc
+                   (lambda (k)
+                     (abort-current-continuation
+                      tag
+                      (lambda () k)))
+                   tag)))))
+     tag))
+
+  (test '((val) (val))
+        list
+        (continuation-mark-set->list (continuation-marks k) 'key)
+        (continuation-mark-set->list (continuation-marks k) 'key)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test to help check that an "update"
+;; of a continuation attachment isn't changed to
+;; a "replace":
+
+(test '(1)
+      'other-marks
+      (let ()
+        (define (f)
+          (letrec ([f (lambda () f)])
+            (with-continuation-mark
+             'x 2
+             (continuation-mark-set->list (current-continuation-marks) 'y))))
+        
+        (with-continuation-mark
+         'y 1
+         (f))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check result of `continuation-mark-set->context`
+;; --- at least that it has the right kinds of elements
+
+(let ([go (lambda () ('no-a-function))])
+  (set! go (if (positive? (random 1)) #f go))
+  (define exn (with-handlers ([exn? values]) (go)))
+  (test #t andmap
+        (lambda (p)
+          (and p
+               (or (not (car p)) (symbol? (car p)))
+               (or (not (cdr p)) (srcloc? (cdr p)))))
+        (continuation-mark-set->context (exn-continuation-marks exn))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

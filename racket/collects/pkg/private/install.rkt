@@ -191,6 +191,7 @@
       (when clean?
         (delete-directory/files pkg-dir)))
     (define (show-dependencies deps update? auto?)
+      (define unique-deps (remove-duplicates deps))
       (unless quiet?
         (printf/flush "The following~a packages are listed as dependencies of ~a~a:~a\n"
                       (if update? " out-of-date" " uninstalled")
@@ -201,8 +202,8 @@
                                   (if update? "updated" "installed"))
                           "")
                       (if update?
-                          (format-deps deps)
-                          (format-list deps)))))
+                          (format-deps unique-deps)
+                          (format-list unique-deps)))))
     (define simultaneous-installs
       (for/hash ([i (in-list infos)])
         (values (install-info-name i) (install-info-directory i))))
@@ -311,10 +312,19 @@
                             "in different scopes "
                             "")
                         pkg conflicting-pkg (pretty-module-path mp))
-             (pkg-error (~a "package conflicts with existing installed module\n"
+             (pkg-error (~a "package conflicts with existing installed module;\n"
+                            " the existing installed module is not part of a package\n"
                             "  package: ~a\n"
-                            "  module path: ~s")
-                        pkg (pretty-module-path mp))))]
+                            "  module path: ~s\n"
+                            "  potentially relevant paths:~a")
+                        pkg
+                        (pretty-module-path mp)
+                        (format-list
+                         (for/list ([p (in-list (append
+                                                 (current-library-collection-paths)
+                                                 (current-library-collection-links)))]
+                                    #:when (path? p))
+                           p)))))]
       [(and
         (not force?)
         (for/or ([ai (in-set additional-installs)])
@@ -434,7 +444,8 @@
                                         (set-member? implies name))
                                     (not (hash-ref simultaneous-installs name #f))
                                     (let ([updater
-                                           (packages-to-update download-printf current-scope-db 
+                                           (packages-to-update download-printf current-scope-db
+                                                               #:all-db all-db
                                                                #:must-update? #f
                                                                #:deps? do-update-deps?
                                                                #:implies? update-implies?
@@ -517,7 +528,7 @@
                                                                (valid-version? inst-vers*))))
                                                 (begin
                                                   (log-pkg-error
-                                                   "bad verson specification for ~a: ~e"
+                                                   "bad version specification for ~a: ~e"
                                                    name
                                                    inst-vers*)
                                                   "0.0")
@@ -546,8 +557,8 @@
             ;; Try updates:
             (define update-pkgs (map car update-deps))
             (define (make-pre-succeed)
-              (define db current-scope-db)
-              (let ([to-update (let ([updater (packages-to-update download-printf db
+              (let ([to-update (let ([updater (packages-to-update download-printf current-scope-db
+                                                                  #:all-db all-db
                                                                   #:deps? update-deps? 
                                                                   #:implies? update-implies?
                                                                   #:update-cache update-cache
@@ -695,7 +706,7 @@
             (hash-set ht git-dir (cons checksum prev-checksums)))]
        [else ht])))
 
-  ;; relevant commits have been fecthed to the repos, and now we need
+  ;; relevant commits have been fetched to the repos, and now we need
   ;; to check them out; if a checkout fails, then we've left the
   ;; package installation in no worse shape than if a manual `git
   ;; pull` failed
@@ -706,7 +717,7 @@
                          git-dir
                          (dry-run-explain dry-run?))
         (when ((length checksums) . > . 1)
-          (download-printf (~a "Multiple packages in the of the clone\n"
+          (download-printf (~a "Multiple packages in the cloned repository\n"
                                "  " git-dir "\n"
                                " have different target commits; will try each commit, which will work\n"
                                " as long as some commit is a fast-forward of all of them\n")))
@@ -845,6 +856,7 @@
                      #:strict-doc-conflicts? [strict-doc-conflicts? #f]
                      #:use-cache? [use-cache? #t]
                      #:skip-installed? [skip-installed? #f]
+                     #:skip-auto-installed? [skip-auto-installed? #f]
                      #:pre-succeed [pre-succeed void]
                      #:dep-behavior [dep-behavior #f]
                      #:update-deps? [update-deps? #f]
@@ -887,7 +899,7 @@
          (filter (lambda (d)
                    (define pkg-name (desc->name d))
                    (define i (hash-ref all-scope-dbs pkg-name #f))
-                   (or (not i) (pkg-info-auto? i)))
+                   (or (not i) (and (not skip-auto-installed?) (pkg-info-auto? i))))
                  descs))
      pkg-desc=?))
 
@@ -1010,6 +1022,7 @@
 ;; it maps a package name to a checksum, and a box of the package
 ;; name to #t (to avoid multiple update attempts).
 (define ((packages-to-update download-printf db
+                             #:all-db all-db
                              #:must-update? [must-update? #t]
                              #:deps? deps?
                              #:implies? implies?
@@ -1135,7 +1148,7 @@
           (define missing-deps
             (for/list ([dep (in-list deps)]
                        #:unless (equal? dep "racket")
-                       #:unless (package-info dep #:db db #f))
+                       #:unless (package-info dep #:db all-db #f))
               dep))
           (cond
            [(pair? missing-deps)
@@ -1228,7 +1241,7 @@
                       null]
                      [else
                       ;; Flush cache of downloaded checksums, in case
-                      ;; there was a race between our checkig and updates on
+                      ;; there was a race between our checking and updates on
                       ;; the catalog server:
                       (clear-checksums-in-cache! update-cache)
                       (list (pkg-desc orig-pkg-source orig-pkg-type pkg-name #f auto?
@@ -1262,6 +1275,7 @@
   (define download-printf (if quiet? void printf/flush))
   (define metadata-ns (make-metadata-namespace))
   (define db (read-pkg-db))
+  (define all-db (merge-pkg-dbs))
   (define all-mode? (and all? (empty? in-pkgs)))
   (define pkgs (cond
                 [all-mode? (hash-keys db)]
@@ -1278,6 +1292,7 @@
    prefetch-group
    (lambda ()
      (define to-updat* (let ([updater (packages-to-update download-printf db
+                                                          #:all-db all-db
                                                           #:must-update? (and (not all-mode?)
                                                                               (not update-deps?))
                                                           #:deps? (or update-deps? 

@@ -25,14 +25,22 @@ take advantage of machines with multiple processors, cores, or
 hardware threads.
 
 @margin-note{Currently, parallel support for places is enabled
-  only for Racket 3m (which is the main variant of Racket), and only
+  only for the 3m (main) and CS variants of Racket, and only
   by default for Windows, Linux x86/x86_64, and Mac OS x86/x86_64. To
   enable support for other platforms, use @DFlag{enable-places} with
   @exec{configure} when building Racket. The @racket[place-enabled?]
-  function reports whether places run in parallel.}
+  function reports whether places run in parallel.
+
+  Implementation and operating-system constraints may limit the
+  scalability of places. For example, although places can perform
+  garbage collections independently in the 3m variant, a garbage collection
+  may need to manipulate a page table that is shared across all
+  places, and that shared page table can be a bottleneck with enough
+  places---perhaps around 8 or 16.}
 
 A @deftech{place} is a parallel task that is effectively a separate
-instance of the Racket virtual machine. Places communicate through
+instance of the Racket virtual machine, although all places run within
+a single operating-system process. Places communicate through
 @deftech{place channels}, which are endpoints for a two-way buffered
 communication.
 
@@ -113,6 +121,9 @@ used: @racket[current-library-collection-paths],
 @racket[current-library-collection-links], and
 @racket[current-compiled-file-roots].
 
+A newly created place is registered with the @tech{current custodian},
+so that the place is terminated when the custodian is shut down.
+
 @; ----------------------------------------
 
 @section[#:tag "places-api"]{Using Places}
@@ -151,7 +162,7 @@ are simulated using @racket[thread].}
  the place.
 
  The module indicated by @racket[module-path] must export a function
- with the name @racket[start-proc]. The function must accept a single
+ with the name @racket[start-name]. The function must accept a single
  argument, which is a @tech{place channel} that corresponds to the
  other end of communication for the @tech{place descriptor} returned
  by @racket[place].
@@ -168,7 +179,7 @@ such as a distributed places node produced by @racket[create-place-node].
  is converted to @racket[0].
 
  If the function indicated by @racket[module-path] and
- @racket[start-proc] returns, then the place terminates with the
+ @racket[start-name] returns, then the place terminates with the
  @tech{completion value} @racket[0].
 
  In the created place, the @racket[current-input-port] parameter is
@@ -372,10 +383,12 @@ messages:
  @item{@tech{pairs}, @tech{lists}, @tech{vectors}, and immutable
        @tech{prefab} structures containing message-allowed values,
        where a mutable vector is automatically replaced by an
-       immutable vector;}
+       immutable vector and where @tech{impersonators} of vectors and
+       @tech{prefab} structures are copied;}
 
  @item{@tech{hash tables} where mutable hash tables are automatically
-       replaced by immutable variants;}
+       replaced by immutable variants, and where a
+       hash table @tech{impersonator} is copied;}
 
  @item{@tech{place channels}, where a @tech{place descriptor} is
        automatically replaced by a plain place channel;}

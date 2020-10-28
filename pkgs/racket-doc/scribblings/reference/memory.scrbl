@@ -85,11 +85,22 @@ Returns a new @tech{ephemeron} whose key is @racket[key] and whose
 value is initially @racket[v].}
 
 
-@defproc[(ephemeron-value [ephemeron ephemeron?] [gced-v any/c #f]) any/c]{
+@defproc[(ephemeron-value [ephemeron ephemeron?] [gced-v any/c #f] [retain-v any/c #f]) any/c]{
 
 Returns the value contained in @racket[ephemeron]. If the garbage
 collector has proven that the key for @racket[ephemeron] is only
-weakly reachable, then the result is @racket[gced-v] (which defaults to @racket[#f]).}
+weakly reachable, then the result is @racket[gced-v] (which defaults to @racket[#f]).
+
+The @racket[retain-v] argument is retained as reachable until the
+ephemeron's value is extracted. It is useful, for example, when
+@racket[_ephemeron] was obtained through a weak, @racket[eq?]-based
+mapping from @racket[_key] and @racket[_ephemeron] was created with
+@racket[_key] as the key; in that case, supplying @racket[_key] as
+@racket[retain-v] ensures that @racket[_ephemeron] retains its value
+long enough for it to be extracted, even if @racket[_key] is otherwise
+unreachable.
+
+@history[#:changed "7.1.0.10" @elem{Added the @racket[retain-v] argument.}]}
 
 
 @defproc[(ephemeron? [v any/c]) boolean?]{
@@ -128,7 +139,7 @@ of the wills is readied or executed.  However, wills for distinct
 unreachable values are readied at the same time, regardless of whether
 the values are reachable from each other.
 
-A will executor's register is held non-weakly until after the
+A will executor's registrant is held non-weakly until after the
 corresponding will procedure is executed. Thus, if the content value
 of a weak box (see @secref["weakbox"]) is registered with a will
 executor, the weak box's content is not changed to @racket[#f] until
@@ -190,10 +201,13 @@ call.  If no will is ready for immediate execution,
 @racket[will-execute] blocks until one is ready.}
 
 
-@defproc[(will-try-execute [executor any/c]) any]{
+@defproc[(will-try-execute [executor any/c] [v any/c #f])
+          any]{
 
 Like @racket[will-execute] if a will is ready for immediate
-execution. Otherwise, @racket[#f] is returned.}
+execution. Otherwise, @racket[v] is returned.
+
+@history[#:changed "6.90.0.4" @elem{Added the @racket[v] argument.}]}
 
 @;------------------------------------------------------------------------
 @section[#:tag "garbagecollection"]{Garbage Collection}
@@ -205,13 +219,18 @@ to a value that starts with @litchar{1}, @litchar{y}, or @litchar{Y} to
 request incremental mode at all times, but calling
 @racket[(collect-garbage 'incremental)] in a program with a periodic
 task is generally a better mechanism for requesting incremental mode.
+Set the @as-index{@envvar{PLT_INCREMENTAL_GC}} environment variable
+to a value that starts with @litchar{0}, @litchar{n}, or @litchar{N} to
+disable incremental-mode requests.
 
-In Racket 3m (the main variant of Racket), each garbage collection
-logs a message (see @secref["logging"]) at the @racket['debug] level with topic @racket['GC].
-The data portion of the message is an instance of a @indexed-racket[gc-info]
-@tech{prefab} structure type with 10 fields as follows, but future
-versions of Racket may use a @racket[gc-info] @tech{prefab} structure
-with additional fields:
+Each garbage collection logs a message (see @secref["logging"]) at the
+@racket['debug] level with topic @racket['GC]. In the 3m and CS
+variants of Racket, ``major'' collections are also logged at the
+@racket['debug] level with the topic @racket['GC:major]. In the 3m
+and CS variants of Racket, the data portion of the message is an
+instance of a @indexed-racket[gc-info] @tech{prefab} structure type
+with 10 fields as follows, but future versions of Racket may use a
+@racket[gc-info] @tech{prefab} structure with additional fields:
 
 @racketblock[
 (struct gc-info (mode pre-amount pre-admin-amount code-amount
@@ -301,7 +320,8 @@ collection mode, the text has the format
               @elem{Processor time since startup of garbage collection's start}))
 ]}
 
-@history[#:changed "6.3.0.7" @elem{Added @envvar{PLT_INCREMENTAL_GC}.}]
+@history[#:changed "6.3.0.7" @elem{Added @envvar{PLT_INCREMENTAL_GC}.}
+         #:changed "7.6.0.9" @elem{Added major-collection logging for the topic @racket['GC:major].}]
 
 
 @defproc[(collect-garbage [request (or/c 'major 'minor 'incremental) 'major]) void?]{
@@ -330,15 +350,19 @@ garbage-collection mode, depending on @racket[request]:
        triggered by @racket[(collect-garbage 'minor)] do not cause
        major collections any sooner than they would occur otherwise.}
 
- @item{@racket['incremental] --- Requests that each minor
-       collection performs incremental work toward a major collection
-       (but does not request an immediate minor collection).
-       This incremental-mode request expires at the next major
-       collection.
+ @item{@racket['incremental] --- Does not request an immediate
+       collection, but requests extra effort going forward to avoid
+       major collections, even if it requires more work per minor
+       collection to incrementally perform the work of a major
+       collection. This incremental-mode request expires at the next
+       major collection.
 
        The intent of incremental mode is to significantly reduce pause
-       times due to major collections, but incremental mode typically
-       implies longer minor-collection times and higher memory use.
+       times due to major collections, but incremental mode may imply
+       longer minor-collection times and higher memory use. Currently,
+       incremental mode is only meaningful when @racket[(system-type
+       'gc)] returns @racket['3m] or @racket['cs]; it has no effect in
+       other Racket variants.
 
        If the @envvar{PLT_INCREMENTAL_GC} environment variable's value
        starts with @litchar{0}, @litchar{n}, or @litchar{N} on
@@ -347,7 +371,9 @@ garbage-collection mode, depending on @racket[request]:
 ]
 
 @history[#:changed "6.3" @elem{Added the @racket[request] argument.}
-         #:changed "6.3.0.2" @elem{Added @racket['incremental] mode.}]}
+         #:changed "6.3.0.2" @elem{Added @racket['incremental] mode.}
+         #:changed "7.7.0.4" @elem{Added @racket['incremental] effect
+                                   for Racket CS.}]}
 
 
 @defproc[(current-memory-use [mode (or/c #f 'cumulative custodian?) #f])

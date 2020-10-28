@@ -1,5 +1,6 @@
 #lang scribble/doc
-@(require "mz.rkt")
+@(require "mz.rkt"
+          (for-label syntax/for-body))
 
 @title[#:tag "for"]{Iterations and Comprehensions: @racket[for], @racket[for/list], ...}
 
@@ -89,6 +90,14 @@ unreachable, and if the @racket[for] body can no longer reference an
 @tech{garbage collection}. The @racket[make-do-sequence] sequence
 constructor supports additional sequences that behave like lists and
 streams in this way.
+
+If a @racket[seq-expr] is a quoted literal list, vector, exact integer,
+string, byte string, immutable hash, or expands to such a literal,
+then it may be treated as if a sequence transformer such as
+@racket[in-list] was used, unless the @racket[seq-expr] has a true
+value for the @indexed-racket['for:no-implicit-optimization] syntax
+property; in most cases this improves performance.
+@history[#:changed "7.8.0.11" @elem{Added support for implicit optimization.}]}
 
 @examples[
 (for ([i '(1 2 3)]
@@ -258,13 +267,26 @@ is accumulated into a result with @racket[*].
 ]}
 
 
-@defform[(for/lists (id ...) (for-clause ...) body-or-break ... body)]{
+@defform[(for/lists (id ... maybe-result)
+                    (for-clause ...)
+           body-or-break ... body)
+         #:grammar
+         ([maybe-result (code:line) (code:line #:result result-expr)])]{
 
 Similar to @racket[for/list], but the last @racket[body] expression
-should produce as many values as given @racket[id]s, and the result is
-as many lists as supplied @racket[id]s. The @racket[id]s are bound to
-the lists accumulated so far in the @racket[for-clause]s and
+should produce as many values as given @racket[id]s.
+The @racket[id]s are bound to
+the reversed lists accumulated so far in the @racket[for-clause]s and
 @racket[body]s.
+
+If a @racket[result-expr] is provided, it is used as with @racket[for/fold]
+when iteration terminates;
+otherwise, the result is as many lists as supplied @racket[id]s.
+
+The scope of @racket[id] bindings is the same as for accumulator
+identifiers in @racket[for/fold]. Mutating a @racket[id] affects the
+accumulated lists, and mutating it in a way that produces a non-list
+can cause a final @racket[reverse] for each @racket[id] to fail.
 
 @examples[
 (for/lists (l1 l2 l3)
@@ -277,7 +299,14 @@ the lists accumulated so far in the @racket[for-clause]s and
            ([x '(tvp tofu seitan tvp tofu)]
             #:unless (member x acc))
   x)
-]}
+(for/lists (firsts seconds #:result (list firsts seconds))
+           ([pr '((1 . 2) (3 . 4) (5 . 6))])
+  (values (car pr) (cdr pr)))
+]
+
+@history[
+ #:changed "7.1.0.2" @elem{Added the @racket[#:result] form.}
+ ]}
 
 
 @defform[(for/first (for-clause ...) body-or-break ... body)]{ Iterates like
@@ -309,8 +338,10 @@ result of the last evaluation of @racket[body]. If the
   (error "doesn't get here"))
 ]}
 
-@defform[(for/fold ([accum-id init-expr] ...) (for-clause ...)
-           body-or-break ... body)]{
+@defform/subs[(for/fold ([accum-id init-expr] ... maybe-result) (for-clause ...)
+                body-or-break ... body)
+              ([maybe-result (code:line)
+                             (code:line #:result result-expr)])]{
 
 Iterates like @racket[for]. Before iteration starts, the
 @racket[init-expr]s are evaluated to produce initial accumulator
@@ -319,15 +350,188 @@ for each @racket[accum-id], and the corresponding current accumulator
 value is placed into the location. The last expression in
 @racket[body] must produce as many values as @racket[accum-id]s, and
 those values become the current accumulator values. When iteration
-terminates, the results of the @racket[for/fold] expression are the
-accumulator values.
+terminates, if a @racket[result-expr] is provided then the result of the
+ @racket[for/fold] is the result of evaluating @racket[result-expr]
+ (with @racket[accum-id]s in scope and bound to their final values),
+ otherwise the results of the @racket[for/fold] expression are the
+ accumulator values.
 
 @examples[
 (for/fold ([sum 0]
            [rev-roots null])
           ([i '(1 2 3 4)])
   (values (+ sum i) (cons (sqrt i) rev-roots)))
-]}
+
+(for/fold ([acc '()]
+           [seen (hash)]
+           #:result (reverse acc))
+          ([x (in-list '(0 1 1 2 3 4 4 4))])
+  (cond
+    [(hash-ref seen x #f)
+     (values acc seen)]
+    [else (values (cons x acc)
+                  (hash-set seen x #t))]))
+]
+
+The binding and evaluation order of @racket[accum-id]s and
+@racket[init-expr]s does not follow the textual, left-to-right order
+relative to the @racket[for-clause]s . Instead, the sequence
+expressions in @racket[for-clause]s that determine the outermost
+iteration are evaluated first, the associated identifiers are bound,
+and then the @racket[init-expr]s are evaluated and the
+@racket[accum-id]s are bound. One consequence is that the
+@racket[accum-id]s are not bound in @racket[for-clause]s for the
+outermost initialization. Another consequence is that when a
+@racket[accum-id] is used as a @racket[for-clause] binding for the
+outermost iteration, the @racket[for-clause] binding is shadowed in
+the loop body (even though, syntactically, a @racket[for-clause] is
+closer to the body). A fresh variable for each @racket[accum-id] (at a
+fresh location) is bound to in each nested iteration created by a
+later group for @racket[for-clause]s (after a @racket[#:when] or
+@racket[#:unless], for example).
+
+@history[#:changed "6.11.0.1" @elem{Added the @racket[#:result] form.}]
+}
+
+@(define for/foldr-eval ((make-eval-factory '(racket/promise racket/sequence racket/stream))))
+@defform[(for/foldr ([accum-id init-expr] ... accum-option ...)
+                    (for-clause ...)
+           body-or-break ... body)
+         #:grammar ([accum-option (code:line #:result result-expr)
+                                  #:delay
+                                  (code:line #:delay-as delayed-id)
+                                  (code:line #:delay-with delayer-id)])]{
+
+Like @racket[for/fold], but analogous to @racket[foldr] rather than
+@racket[foldl]: the given sequences are still iterated in the same order, but
+the loop body is evaluated in reverse order. Evaluation of a @racket[for/foldr]
+expression uses space proportional to the number of iterations it performs, and
+all elements produced by the given sequences are retained until backwards
+evaluation of the loop body begins (assuming the element is, in fact,
+referenced in the body).
+
+@(examples
+  #:eval for/foldr-eval
+  (define (in-printing seq)
+    (sequence-map (lambda (v) (println v) v) seq))
+  (eval:check (for/foldr ([acc '()])
+                         ([v (in-printing (in-range 1 4))])
+                (println v)
+                (cons v acc))
+              '(1 2 3)))
+
+Furthermore, unlike @racket[for/fold], the @racket[accum-id]s are not bound
+within @racket[_guard-expr]s or @racket[_body-or-break] forms that appear before
+a @racket[_break-clause].
+
+While the aforementioned limitations make @racket[for/foldr] less generally
+useful than @racket[for/fold], @racket[for/foldr] provides the additional
+capability to iterate lazily via the @racket[#:delay], @racket[#:delay-as], and
+@racket[#:delay-with] options, which can mitigate many of @racket[for/foldr]'s
+disadvantages. If at least one such option is specified, the loop body is given
+explicit control over when iteration continues: by default, each
+@racket[accum-id] is bound to a @tech{promise} that, when forced, produces the
+@racket[accum-id]'s current value.
+
+In this mode, iteration does not continue until one such promise is forced,
+which triggers any additional iteration necessary to produce a value. If the
+loop body is lazy in its @racket[accum-id]s---that is, it returns a value
+without forcing any of them---then the loop (or any of its iterations) will
+produce a value before iteration has completely finished. If a reference to at
+least one such promise is retained, then forcing it will resume iteration from
+the point at which it was suspended, even if control has left the dynamic extent
+of the loop body.
+
+@(examples
+  #:eval for/foldr-eval
+  (eval:check (for/foldr ([acc '()] #:delay)
+                         ([v (in-range 1 4)])
+                (printf "--> ~v\n" v)
+                (begin0
+                  (cons v (force acc))
+                  (printf "<-- ~v\n" v)))
+              '(1 2 3))
+  (define resume
+    (for/foldr ([acc '()] #:delay)
+               ([v (in-range 1 5)])
+      (printf "--> ~v\n" v)
+      (begin0
+        (cond
+          [(= v 1) (force acc)]
+          [(= v 2) acc]
+          [else    (cons v (force acc))])
+        (printf "<-- ~v\n" v))))
+  (eval:check (force resume) '(3 4)))
+
+This extra control over iteration order allows @racket[for/foldr] to both
+consume and construct infinite sequences, so long as it is at least sometimes
+lazy in its accumulators.
+
+@margin-note/ref{
+  See also @racket[for/stream] for a more convenient (albeit less flexible) way
+  to lazily transform infinite sequences. (Internally, @racket[for/stream] is
+  defined in terms of @racket[for/foldr].)}
+
+@(examples
+  #:eval for/foldr-eval
+  (define squares (for/foldr ([s empty-stream] #:delay)
+                             ([n (in-naturals)])
+                    (stream-cons (* n n) (force s))))
+  (stream->list (stream-take squares 10)))
+
+The suspension introduced by the @racket[#:delay] option does not ordinarily
+affect the loop's eventual return value, but if @racket[#:delay] and
+@racket[#:result] are combined, the @racket[accum-id]s will be delayed in the
+scope of the @racket[result-expr] in the same way they are delayed within the
+loop body. This can be used to introduce an additional layer of suspension
+around the evaluation of the entire loop, if desired.
+
+@(examples
+  #:eval for/foldr-eval
+  (define evaluated-yet? #f)
+  (for/foldr ([acc (set! evaluated-yet? #t)] #:delay) ()
+    (force acc))
+  (eval:check evaluated-yet? #t))
+@(examples
+  #:eval for/foldr-eval
+  #:label #f
+  (define evaluated-yet? #f)
+  (define start
+    (for/foldr ([acc (set! evaluated-yet? #t)] #:delay #:result acc) ()
+      (force acc)))
+  (eval:check evaluated-yet? #f)
+  (force start)
+  (eval:check evaluated-yet? #t))
+
+If the @racket[#:delay-as] option is provided, then @racket[delayed-id] is
+bound to an additional promise that returns the values of all @racket[accum-id]s
+at once. When multiple @racket[accum-id]s are provided, forcing this promise can
+be slightly more efficient than forcing the promises bound to the
+@racket[accum-id]s individually.
+
+If the @racket[#:delay-with] option is provided, the given @racket[delayer-id]
+is used to suspend nested iterations (instead of the default, @racket[delay]).
+A form of the shape @racket[(delayer-id _recur-expr)] is constructed and placed
+in expression position, where @racket[_recur-expr] is an expression that, when
+evaluated, will perform the next iteration and return its result (or results).
+Sensible choices for @racket[delayer-id] include @racket[lazy],
+@racket[delay/sync], @racket[delay/thread], or any of the other promise
+constructors from @racketmodname[racket/promise], as well as @racket[thunk] from
+@racketmodname[racket/function]. However, beware that choices such as
+@racket[thunk] or @racket[delay/name] may evaluate their subexpression multiple
+times, which can lead to nonsensical results for sequences that have state, as
+the state will be shared between all evaluations of the @racket[_recur-expr].
+
+If multiple @racket[accum-id]s are given, the @racket[#:delay-with] option is
+provided, and @racket[delayer-id] is not bound to one of @racket[delay],
+@racket[lazy], @racket[delay/strict], @racket[delay/sync],
+@racket[delay/thread], or @racket[delay/idle], the @racket[accum-id]s will not
+be bound at all, even within the loop body. Instead, the @racket[#:delay-as]
+option must be specified to access the accumulator values via
+@racket[delayed-id].
+
+@history[#:added "7.3.0.3"]}
+@(close-eval for/foldr-eval)
 
 @defform[(for* (for-clause ...) body-or-break ... body)]{
 Like @racket[for], but with an implicit @racket[#:when #t] between
@@ -342,7 +546,8 @@ nested.
 
 @deftogether[(
 @defform[(for*/list (for-clause ...) body-or-break ... body)]
-@defform[(for*/lists (id ...) (for-clause ...) body-or-break ... body)]
+@defform[(for*/lists (id ... maybe-result) (for-clause ...) 
+           body-or-break ... body)]
 @defform[(for*/vector maybe-length (for-clause ...) body-or-break ... body)]
 @defform[(for*/hash (for-clause ...) body-or-break ... body)]
 @defform[(for*/hasheq (for-clause ...) body-or-break ... body)]
@@ -353,7 +558,10 @@ nested.
 @defform[(for*/product (for-clause ...) body-or-break ... body)]
 @defform[(for*/first (for-clause ...) body-or-break ... body)]
 @defform[(for*/last (for-clause ...) body-or-break ... body)]
-@defform[(for*/fold ([accum-id init-expr] ...) (for-clause ...)
+@defform[(for*/fold ([accum-id init-expr] ... maybe-result) (for-clause ...)
+           body-or-break ... body)]
+@defform[(for*/foldr ([accum-id init-expr] ... accum-option ...)
+                     (for-clause ...)
            body-or-break ... body)]
 )]{
 
@@ -364,30 +572,39 @@ Like @racket[for/list], etc., but with the implicit nesting of
 (for*/list ([i '(1 2)]
             [j "ab"])
   (list i j))
-]}
+]
+
+@history[#:changed "7.3.0.3" @elem{Added the @racket[for*/foldr] form.}]}
 
 @;------------------------------------------------------------------------
 @section{Deriving New Iteration Forms}
 
 @defform[(for/fold/derived orig-datum
-           ([accum-id init-expr] ...) (for-clause ...) 
+           ([accum-id init-expr] ... maybe-result) (for-clause ...)
            body-or-break ... body)]{
 
 Like @racket[for/fold], but the extra @racket[orig-datum] is used as the
 source for all syntax errors.
 
+A macro that expands to @racket[for/fold/derived] should typically use
+@racket[split-for-body] to handle the possibility of macros and other
+definitions mixed with keywords like @racket[#:break].
+
 @mz-examples[#:eval for-eval
+(require (for-syntax syntax/for-body))
 (define-syntax (for/digits stx)
   (syntax-case stx ()
     [(_ clauses body ... tail-expr)
-     (with-syntax ([original stx])
+     (with-syntax ([original stx]
+                   [((pre-body ...) (post-body ...))
+                    (split-for-body stx #'(body ... tail-expr))])
        #'(let-values
              ([(n k)
                (for/fold/derived
                    original ([n 0] [k 1])
                  clauses
-                 body ...
-                 (values (+ n (* tail-expr k)) (* k 10)))])
+                 pre-body ...
+                 (values (+ n (* (let () post-body ...) k)) (* k 10)))])
            n))]))
 
 @code:comment{If we misuse for/digits, we can get good error reporting}
@@ -408,12 +625,14 @@ source for all syntax errors.
 (define-syntax (for/max stx)
   (syntax-case stx ()
     [(_ clauses body ... tail-expr)
-     (with-syntax ([original stx])
+     (with-syntax ([original stx]
+                   [((pre-body ...) (post-body ...))
+                    (split-for-body stx #'(body ... tail-expr))])
        #'(for/fold/derived original
            ([current-max -inf.0])
            clauses
-           body ...
-           (define maybe-new-max tail-expr)
+           pre-body ...
+           (define maybe-new-max (let () post-body ...))
            (if (> maybe-new-max current-max)
                maybe-new-max
                current-max)))]))
@@ -421,24 +640,28 @@ source for all syntax errors.
           [s '(-1      1       1)])
   (* n s))
 ]
-}
+
+@history[#:changed "6.11.0.1" @elem{Added the @racket[#:result] form.}]}
 
 @defform[(for*/fold/derived orig-datum
-           ([accum-id init-expr] ...) (for-clause ...) 
+           ([accum-id init-expr] ... maybe-result) (for-clause ...)
            body-or-break ... body)]{
 Like @racket[for*/fold], but the extra @racket[orig-datum] is used as the source for all syntax errors.
 
 @mz-examples[#:eval for-eval
+(require (for-syntax syntax/for-body))
 (define-syntax (for*/digits stx)
   (syntax-case stx ()
     [(_ clauses body ... tail-expr)
-     (with-syntax ([original stx])
+     (with-syntax ([original stx]
+                   [((pre-body ...) (post-body ...))
+                    (split-for-body stx #'(body ... tail-expr))])
        #'(let-values
              ([(n k)
                (for*/fold/derived original ([n 0] [k 1])
                  clauses
-                 body ...
-                 (values (+ n (* tail-expr k)) (* k 10)))])
+                 pre-body ...
+                 (values (+ n (* (let () post-body ...) k)) (* k 10)))])
            n))]))
 
 (eval:error
@@ -453,7 +676,22 @@ Like @racket[for*/fold], but the extra @racket[orig-datum] is used as the source
   d)
 ]
 
-}
+@history[#:changed "6.11.0.1" @elem{Added the @racket[#:result] form.}]}
+
+@deftogether[(
+@defform[(for/foldr/derived orig-datum
+           ([accum-id init-expr] ... accum-option ...) (for-clause ...)
+           body-or-break ... body)]
+@defform[(for*/foldr/derived orig-datum
+           ([accum-id init-expr] ... accum-option ...) (for-clause ...)
+           body-or-break ... body)]
+)]{
+
+Like @racket[for/foldr] and @racket[for*/foldr], but the extra
+@racket[orig-datum] is used as the source for all syntax errors as in
+@racket[for/fold/derived] and @racket[for*/fold/derived].
+
+@history[#:added "7.3.0.3"]}
 
 @defform[(define-sequence-syntax id
            expr-transform-expr
@@ -473,7 +711,7 @@ When @racket[id] is used in any other expression position, the result
 of @racket[expr-transform-expr] is used. If it is a procedure of zero
 arguments, then the result must be an identifier @racket[_other-id],
 and any use of @racket[id] is converted to a use of
-@racket[_other-id]. Otherwise,@racket[expr-transform-expr] must
+@racket[_other-id]. Otherwise, @racket[expr-transform-expr] must
 produce a procedure (of one argument) that is used as a macro
 transformer.
 
@@ -505,8 +743,8 @@ instead of @racket[syntax-protect].
             ([i n])
             (not (zero? i))
             ([(j d) (quotient/remainder i 10)])
-            #true
-            #true
+            #t
+            #t
             [j])]]
       [_ #f])))
 
@@ -552,6 +790,12 @@ where @racket[_body-bindings] and @racket[_done-expr] are from the
 context of the @racket[:do-in] use. The identifiers bound by the
 @racket[for] clause are typically part of the @racket[([(inner-id ...)
 inner-expr] ...)] section.
+
+Beware that @racket[_body-bindings] and @racket[_done-expr] can
+contain arbitrary expressions, potentially including @racket[set!] on
+@racket[outer-id] or @racket[inner-id] identifiers if they are visible
+in the original @racket[for] form, so beware of depending on such
+identifiers in @racket[post-guard] and @racket[loop-arg].
 
 The actual @racket[loop] binding and call has additional loop
 arguments to support iterations in parallel with the @racket[:do-in]

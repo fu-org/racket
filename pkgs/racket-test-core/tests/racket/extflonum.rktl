@@ -20,9 +20,26 @@
 (when (extflonum-available?)
   ;; ----------------------------------------
 
+  (test #t eqv? +nan.0 (string->number "+nan.0" 10 'read))
+  (test #t eqv? +inf.0 (string->number "+inf.0" 10 'read))
+  (test #t eqv? -inf.0 (string->number "-inf.0" 10 'read))
+  (test #f eqv? -inf.0 (string->number "+nan.0" 10 'read))
+
+  ;; Check JIT-inlined `eqv?`
+  (let ([eqv (lambda (a b)
+               (eqv? a b))])
+    (set! eqv (if (zero? (random 1)) eqv list))
+    (test #t eqv +nan.0 (string->number "+nan.0" 10 'read))
+    (test #t eqv +inf.0 (string->number "+inf.0" 10 'read))
+    (test #t eqv -inf.0 (string->number "-inf.0" 10 'read))
+    (test #f eqv -inf.0 (string->number "+nan.0" 10 'read)))
+
   (define (extflonum-close? fl1 fl2)
     (extfl<= (extflabs (fl- fl1 fl2))
              (real->extfl 1e-8)))
+
+  (test (/ 23318339437 (expt 2 16443)) extfl->exact 3.4t-4940)
+  (test 3.40000000000116185t-4940 real->extfl (extfl->exact 3.40000000000116185t-4940))
 
   ;; in-extflvector tests.
   (let ((flv (extflvector 1.0t0 2.0t0 3.0t0)))
@@ -401,6 +418,61 @@
 
   ;; ----------------------------------------
 
+  (test 2 extfl->fx 2.0t0)
+  (test 2 extfl->fx 2.2t0)
+  (test -2 extfl->fx -2.0t0)
+  (test -2 extfl->fx -2.2t0)
+
+  (test 0 extfl->fx 0.0t0)
+  (test 0 extfl->fx -0.0t0)
+
+  (err/rt-test (extfl->fx +inf.t))
+  (err/rt-test (extfl->fx -inf.t))
+  (err/rt-test (extfl->fx +nan.t))
+
+  (if (fixnum? 536870911)
+      (begin
+        (test 536870911 extfl->fx 536870911.0t0)
+        (test 536870911 extfl->fx 536870911.5t0))
+      (begin
+        (err/rt-test (extfl->fx 536870911.0t0))
+        (err/rt-test (extfl->fx 536870911.5t0))))
+  (if (fixnum? -536870912)
+      (begin
+        (test -536870912 extfl->fx -536870912.0t0)
+        (test -536870912 extfl->fx -536870912.5t0))
+      (begin
+        (err/rt-test (extfl->fx -536870912.0t0))
+        (err/rt-test (extfl->fx -536870912.5t0))))
+
+  (if (fixnum? 1073741823)
+      (begin
+        (test 1073741823 extfl->fx 1073741823.0t0)
+        (test 1073741823 extfl->fx 1073741823.5t0))
+      (begin
+        (err/rt-test (extfl->fx 1073741823.0t0))
+        (err/rt-test (extfl->fx 1073741823.5t0))))
+  (if (fixnum? -1073741824)
+      (begin
+        (test -1073741824 extfl->fx -1073741824.0t0)
+        (test -1073741824 extfl->fx -1073741824.5t0))
+      (begin
+        (err/rt-test (extfl->fx -1073741824.0t0))
+        (err/rt-test (extfl->fx -1073741824.5t0))))
+
+  (if (fixnum? 4611686018427387903)
+      (test 4611686018427387903 extfl->fx 4611686018427387903.0t0)
+      (err/rt-test (extfl->fx 4611686018427387903.0t0)))
+  (if (fixnum? -4611686018427387904)
+      (test -4611686018427387904 extfl->fx -4611686018427387904.0t0)
+      (err/rt-test (extfl->fx -4611686018427387904.0t0)))
+
+  ;; Too big for all current fixnum ranges:
+  (err/rt-test (extfl->fx 4611686018427387904.0t0))
+  (err/rt-test (extfl->fx -4611686018427387905.0t0))
+
+
+  
   )
 
 (report-errs)

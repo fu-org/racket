@@ -15,6 +15,7 @@
 (load-in-sandbox "flonum.rktl")
 (load-in-sandbox "extflonum.rktl")
 (load-in-sandbox "string.rktl")
+(load-in-sandbox "fasl.rktl")
 
 (load-in-sandbox "async-channel.rktl")
 (load-in-sandbox "pathlib.rktl")
@@ -41,6 +42,7 @@
 (load-in-sandbox "moddep.rktl")
 (load-in-sandbox "boundmap-test.rktl")
 (load-in-sandbox "id-table-test.rktl")
+(load-in-sandbox "id-set-test.rktl")
 (load-in-sandbox "cm.rktl")
 (load-in-sandbox "module-reader.rktl")
 

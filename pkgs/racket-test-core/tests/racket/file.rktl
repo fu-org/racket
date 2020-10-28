@@ -1,5 +1,8 @@
 
 (load-relative "loadtest.rktl")
+(require ffi/file
+         ffi/unsafe
+         compiler/find-exe)
 
 (Section 'file)
 
@@ -9,6 +12,8 @@
 (define work-dir (make-temporary-file "path~a" 'directory))
 (current-directory work-dir)
 
+(test #t port? (current-input-port))
+(test #t port? (current-output-port))
 (test #t input-port? (current-input-port))
 (test #t output-port? (current-output-port))
 (test #t output-port? (current-error-port))
@@ -16,16 +21,40 @@
 (test (void) current-output-port (current-output-port))
 (test (void) current-error-port (current-error-port))
 (test #t call-with-input-file testing.rktl input-port?)
+
+(test #f port? 7)
+(test #f input-port? 7)
+(test #f output-port? 7)
+(test #f terminal-port? 7)
+(test #f file-stream-port? 7)
+
 (define this-file (open-input-file testing.rktl))
+(test #t port? this-file)
 (test #t input-port? this-file)
+(test #f output-port? this-file)
+(test #f terminal-port? this-file)
+(test #t file-stream-port? this-file)
 (close-input-port this-file)
+
 (define this-file (open-input-file testing.rktl #:mode 'binary))
+(test #t port? this-file)
 (test #t input-port? this-file)
+(test #f output-port? this-file)
+(test #f terminal-port? this-file)
+(test #t file-stream-port? this-file)
 (close-input-port this-file)
+
 (define this-file (open-input-file testing.rktl #:mode 'text))
+(test #t port? this-file)
 (test #t input-port? this-file)
+(test #f output-port? this-file)
+(test #f terminal-port? this-file)
+(test #t file-stream-port? this-file)
+(arity-test port? 1 1)
 (arity-test input-port? 1 1)
 (arity-test output-port? 1 1)
+(arity-test terminal-port? 1 1)
+(arity-test file-stream-port? 1 1)
 (arity-test current-input-port 0 1)
 (arity-test current-output-port 0 1)
 (arity-test current-error-port 0 1)
@@ -59,6 +88,7 @@
 (err/rt-test (close-output-port 5))
 (err/rt-test (close-input-port (current-output-port)))
 (err/rt-test (close-output-port (current-input-port)))
+
 (define (check-test-file name)
   (define test-file (open-input-file name))
   (test #t 'input-port?
@@ -332,6 +362,13 @@
 (define tempfilename (make-temporary-file))
 (when (file-exists? tempfilename)
   (delete-file tempfilename))
+
+(err/rt-test (open-output-file tempfilename #:exists 'update) exn:fail:filesystem?)
+(let ([p (open-output-file tempfilename #:exists 'can-update)])
+  (test #t output-port? p)
+  (close-output-port p))
+(delete-file tempfilename)
+
 (let ([p (open-output-file tempfilename)])
   (err/rt-test (write-special 'foo p) exn:application:mismatch?)
   (test #t integer? (port-file-identity p))
@@ -452,7 +489,9 @@
   (close-output-port o))
 (test 900 file-size tempfilename)
 (let ([o (open-output-file tempfilename #:exists 'update)])
+  (file-position o 10)
   (file-truncate o 399)
+  (test 10 file-position o)
   (close-output-port o))
 (test 399 file-size tempfilename)
 
@@ -574,16 +613,16 @@
 (let ([th1 (thread (lambda ()
 		     (display "a" out)))]
       [th2 (thread (lambda ()
-		      (display "a" out)))]
+                     (display "a" out)))]
       [th3 (thread (lambda ()
-		      (display "a" out)))])
+                     (display "a" out)))])
   (test #t thread-running? th1)
   (test #t thread-running? th2)
   (test #t thread-running? th3)
 
   (test 49 read-byte in)
   
-  (sleep 0.1)
+  (sync (system-idle-evt))
 
   (test 2 + 
 	(if (thread-running? th1) 1 0)
@@ -592,7 +631,7 @@
 
   (test 50 read-byte in)
 
-  (sleep 0.1)
+  (sync (system-idle-evt))
 
   (test 1 + 
 	(if (thread-running? th1) 1 0)
@@ -601,7 +640,7 @@
   
   (test 51 read-byte in)
   
-  (sleep 0.1)
+  (sync (system-idle-evt))
 
   (test #f thread-running? th1)
   (test #f thread-running? th2)
@@ -628,6 +667,9 @@
 (let-values ([(r w) (make-pipe #f 'in 'out)])
   (test 'in object-name r)
   (test 'out object-name w))
+(let-values ([(pin pout) (make-pipe 4 'name)])
+  (write-bytes (make-bytes 4) pout)
+  (test #f sync/timeout 0 pout))
 
 (test #t input-port? (make-input-port void void void void))
 (test #t input-port? (make-input-port void void #f void))
@@ -821,9 +863,15 @@
   (parameterize ([global-port-print-handler oldd])
      (test (void) print "hello" sp)
      (test (adding "hello") get-output-string sp))
+  (parameterize ([global-port-print-handler (lambda (v p [depth 0])
+                                              (test #t pair? (member depth '(0 1)))
+                                              (write 'changes-to-Y p))])
+    (test (void) print "hello" sp)
+    (parameterize ([print-as-expression #f])
+      (test (void) print "hello" sp))
+    (test (adding "YY") get-output-string sp))
   (test (void) print "hello" sp)
   (test (adding "\"hello\"") get-output-string sp)
-		
 
   (port-print-handler sp (lambda (v p) (oldd "Z" p) 5))
   (test (void) display "hello" sp)
@@ -871,6 +919,40 @@
 (err/rt-test (port-write-handler (current-input-port) 8))
 (err/rt-test (port-write-handler sp (lambda (x) 9)))
 (err/rt-test (port-write-handler sp (lambda (x y z) 9)))
+
+;; Check use of handlers by `printf`
+(let ()
+  (define p (open-output-bytes))
+  (port-display-handler p (lambda (x p)
+                            (write-bytes #"D" p)))
+  (port-write-handler p (lambda (x p)
+                          (write-bytes #"W" p)))
+  (port-print-handler p (lambda (x p [d 0])
+                          (test #t pair? (memq d '(0 1)))
+                          (write-bytes #"P" p)))
+
+  (display 'x p)
+  (fprintf p "~a" 'y)
+  (fprintf p "~.a" 'z) ; does not use handler
+
+  (write 'x p)
+  (fprintf p "~s" 'y)
+  (fprintf p "~.s" 'z) ; does not use handler
+
+  (print 'x p)
+  (fprintf p "~v" 'y)
+  (fprintf p "~.v" 'z) ; does not use handler
+
+  (test #"DDzWWzPP'z" get-output-bytes p))
+
+;; Make sure `printf` works with wrapped ports
+(let ()
+  (struct w (p) #:property prop:output-port (struct-field-index p))
+  (define o (open-output-bytes))
+  (define p (w o))
+
+  (fprintf p "0~a~a~s~v~.a~a~.s~.v" 1 #"1" 2 3 4 #"4" 5 6)
+  (test #"011234456" get-output-bytes o))
 
 ;;------------------------------------------------------------
 ;; peek-string and variants:
@@ -1102,6 +1184,101 @@
     (let ([x (+ 9 (expt 10 100))])
       (test (list (cons x (add1 x))) regexp-match-peek-positions #"0" p (expt 10 100)))))
 
+;; Make sure that peeking past the end of a
+;; file as a first action gives EOF right away
+(let ([tempfilename (make-temporary-file)])
+  (call-with-output-file*
+   tempfilename
+   #:exists 'truncate
+   (lambda (o) (write-bytes (make-bytes 50 65) o)))
+  (for ([end '(60 50)])
+    (test (list eof eof)
+          call-with-input-file
+          tempfilename
+          (lambda (i)
+            (list (peek-byte i end)
+                  (peek-byte i end))))
+    (test (list eof eof)
+          call-with-input-file
+          tempfilename
+          (lambda (i)
+            (list (peek-bytes 1 end i)
+                  (peek-bytes 1 end i)))))
+  (delete-file tempfilename))
+
+;;------------------------------------------------------------
+;; File-stream ports and blocking behavior
+
+(let ()
+  (define-values (s i o e) (subprocess #f #f #f (find-exe) "-e" "(read)"))
+
+  (thread (lambda ()
+            (sync (system-idle-evt))
+            (close-input-port i)))
+
+  (err/rt-test
+   (peek-bytes-avail! (make-bytes 10) 0 #f i)
+   exn:fail?)
+
+  (close-output-port o)
+  (close-input-port e)
+  (subprocess-wait s))
+
+(let ()
+  (define-values (s i o e) (subprocess #f #f #f (find-exe) "-e" "(read)"))
+
+  (thread (lambda ()
+            (sync (system-idle-evt))
+            (close-input-port i)))
+
+  (test 0 peek-bytes-avail! (make-bytes 10) 0 (port-progress-evt i) i)
+
+  (close-output-port o)
+  (close-input-port e)
+  (subprocess-wait s))
+
+(let ()
+  (define-values (s i o e) (subprocess #f #f #f (find-exe) "-e" "(read)"))
+
+  (thread (lambda ()
+            (sync (system-idle-evt))
+            (close-input-port i)))
+
+  ;; Short not get stuck:
+  (sync (port-progress-evt i))
+
+  (close-output-port o)
+  (close-input-port e)
+  (subprocess-wait s))
+
+(for ([force-close? '(#t #f)])
+  (define c (make-custodian))
+
+  (define-values (s i o e)
+    (parameterize ([current-custodian c])
+      (subprocess #f #f #f (find-exe) "-e" "(let loop () (write-bytes (make-bytes 1024)) (loop))")))
+
+  (thread (lambda ()
+            (sync (system-idle-evt))
+            (if (or force-close?
+                    ;; For really old Windows, we need a close that doesn't try
+                    ;; to flush, because there's no way to avoid
+                    ;; buffering at the rktio level:
+                    (and (eq? 'windows (system-type))
+                         (not (regexp-match? "Windows NT" (system-type 'machine)))))
+                (custodian-shutdown-all c)
+                (close-output-port o))))
+
+  (err/rt-test
+   (let loop ()
+     (write-bytes-avail #"hello" o)
+     (loop))
+   exn:fail?)
+
+  (close-input-port i)
+  (close-input-port e)
+  (subprocess-wait s))
+
 ;;------------------------------------------------------------
 
 ;; Test custom output port
@@ -1154,6 +1331,17 @@
     (set! l 10)
     (test (void) close-output-port p)
     (test 10 values l)))
+
+(let ()
+  (define-struct myport (port)
+    #:property prop:output-port 0)
+  (define o (open-output-string))
+
+  (define out (make-myport o))
+  (test (void) newline out)
+  (test "\n" get-output-string o)
+
+  (err/rt-test (newline 9)))
 
 ; --------------------------------------------------
 
@@ -1258,6 +1446,7 @@
   (err/rt-test (format "apple~"))
   (err/rt-test (format "~"))
   (err/rt-test (format "~~~"))
+  (err/rt-test (format "~s") (lambda (e) (regexp-match "requires one")))
   (err/rt-test (format "~o") exn:application:mismatch?)
   (err/rt-test (format "~o" 1 2) exn:application:mismatch?)
   (err/rt-test (format "~c" 1) exn:application:mismatch?)
@@ -1331,9 +1520,7 @@
   (test #f environment-variables-ref env #"BANANA")
   (test #f getenv "BANANA")
 
-  (let ([apple (if (eq? 'windows (system-type))
-                   #"apple"
-                   #"APPLE")])
+  (let ([apple #"APPLE"])
     (test apple car (member apple (environment-variables-names env))))
   (test #f member #"BANANA" (environment-variables-names env))
   (test #f member #"banana" (environment-variables-names env)))
@@ -1343,6 +1530,16 @@
                  (current-environment-variables))])
   (env-var-tests))
 (env-var-tests)
+
+;; Partly a test of case-normalization:
+(let* ([e (current-environment-variables)]
+       [e2 (environment-variables-copy e)]
+       [names2 (environment-variables-names e2)])
+  (test (length (environment-variables-names e)) length names2)
+  (for ([k (in-list (environment-variables-names e))])
+    (test #t 'name (and (member k names2) #t))
+    (test (environment-variables-ref e k)
+          environment-variables-ref e2 k)))
 
 (arity-test getenv 1 1)
 (arity-test putenv 2 2)
@@ -1358,6 +1555,8 @@
 
 (define (listen-port x)
   (let-values ([(la lp pa pp) (tcp-addresses x #t)])
+    (test #t exact-integer? lp)
+    (test #t equal? 0 pp)
     lp))
 
 (define (cust-test open)
@@ -1480,20 +1679,29 @@
   (check "f1" "f2" #t known-file-supported?)
   (check "f1d" "f2d" #f known-supported?)
 
+  (let ([no-file (build-path dir "no-such-file-here")])
+    (test 'no filesystem-change-evt no-file (lambda () 'no))
+    (err/rt-test (filesystem-change-evt no-file) (lambda (x)
+                                                   (or (exn:fail:filesystem? x)
+                                                       (exn:fail:unsupported? x)))))
+
   (delete-directory/files dir))
 
 ;;----------------------------------------------------------------------
 ;; TCP
 
 (let ([do-once
-       (lambda (evt? localhost)
-	 (let* (
-	  [l (tcp-listen 0 5 #t)]
-    [pn (listen-port l)])
+       (lambda (evt? localhost [serve-localhost #f])
+	 (let* ([l (tcp-listen 0 5 #t serve-localhost)]
+                [pn (listen-port l)])
 	   (let-values ([(r1 w1) (tcp-connect localhost pn)]
 			[(r2 w2) (if evt?
 				     (apply values (sync (tcp-accept-evt l)))
 				     (tcp-accept l))])
+             (let-values ([(la1 lp1 pa1 pp1) (tcp-addresses r1 #t)]
+                          [(la2 lp2 pa2 pp2) (tcp-addresses r2 #t)])
+               (test #t equal? lp1 pp2)
+               (test #t equal? pp1 lp2))
 	     (test #t tcp-port? r1)
 	     (test #t tcp-port? r2)
 	     (test #t tcp-port? w1)
@@ -1511,9 +1719,20 @@
   (do-once #f "localhost")
   (do-once #t "localhost")
   (with-handlers ([exn:fail:network:errno? (lambda (e)
-                                             ;; catch EAFNOSUPPORT Address family not supported by protocol
-                                             (unless (regexp-match? #rx"Address family not supported by protocol" (exn-message e))
+                                             ;; Catch forms of non-support for IPv6:
+                                             ;;       EAFNOSUPPORT "Address family not supported by protocol"
+                                             ;;    or getaddrinfo failure "no address associated with name"
+                                             ;; In case IPv6 is supported by the OS but not for the loopback
+                                             ;; devce, we also catch "Cannot assign requested address"
+                                             (unless (regexp-match?
+                                                      #rx"family not supported by protocol|no address associated with name|Cannot assign requested address"
+                                                      (exn-message e))
                                                (raise e)))])
+    ;; Supply listener hostname, so we can check whether `listen` receives IPv6 connections
+    (do-once #f "::1" "::1")
+    (do-once #t "::1" "::1")
+    ;; If we get this far, then "::1" apparently works, so try listening
+    ;; at all interfaces and connecting to "::1":
     (do-once #f "::1")
     (do-once #t "::1")))
 
@@ -1570,6 +1789,7 @@
   (test #t file-exists? "tmp1")
   (test #f directory-exists? "tmp1")
   (test #f link-exists? "tmp1")
+  (test 'file file-or-directory-type "tmp1")
 
   (err/rt-test (open-output-file "tmp1") (fs-reject? 'open-output-file))
   (err/rt-test (delete-file "tmp1") (fs-reject? 'delete-file))
@@ -1612,6 +1832,7 @@
   (err/rt-test (file-exists? "tmp1") (fs-reject? 'file-exists?))
   (err/rt-test (directory-exists? "tmp1") (fs-reject? 'directory-exists?))
   (err/rt-test (link-exists? "tmp1") (fs-reject? 'link-exists?))
+  (err/rt-test (file-or-directory-type "tmp1") (fs-reject? 'file-or-directory-type))
   (err/rt-test (path->complete-path "tmp1") (fs-reject? 'path->complete-path))
   (err/rt-test (filesystem-root-list) (fs-reject? 'filesystem-root-list))
   (err/rt-test (find-system-path 'temp-dir) (fs-reject? 'find-system-path)))
@@ -1620,6 +1841,177 @@
 (for ([f '("tmp1" "tmp2" "tmp3")] #:when (file-exists? f)) (delete-file f))
 
 (current-directory original-dir)
+
+;; ----------------------------------------
+
+(let ([home-dir (path->directory-path (make-temporary-file "test-home~a" 'directory))]
+      [env (environment-variables-copy (current-environment-variables))]
+      [racket (find-exe)])
+  (environment-variables-set! env
+                              #"PLTUSERHOME"
+                              (path->bytes home-dir))
+  (define (get-dirs)
+    (parameterize ([current-environment-variables env])
+      (define-values (s i o e) (subprocess #f #f #f racket "-I" "racket/base" "-e"
+                                           (string-append
+                                            "(map path->bytes "
+                                            "     (list (find-system-path 'home-dir)"
+                                            "           (find-system-path 'pref-dir)"
+                                            "           (find-system-path 'pref-file)"
+                                            "           (find-system-path 'init-dir)"
+                                            "           (find-system-path 'init-file)"
+                                            "           (find-system-path 'addon-dir)"
+                                            "           (find-system-path 'cache-dir)))")))
+      (begin0
+        (cadr (read i))
+        (subprocess-wait s))))
+  (define (touch f) (close-output-port (open-output-file f #:exists 'truncate)))
+
+  (define dir-syms '(home-dir pref-dir pref-file init-dir init-file addon-dir cache-dir))
+  (define expected-default-dirs
+    (case (system-type)
+      [(unix) (list home-dir
+                    (build-path home-dir ".config" "racket/")
+                    (build-path home-dir ".config" "racket" "racket-prefs.rktd")
+                    (build-path home-dir ".config" "racket/")
+                    (build-path home-dir ".config" "racket" "racketrc.rktl")
+                    (build-path home-dir ".local" "share" "racket/")
+                    (build-path home-dir ".cache" "racket/"))]
+      [(macosx) (list home-dir
+                      (build-path home-dir "Library" "Preferences/")
+                      (build-path home-dir "Library" "Preferences" "org.racket-lang.prefs.rktd")
+                      (build-path home-dir "Library" "Racket/")
+                      (build-path home-dir "Library" "Racket" "racketrc.rktl")
+                      (build-path home-dir "Library" "Racket/")
+                      (build-path home-dir "Library" "Caches" "Racket/"))]
+      [(windows) (list home-dir
+                       (build-path home-dir "Racket\\")
+                       (build-path home-dir "Racket" "racket-prefs.rktd")
+                       home-dir
+                       (build-path home-dir "racketrc.rktl")
+                       (build-path home-dir "Racket\\")
+                       (build-path home-dir "Racket\\"))]
+      [else (error "unexpected system type")]))
+
+  (define default-dirs (get-dirs))
+  (for-each (lambda (name expect got)
+              (test got `(,name default) expect))
+            dir-syms
+            (map bytes->path default-dirs)
+            expected-default-dirs)
+
+  ;; Create files/directories that trigger legacy paths:
+  (case (system-type)
+    [(unix)
+     (touch (build-path home-dir ".racketrc"))
+     (make-directory (build-path home-dir ".racket"))]
+    [(macosx)
+     (touch (build-path home-dir ".racketrc"))
+     ;; Make sure just the existence of the would-be init dir doesn't override legacy:
+     (make-directory (build-path home-dir "Library"))
+     (make-directory (build-path home-dir "Library" "Racket"))])
+
+  (define legacy-dirs (get-dirs))
+  (for-each (lambda (name expect got)
+              (test got `(,name legacy) expect))
+            dir-syms
+            (map bytes->path legacy-dirs)
+            (case (system-type)
+              [(unix) (list home-dir
+                            (build-path home-dir ".racket/")
+                            (build-path home-dir ".racket/" "racket-prefs.rktd")
+                            home-dir
+                            (build-path home-dir ".racketrc")
+                            (build-path home-dir ".racket/")
+                            (build-path home-dir ".racket/"))]
+              [(macosx) (list home-dir
+                              (build-path home-dir "Library" "Preferences/")
+                              (build-path home-dir "Library" "Preferences" "org.racket-lang.prefs.rktd")
+                              home-dir
+                              (build-path home-dir ".racketrc")
+                              (build-path home-dir "Library" "Racket/")
+                              (build-path home-dir "Library" "Caches" "Racket/"))]
+              [(windows) expected-default-dirs]
+              [else (error "unexpected system type")]))
+
+  ;; Create files/directories that cause legacy paths to be ignored:
+  (case (system-type)
+    [(unix)
+     (make-directory (build-path home-dir ".config"))
+     (make-directory (build-path home-dir ".config" "racket"))
+     (touch (build-path home-dir ".config" "racket" "racketrc.rktl"))
+     (make-directory (build-path home-dir ".local"))
+     (make-directory (build-path home-dir ".local" "share"))
+     (make-directory (build-path home-dir ".local" "share" "racket"))
+     (make-directory (build-path home-dir ".cache"))
+     (make-directory (build-path home-dir ".cache" "racket"))]
+    [(macosx)
+     (touch (build-path (build-path home-dir "Library" "Racket" "racketrc.rktl")))])
+
+  (define back-to-default-dirs (get-dirs))
+  (for-each (lambda (name expect got)
+              (test got `(,name back-to-default) expect))
+            dir-syms
+            (map bytes->path back-to-default-dirs)
+            expected-default-dirs)
+
+  (delete-directory/files home-dir))
+
+;; ----------------------------------------
+
+(unless (eq? 'windows (system-type))
+  (define can-open-nonblocking-fifo?
+    ;; The general implementation of fifo-write ports requires
+    ;; OS-managed threads internally. Use support forr futures and/or
+    ;; places as an indication that OS threads are available.
+    (or (place-enabled?)
+        (futures-enabled?)))
+
+  (define fifo (build-path work-dir "ff"))
+  (system* (find-executable-path "mkfifo") fifo)
+
+  (define i1 (open-input-file fifo))
+  (define o1 (open-output-file fifo #:exists 'update))
+  (write-bytes #"abc" o1)
+  (flush-output o1)
+  (test #"abc" read-bytes 3 i1)
+  (close-input-port i1)
+  (close-output-port o1)
+
+  (define (check-output-blocking do-write-abc)
+    ;; Make sure an output fifo blocks until there's a reader
+    (define t1
+      (thread
+       (lambda ()
+         (define o2 (open-output-file fifo #:exists 'update))
+         (test #t port-waiting-peer? o2)
+         (do-write-abc o2)
+         (close-output-port o2))))
+    (define t2
+      (thread
+       (lambda ()
+         (sync (system-idle-evt))
+         (define i2 (open-input-file fifo))
+         (test #"abc" read-bytes 3 i2)
+         (close-input-port i2))))
+    (sync t1)
+    (sync t2))
+
+  (when can-open-nonblocking-fifo?
+    (check-output-blocking (lambda (o2) (write-bytes #"abc" o2)))
+    (check-output-blocking (lambda (o2)
+                             (parameterize ([current-output-port o2])
+                               (system* (find-executable-path "echo")
+                                        "-n"
+                                        "abc")))))
+
+  (delete-file fifo))
+
+(test #f port-waiting-peer? (current-input-port))
+(test #f port-waiting-peer? (current-output-port))
+(test #f port-waiting-peer? (open-input-bytes #""))
+(err/rt-test (port-waiting-peer? 10))
+
 (delete-directory work-dir)
 
 ;; Network - - - - - - - - - - - - - - - - - - - - - -
@@ -1653,6 +2045,217 @@
 (parameterize ([current-security-guard (make-file-sg '())])
   (test #f regexp-match? "unknown machine" (system-type 'machine)))
 
+
+;; The `ffi/file` library - - - - - - - - - - - - - - - - - - -
+
+(define no-op (lambda (x) #f))
+
+(let ()
+  (define pub-mod (collection-file-path "list.rkt" "racket"))
+  (define priv-mod (collection-file-path "stx.rkt" "racket/private"))
+
+  (define sg0 (current-security-guard))
+
+  (define sg-ro
+    (make-security-guard
+     sg0
+     (lambda (who path modes)
+       (when (or (memq 'write modes) (memq 'delete modes))
+         (error who "write/delete not allowed")))
+     (lambda (who host port mode)
+       (unless (eq? mode 'client)
+         (error who "servers not allowed")))
+     (lambda (who path to)
+       (unless (equal? (path->string to) "chain")
+         (error who "only chain links allowed")))))
+
+  (define sg-priv
+    (make-security-guard
+     sg0
+     (lambda (who path modes)
+       (when (and path (regexp-match #rx"private" (path->string path)))
+         (error who "no access to private paths: ~e" path)))
+     void void))
+
+  (define (mk-fun modes)
+    ;; receives path pointer; the rest doesn't matter
+    (cast no-op
+          ;; turns `no-op` into a callback:
+          (_fun _pointer -> _scheme)
+          ;; turns the callback into a callout, which is what we want
+          ;; to test `_file/guard`:
+          (_fun (path) ::
+                (path : (_file/guard modes 'me))
+                -> _scheme)))
+  
+  (define (fun path modes)
+    ((mk-fun modes) path))
+
+  (define ok-exn? 
+    (lambda (x)
+      (and (exn:fail? x)
+           (regexp-match #rx"^me: " (exn-message x)))))
+
+  (define (sc-run #:check [security-guard-check security-guard-check-file]
+                  ok? . args)
+    (if ok?
+        (begin
+          (apply test (void) security-guard-check 'me args)
+          (when (eq? security-guard-check security-guard-check-file)
+            (test (void) void (apply fun args))))
+        (begin
+          (err/rt-test (apply security-guard-check 'me args) ok-exn?)
+          (when (eq? security-guard-check security-guard-check-file)
+            (err/rt-test (apply fun args) ok-exn?)))))
+
+  (parameterize ((current-security-guard sg0))
+    (sc-run #t "foo.txt" '(read))
+    (sc-run #t "bar.txt" '(write delete))
+    (sc-run #t pub-mod '(read))
+    (sc-run #t pub-mod '(write))
+    (sc-run #t priv-mod '(read))
+    (sc-run #t priv-mod '(read write delete))
+    (sc-run #t #:check security-guard-check-file-link
+            priv-mod "chain")
+    (sc-run #t #:check security-guard-check-file-link
+            priv-mod "other")
+    (sc-run #t #:check security-guard-check-network
+            "localhost" 500 'client)
+    (sc-run #t #:check security-guard-check-network
+            "localhost" 500 'server))
+
+  (parameterize ((current-security-guard sg-ro))
+    (sc-run #t "foo.txt" '(read))
+    (sc-run #f "bar.txt" '(write delete))
+    (sc-run #t pub-mod '(read))
+    (sc-run #f pub-mod '(write))
+    (sc-run #t priv-mod '(read))
+    (sc-run #f priv-mod '(read write delete))
+    (sc-run #t #:check security-guard-check-file-link
+            priv-mod "chain")
+    (sc-run #f #:check security-guard-check-file-link
+            priv-mod "other")
+    (sc-run #t #:check security-guard-check-network
+            "localhost" 500 'client)
+    (sc-run #f #:check security-guard-check-network
+            "localhost" 500 'server))
+
+  (parameterize ((current-security-guard sg-priv))
+    (sc-run #t pub-mod '(read))
+    (sc-run #t pub-mod '(write))
+    (sc-run #f priv-mod '(read))
+    (sc-run #f priv-mod '(read write delete))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that when flushing a TCP output port fails, it
+;; clears the buffer
+
+(let-values ([(subproc stdout stdin stderr) (subprocess #f #f #f (find-exe) "-n")])
+
+  ;; A flush will eventually fail:
+  (with-handlers ([exn:fail:filesystem? void])
+    (let loop ()
+      (write-bytes #"foo" stdin)
+      (flush-output stdin)
+      (loop)))
+
+  ;; Next flush should not fail, because the buffer content
+  ;; should have been discarded by a failed flush:
+  (test (void) flush-output stdin)
+  
+  ;; Closing should not fail:
+  (test (void) close-output-port stdin)
+
+  (close-input-port stderr)
+  (close-input-port stdout)
+
+  (subprocess-wait subproc))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that when flushing an OS-level pipe fails, it
+;; clears the buffer
+
+(let-values ([(subproc stdout stdin stderr) (subprocess #f #f #f (find-exe) "-n")])
+
+  ;; A flush will eventually fail:
+  (with-handlers ([exn:fail:filesystem? void])
+    (let loop ()
+      (write-bytes #"foo" stdin)
+      (flush-output stdin)
+      (loop)))
+
+  ;; Next flush should not fail, because the buffer content
+  ;; should have been discarded by a failed flush:
+  (test (void) flush-output stdin)
+  
+  ;; Closing should not fail:
+  (test (void) close-output-port stdin)
+
+  (close-input-port stderr)
+  (close-input-port stdout)
+
+  (subprocess-wait subproc))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that an asynchronous break that interrupts a flush
+;; doesn't lose buffered bytes
+
+(let-values ([(subproc stdout stdin stderr) (subprocess #f #f #f (find-exe) "-e"
+                                                        (format "~s"
+                                                                '(begin
+                                                                   (define noise (make-bytes 256 (char->integer #\x)))
+                                                                   ;; Fill up the OS-level output pipe:
+                                                                   (let loop ()
+                                                                     (unless (zero? (write-bytes-avail* noise (current-output-port)))
+                                                                       (loop)))
+                                                                   ;; Wait until the other end has read:
+                                                                   (write-bytes-avail #"noise" (current-output-port))
+                                                                   (close-output-port (current-output-port))
+                                                                   ;; Drain the OS-level input pipe, succeeding if we
+                                                                   ;; find a "!".
+                                                                   (let loop ()
+                                                                     (define b (read-byte (current-input-port)))
+                                                                     (when (eqv? b (char->integer #\!))
+                                                                       (exit 0))
+                                                                     (when (eof-object? b)
+                                                                       (exit 1))
+                                                                     (loop)))))])
+
+  ;; Fill up the OS-level output pipe:
+  (let loop ()
+    (unless (zero? (write-bytes-avail* #"?????" stdin))
+      (loop)))
+
+  ;; At this point, the other end is still waiting for us to read.
+  ;; Add something to the Racket-level buffer that we want to make sure
+  ;; doesn't get lost
+  (write-bytes #"!" stdin)
+
+  ;; Thread will get stuck trying to flush:
+  (define t (thread (lambda ()
+                      (with-handlers ([exn:break? void])
+                        (flush-output stdin)))))
+
+  (sync (system-idle-evt))
+  (break-thread t)
+  (thread-wait t)
+
+  ;; Drain output from subprocess, so it can be unblocked:
+  (let loop ()
+    (unless (eof-object? (read-bytes-avail! (make-bytes 10) stdout))
+      (loop)))
+
+  ;; Subprocess should be reading at this point
+  (flush-output stdin)
+
+  (close-output-port stdin)
+  (close-input-port stderr)
+  (close-input-port stdout)
+
+  (subprocess-wait subproc)
+
+  (test 0 subprocess-status subproc))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check `in-directory'
 
@@ -1675,7 +2278,9 @@
           'in-dir/no-arg
           (parameterize ([current-directory tmp-dir])
             (for/hash ([f (in-directory)])
-              (values f #t))))
+              (let ([real-f f])
+                (set! f 'trying-to-break-in-directory)
+                (values real-f #t)))))
     (define (mk) (in-directory))
     (test ht
           'in-dir/no-arg/outline
@@ -1720,6 +2325,8 @@
           (parameterize ([current-directory tmp-dir])
             (for/hash ([f (mk)])
               (values f #t)))))
+  (err/rt-test (for/list ([f (in-directory tmp-dir #f '?)]) f))
+  (err/rt-test (in-directory tmp-dir #f '?))
   (delete-directory/files tmp-dir))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1733,9 +2340,12 @@
     (define z (build-path z-dir "z"))
     (parameterize ([current-directory (pick-directory made)])
       (test #f directory-exists? z-dir)
+      (test #f file-or-directory-type z-dir)
+      (err/rt-test (file-or-directory-type z-dir #t) exn:fail:filesystem?)
       (test #f file-exists? z)
       (make-parent-directory* z)
       (test #t directory-exists? z-dir)
+      (test 'directory file-or-directory-type z-dir)
       (make-parent-directory* z)
       (delete-directory/files z-dir)
       (test #f directory-exists? z-dir)
@@ -1769,7 +2379,8 @@
   (make-directory* sub)
   (file-or-directory-permissions sub #o000)
   (file-or-directory-permissions sub)
-  (err/rt-test (for ([v (in-directory sub)]) v) exn:fail:filesystem?)
+  (unless (memq 'write (file-or-directory-permissions sub)) ; root can still modify the directory
+    (err/rt-test (for ([v (in-directory sub)]) v) exn:fail:filesystem?))
   (delete-directory sub)
   (delete-directory/files tmp))
 
@@ -1804,7 +2415,9 @@
 
   ;; On Unix, non-writable directory means the file
   ;; can't be deleted.
-  (unless (eq? 'windows (system-type))
+  (unless (or (eq? 'windows (system-type))
+              ;; root can still modify the directory
+              (memq 'write (file-or-directory-permissions dir)))
     (unless (eq? 'exn (with-handlers ([void (lambda (exn) 'exn)])
                         (delete-file file)))
       (error "expected an error")))
@@ -1820,7 +2433,7 @@
         (error "expected an error"))))
 
   ;; In default mode, non-writable things in writable directories
-  ;; an be deleted everywhere:
+  ;; can be deleted everywhere:
   (delete-file file)
   (delete-directory dir))
 
@@ -1828,11 +2441,33 @@
 
 (let ([tf (make-temporary-file)])
   (test tf resolve-path (path->string tf))
-  (unless (eq? 'windows (system-type))
-    (delete-file tf)
-    (make-file-or-directory-link "other.txt" tf)
-    (test (string->path "other.txt") resolve-path tf))
   (delete-file tf)
+  (define link-created?
+    (with-handlers ([(lambda (exn) (and (eq? 'windows (system-type))
+                                        (exn:fail:filesystem? exn)))
+                     (lambda (exn) #f)])
+      (make-file-or-directory-link "other.txt" tf)
+      #t))
+  (when link-created?
+    (err/rt-test (make-file-or-directory-link "other.txt" tf) exn:fail:filesystem? (regexp-quote tf))
+    (test (string->path "other.txt") resolve-path tf)
+    (test #t link-exists? tf)
+    (test 'link file-or-directory-type tf)
+    (delete-file tf)
+
+    (make-file-or-directory-link (path->directory-path "other") tf)
+    (test #t link-exists? tf)
+    (test (if (eq? (system-type) 'windows) 'directory-link 'link) file-or-directory-type tf)
+    (if (eq? (system-type) 'windows)
+        (delete-directory tf)
+        (delete-file tf))
+
+    (test #f link-exists? tf)
+    (make-file-or-directory-link (path->directory-path "other") tf)
+    (test #t link-exists? tf)
+    (delete-directory/files tf)
+    (test #f link-exists? tf))
+
   (case (system-path-convention-type)
     [(unix)
      (test (string->path "/testing-root/testing-dir/testing-file")
@@ -1849,6 +2484,22 @@
            resolve-path
            "C://testing-root////testing-dir\\\\testing-file")]))
 
+(unless (link-exists? (current-directory))
+  ;; Make sure directoryness is preserved
+  (test (current-directory) resolve-path (current-directory)))
+
+(when (eq? (system-type) 'windows)
+  ;; special filenames exist everywhere 
+  (test #t file-exists? "aux")
+  (test #t file-exists? "aux.anything")
+  (test #t file-exists? "c:/aux")
+  (test #t file-exists? "c:/com1")
+  (test #t file-exists? "a:/x/lpt6")
+  (test 'file file-or-directory-type "a:/x/lpt6")
+  ;; \\?\ paths don't refer to special filenames
+  (test #f file-exists? "\\\\?\\C:\\aux")
+  (test #f file-or-directory-type "\\\\?\\C:\\aux"))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Make sure `write-byte` and `write-char` don't try to test
 ;; a non-supplied argument:
@@ -1862,6 +2513,80 @@
   (let ([s (if (zero? (random 1)) "a" "b")])
     (string-append s s) ; causes a clear operation on the runstack for second argument
     (write-char #\A)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that unpaired surrogates are handled right in
+;; Windows paths
+
+(when (eq? 'windows (system-type))
+  (let-values ([(surrogate-hi surrogate-lo)
+                (let ()
+                  (define c0 (bytes-open-converter "platform-UTF-8" "platform-UTF-16"))
+                  (let-values ([(bstr a b) (bytes-convert c0 (string->bytes/utf-8 "\U10AABB"))])
+                    (define c8 (bytes-open-converter "platform-UTF-16" "platform-UTF-8"))
+                    (let-values ([(bstr a b) (bytes-convert c8
+                                                            (bytes-append
+                                                             #".\0"
+                                                             (subbytes bstr 0 2)
+                                                             #".\0"
+                                                             (subbytes bstr 2 4)
+                                                             #".\0"))])
+                      (values (subbytes bstr 1 4) (subbytes bstr 5 8)))))])
+    (let ([dir (make-temporary-file "weird~a" 'directory)]
+          [fns (map bytes->path
+                    ;; Each of these byte strings represents a strange
+                    ;; filename where one or more of the 16-byte elements
+                    ;; at at the `wchar_t*` level is an unpaired surrogate.
+                    ;; NTFS filesystems will allow that, though.
+                    (list (bytes-append #"a" surrogate-hi #"z")
+                          (bytes-append #"a" surrogate-lo #"z")
+                          (bytes-append #"a" surrogate-lo surrogate-hi #"z")
+                          (bytes-append #"a" surrogate-hi)
+                          (bytes-append #"a" surrogate-lo)
+                          (bytes-append #"a" surrogate-lo surrogate-hi)))])
+      ;; If one of the paths works, we expect them all to work:
+      (when (with-handlers ([exn:fail:filesystem? (lambda (x) #f)])
+              (let ([p (build-path dir (car fns))])
+                (call-with-output-file p void)
+                (delete-file p)))
+        (for ([fn (in-list fns)])
+          (define p (build-path dir fn))
+          (call-with-output-file p (lambda (o) (write-bytes (path->bytes fn) o))))
+        (for ([fn (in-list fns)])
+          (define p (build-path dir fn))
+          (call-with-input-file* p (lambda (i) (test (path->bytes fn) read-bytes 100 i))))
+        ;; Make sure names are converted correctly back from `directory-list`:
+        (test (sort fns path<?) sort (directory-list dir) path<?))
+      (delete-directory/files dir))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(test #"\205\327\305\377@:\276r\337[\212'\b\202\36\343<\320\274\316" sha1-bytes #"abcdefghijklmn")
+(test #"\340\373\262\1m\341\6V\352$IR\311}\350x7\337d\263\320\243\247\350\342\31R " sha224-bytes #"abcdefghijklmn")
+(test #"\6S\307\351\222\327\252\324\f\262cW8\270p\344\301T\257\263F4\r\2\307\227\324\220\335R\325\371" sha256-bytes #"abcdefghijklmn")
+
+(define (test-sha-more sha-bytes)
+  (define (try sha-bytes base)
+    (define expect (sha-bytes base))
+    (define len (bytes-length base))
+    (test expect sha-bytes base 0)
+    (test expect sha-bytes base 0 #f)
+    (test expect sha-bytes (bytes-append #"__" base) 2)
+    (test expect sha-bytes (bytes-append #"__" base) 2 #f)
+    (test expect sha-bytes (bytes-append #"__" base) 2 (+ 2 len))
+    (test expect sha-bytes (bytes-append #"__" base #"__") 2 (+ 2 len))
+    (test expect sha-bytes (bytes-append base #"__") 0 len)
+    (test expect sha-bytes (bytes-append (make-bytes 1035 42) base) 1035)
+    #;(test expect sha-bytes (bytes-append (make-bytes 1035 42) base #"__") 1035 (+ 1035 len)))
+  (define (try-base base)
+    (try sha-bytes base)
+    #;
+    (try (lambda (bstr . args) (apply sha-bytes (open-input-bytes bstr) args)) base))
+  (try-base #"abcdefghijklmn")
+  (try-base (make-bytes 5077 79)))
+(test-sha-more sha1-bytes)
+(test-sha-more sha224-bytes)
+(test-sha-more sha256-bytes)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

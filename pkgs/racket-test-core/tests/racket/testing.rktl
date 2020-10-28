@@ -18,6 +18,7 @@
 
 ; The format of the next line is important: file.rktl relies on it
 (define cur-section '())(define errs '())
+(define accum-errs '())
 
 #|
 
@@ -38,7 +39,7 @@ something that isn't a procedure. That name is used in the
 transcript.
 
 |#
-
+(require (for-syntax racket/base))
 
 (define teval eval)
 
@@ -74,6 +75,10 @@ transcript.
 (define number-of-error-tests 0)
 (define number-of-exn-tests 0)
 
+(define accum-number-of-tests 0)
+(define accum-number-of-error-tests 0)
+(define accum-number-of-exn-tests 0)
+
 (define (load-in-sandbox file #:testing [testing "testing.rktl"])
   (define-syntax-rule (S id) (dynamic-require 'racket/sandbox 'id))
   (let ([e ((S call-with-trusted-sandbox-configuration)
@@ -81,21 +86,23 @@ transcript.
               (parameterize ([(S sandbox-input) current-input-port]
                              [(S sandbox-output) current-output-port]
                              [(S sandbox-error-output) current-error-port]
-                             [(S sandbox-memory-limit) 100]) ; 100mb per box
+                             [(S sandbox-memory-limit) 250]) ; 250mb per box
                 ((S make-evaluator) '(begin) #:requires (list 'racket)))))])
     (e `(load-relative ,testing))
     (e `(define real-output-port (quote ,real-output-port)))
     (e `(define real-error-port  (quote ,real-error-port)))
     (e `(define Section-prefix ,Section-prefix))
     (e `(load-relative (quote ,file)))
-    (let ([l (e '(list number-of-tests
-                       number-of-error-tests
-                       number-of-exn-tests
-                       errs))])
-      (set! number-of-tests (+ number-of-tests (list-ref l 0)))
-      (set! number-of-error-tests (+ number-of-error-tests (list-ref l 1)))
-      (set! number-of-exn-tests (+ number-of-exn-tests (list-ref l 2)))
-      (set! errs (append (list-ref l 3) errs)))))
+    (let ([l (e '(list accum-number-of-tests
+                       accum-number-of-error-tests
+                       accum-number-of-exn-tests
+                       accum-errs))])
+      (set! accum-number-of-tests (+ accum-number-of-tests (list-ref l 0)))
+      (set! accum-number-of-error-tests (+ accum-number-of-error-tests (list-ref l 1)))
+      (set! accum-number-of-exn-tests (+ accum-number-of-exn-tests (list-ref l 2)))
+      (set! accum-errs (append (list-ref l 3) accum-errs)))))
+
+(define wrong-result-retries (make-parameter 0))
 
 (define test
   (let ()
@@ -105,15 +112,27 @@ transcript.
       (set! number-of-tests (add1 number-of-tests))
       (printf "~s ==> " form)
       (flush-output)
-      (let ([res (if (procedure? fun)
-                   (if kws (keyword-apply fun kws kvs args) (apply fun args))
-                   (car args))])
-        (printf "~s\n" res)
-        (let ([ok? (equal? expect res)])
-          (unless ok?
-            (record-error (list res expect form))
-            (printf "  BUT EXPECTED ~s\n" expect))
-          ok?)))
+      (with-handlers ([(λ (e) (not (exn:break? e))) ;; handle "exceptions" that are arbitrary values
+                       (λ (e)
+                         (printf "GOT EXN ~s\n" e)
+                         (record-error (list `(EXN ,e) expect form))
+                         (printf "  BUT EXPECTED ~s\n" expect))])
+        (let ([res (if (procedure? fun)
+                       (if kws (keyword-apply fun kws kvs args) (apply fun args))
+                       (car args))])
+          (printf "~s\n" res)
+          (let ([ok? (equal? expect res)])
+            (cond
+              [(and (not ok?)
+                    (positive? (wrong-result-retries)))
+               (printf "TRY AGAIN\n")
+               (parameterize ([wrong-result-retries (sub1 (wrong-result-retries))])
+                 (test* expect fun args kws kvs))]
+              [else
+               (unless ok?
+                 (record-error (list res expect form))
+                 (printf "  BUT EXPECTED ~s\n" expect))
+               ok?])))))
     (define (test/kw kws kvs expect fun . args) (test* expect fun args kws kvs))
     (define (test    expect fun         . args) (test* expect fun args #f #f))
     (make-keyword-procedure test/kw test)))
@@ -209,13 +228,18 @@ transcript.
     [(expr) (error-test expr exn:application:type?)]
     [(expr exn-type?) (thunk-error-test (lambda () (eval expr)) expr exn-type?)]))
 
-(require (only-in racket [lambda err:mz:lambda])) ; so err/rt-test works with beginner.rktl
-(define-syntax err/rt-test
+(require (only-in racket/base [lambda err:mz:lambda])) ; so err/rt-test works with beginner.rktl
+(define-syntax-rule (err/rt-test e . rest)
+  (begin
+    (do-err/rt-test e . rest)
+    (do-err/rt-test (let () e 'not-an-error) . rest)))
+(define-syntax-rule (err/rt-test/once e . rest)
+  (do-err/rt-test e . rest))
+(define-syntax do-err/rt-test
   (lambda (stx)
     (syntax-case stx ()
       [(_ e exn?)
-       (syntax
-	(thunk-error-test (err:mz:lambda () e) (quote-syntax e) exn?))]
+       #'(thunk-error-test (err:mz:lambda () e) (quote-syntax e) exn?)]
       [(_ e exn? msg-rx)
        #'(thunk-error-test
           (err:mz:lambda () e)
@@ -224,8 +248,7 @@ transcript.
             (and (exn? exn)
                  (regexp-match? msg-rx (exn-message exn)))))]
       [(_ e)
-       (syntax
-	(err/rt-test e exn:application:type?))])))
+       #'(do-err/rt-test e exn:application:type?)])))
 
 (define no-extra-if-tests? #f)
 
@@ -272,7 +295,7 @@ transcript.
 		(set! number-of-error-tests (add1 number-of-error-tests))
 		(printf "(apply ~s '~s)  =e=> " f args)
 		(let/ec done
-		  (let ([v (with-handlers ([void
+		  (let ([v (with-handlers ([(λ (e) (not (exn:break? e)))
 					    (lambda (exn)
 					      (if (check? exn)
 						  (printf " ~a\n" (if (exn? exn)
@@ -316,14 +339,25 @@ transcript.
 (define (test-values l thunk)
   (test l call-with-values thunk list))
 
-(define (report-errs . final?)
-  (let* ([final? (and (pair? final?) (car final?))]
-         [ok?    (null? errs)])
+(define (report-errs [final? #f])
+  (when final?
+    (set! errs (append errs accum-errs))
+    (set! number-of-tests (+ number-of-tests accum-number-of-tests))
+    (set! number-of-error-tests (+ number-of-error-tests accum-number-of-error-tests))
+    (set! number-of-exn-tests (+ number-of-error-tests accum-number-of-exn-tests))
+    (set! accum-errs null)
+    (set! accum-number-of-tests 0)
+    (set! accum-number-of-error-tests 0)
+    (set! accum-number-of-exn-tests 0))
+  (let* ([ok? (null? errs)])
     (parameterize ([current-output-port
                     (cond [(not ok?) (or real-error-port (current-error-port))]
                           [final? (or real-output-port (current-output-port))]
                           [else (current-output-port)])])
-      (printf "\n~aPerformed ~a expression tests (~a ~a, ~a ~a)\n"
+      (newline)
+      (when final?
+        (printf "SUMMARY ----------------------------\n"))
+      (printf "~aPerformed ~a expression tests (~a ~a, ~a ~a)\n"
               Section-prefix
               (+ number-of-tests number-of-error-tests)
               number-of-tests "value expressions"
@@ -333,16 +367,25 @@ transcript.
               number-of-exn-tests)
       (if ok?
         (printf "~aPassed all tests.\n" Section-prefix)
-        (begin (printf "~aErrors were:\n~a(Section (got expected (call)))\n"
-                       Section-prefix Section-prefix)
+        (begin (printf "~aErrors were [~a]:\n~a(Section (got expected (call)))\n"
+                       Section-prefix
+                       (length errs)
+                       Section-prefix)
                (for-each (lambda (l) (printf "~a~s\n" Section-prefix l))
                          (reverse errs))
                (when final? (exit 1))))
       (flush-output)
       (when final? (exit (if ok? 0 1)))
-      (printf "(Other messages report successful tests of~a.)\n"
-              " error-handling behavior")
-      (flush-output))))
+      (newline)
+      (flush-output)
+      (set! accum-errs (append errs accum-errs))
+      (set! accum-number-of-tests (+ number-of-tests accum-number-of-tests))
+      (set! accum-number-of-error-tests (+ number-of-error-tests accum-number-of-error-tests))
+      (set! accum-number-of-exn-tests (+ number-of-error-tests accum-number-of-exn-tests))
+      (set! errs null)
+      (set! number-of-tests 0)
+      (set! number-of-error-tests 0)
+      (set! number-of-exn-tests 0))))
 
 (define type? exn:application:type?)
 (define arity? exn:application:arity?)
@@ -351,15 +394,30 @@ transcript.
 (define non-z void)
 
 (define (find-depth go)
-  ; Find depth that triggers a stack overflow (assuming no other
-  ; threads are running and overflowing)
-  (let ([v0 (make-vector 6)]
-	[v1 (make-vector 6)])
-    (let find-loop ([d 100])
-      (vector-set-performance-stats! v0)
-      (go d)
-      (vector-set-performance-stats! v1)
-      (if (> (vector-ref v1 5)
-	     (vector-ref v0 5))
-	  d
-	  (find-loop (* 2 d))))))
+  (cond
+    [(eq? 'racket (system-type 'vm))
+     ; Find depth that triggers a stack overflow (assuming no other
+     ; threads are running and overflowing)
+     (let ([v0 (make-vector 6)]
+           [v1 (make-vector 6)])
+       (let find-loop ([d 100])
+         (vector-set-performance-stats! v0)
+         (go d)
+         (vector-set-performance-stats! v1)
+         (if (> (vector-ref v1 5)
+                (vector-ref v0 5))
+             d
+             (find-loop (* 2 d)))))]
+    [else
+     ;; No way to detect stack overflow, and it's less interesting anyway,
+     ;; but make up a number for testing purposes
+     1000]))
+
+;; Set the `PLT_RUN_UNRELIABLE_TESTS` environment to a comma-separated set of
+;; extra tests to enable.
+(define (run-unreliable-tests? mode)
+  (define s (getenv "PLT_RUN_UNRELIABLE_TESTS"))
+  (and s
+       (let ([l (map string->symbol (string-split s ","))])
+         (memq mode l))))
+

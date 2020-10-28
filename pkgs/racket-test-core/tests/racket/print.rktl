@@ -13,10 +13,14 @@
                  (format "~v" v))
                (define (to-pretty-string v)
                  (pretty-format v))
+               (define (to-string/not-expression v)
+                 (parameterize ([print-as-expression #f])
+                   (to-string v)))
                (test (regexp-replace* #rx"\n *" s " ") to-string v)
-               (test s to-pretty-string v))])
+               (test s to-pretty-string v)
+               (test (format "~s" v) to-string/not-expression v))])
   (define-struct a (x y))
-  (define-struct b (x y) #:transparent)
+  (define-struct b (x y) #:transparent #:mutable)
   (define-struct c (x y) #:prefab)
   (define (custom-printer get-xy)
     (lambda (v port mode)
@@ -60,7 +64,12 @@
   (ptest "#\\x" #\x)
   (ptest "'apple" 'apple)
   (ptest "'|apple banana|" '|apple banana|)
+  (ptest "'||" '||)
+  (ptest "'|;|" '|;|)
+  (ptest "'|`|" '|`|)
   (ptest "'#:apple" '#:apple)
+  (ptest "'#:|apple pie|" '#:|apple pie|)
+  (ptest "'#%apple" '#%apple)
   (ptest "\"apple\"" "apple")
   (ptest "#\"apple\"" #"apple")
   (ptest "#rx\"apple\"" #rx"apple")
@@ -92,6 +101,9 @@
   (ptest "#<a>" (a 1 2))
   (ptest "(b 1 2)" (b 1 2))
   (ptest "'#s(c 1 2)" (c 1 2))
+
+  (let ([s (b 1 2)])
+    (ptest "(list (cons (b 1 2) 0) (cons (b 1 2) 0))" (list (cons s 0) (cons s 0))))
 
   (ptest "'<1 1 2>" (d 1 2))
   (ptest "'<1 1 #<a>>" (d 1 (a 1 2)))
@@ -138,6 +150,14 @@
 
   (ptest "'(#<procedure:add1>)" (list add1))
   (ptest "'#(#<procedure:add1>)" (vector add1))
+  (ptest "#<procedure:add1>" add1)
+  (ptest "#<procedure:x->y>" (procedure-rename add1 'x->y))
+  (ptest "#<procedure:#x,y>" (procedure-rename add1 '|#x,y|))
+  (let ()
+    (struct a (x))
+    (ptest "#<procedure:a->x>" (procedure-rename a-x 'a->x)))
+
+  (ptest "(arity-at-least 1)" (arity-at-least 1))
 
   (ptest "#0='(#0#)" (read (open-input-string "#0=(#0#)")))
   (ptest "#0='(#0# #0#)" (read (open-input-string "#0=(#0# #0#)")))
@@ -193,6 +213,10 @@
   (ptest "'`a" '`a)
   (ptest "'`,#,#`a" '`,#,#`a)
   (ptest "'`,#,#`,@#,@a" '`,#,#`,@#,@a)
+  (ptest "'`,#,#`,@, @a" '`,#,#`,@, @a)
+  (ptest "'`,#,#`,@#, @a" '`,#,#`,@#, @a)
+  (ptest "'`,#,#`,@,|@a,|" '`,#,#`,@,|@a,|)
+  (ptest "'`,#,#`,@#,|@a,|" '`,#,#`,@#,|@a,|)
 
   (ptest "(fxvector 1 10000 3)" (fxvector 1 10000 3))
   (ptest "(flvector 1.1 10000.1 3.1 0.0)" (flvector 1.1 10000.1 3.1 0.0))
@@ -220,16 +244,49 @@
 
 ;; ----------------------------------------
 
+(test #t unquoted-printing-string? (unquoted-printing-string "a b"))
+(test #f unquoted-printing-string? "a b")
+(test #f unquoted-printing-string? 7)
+
+(test "a b" unquoted-printing-string-value (unquoted-printing-string "a b"))
+
+(test "a b" format "~s" (unquoted-printing-string "a b"))
+(test "a b" format "~a" (unquoted-printing-string "a b"))
+(test "a b" format "~v" (unquoted-printing-string "a b"))
+(parameterize ([error-print-width 10])
+  (test "a b1234..." format "~.s" (unquoted-printing-string "a b12345678"))
+  (test "a b1234..." format "~.a" (unquoted-printing-string "a b12345678"))
+  (test "a b1234..." format "~.v" (unquoted-printing-string "a b12345678"))
+  (test "who: oops\n  field: a b12345678\n"
+        'raise-arguments-error
+        (parameterize ([current-error-port (open-output-bytes)]
+                       [error-print-context-length 0])
+          (call-with-continuation-prompt
+           (lambda ()
+             (raise-arguments-error 'who "oops" "field" (unquoted-printing-string "a b12345678")))
+           (default-continuation-prompt-tag)
+           void)
+          (get-output-string (current-error-port)))))
+
+;; Check GC interaction:
+(let ([l (for/list ([i 100])
+           (unquoted-printing-string "1 2 3"))])
+  (collect-garbage)
+  (for ([ups (in-list l)])
+    (test "1 2 3" format "~s" ups)))
+
+;; ----------------------------------------
+
 (let ([p (build-path (current-directory) "something")])
   ;; path value in compiled code => path appears in .zo format:
   (let ([o (open-output-string)])
     (write (compile p) o)
-    (test #t regexp-match? (regexp-quote (path->bytes (current-directory))) (get-output-string o)))
+    (test #t 'path-in-code?1 (regexp-match? (regexp-quote (path->bytes (current-directory))) (get-output-string o))))
   ;; `current-write-relative-directory' set => path not in .zo format: 
   (let ([o (open-output-string)])
     (parameterize ([current-write-relative-directory (current-directory)])
       (write (compile p) o)
-    (test #f regexp-match? (regexp-quote (path->bytes (current-directory))) (get-output-string o))))
+    (test #f 'path-in-code?2 (regexp-match? (regexp-quote (path->bytes (current-directory))) (get-output-string o)))))
   ;; try all possible supers that have at least two path elements:
   (let loop ([super (current-directory)])
     (let ([super (let-values ([(base name dir?) (split-path super)])
@@ -242,13 +299,35 @@
         (let ([o (open-output-string)])
           (parameterize ([current-write-relative-directory (current-directory)])
             (write (compile (build-path super "other")) o)
-            (test #t regexp-match? (regexp-quote (path->bytes super)) (get-output-string o))))
+            (test #t 'path-in-code?3 (regexp-match? (regexp-quote (path->bytes super)) (get-output-string o)))))
         (let ([o (open-output-string)])
           (parameterize ([current-write-relative-directory (cons (current-directory)
                                                                  super)])
             (write (compile (build-path super "other")) o)
-            (test #f regexp-match? (regexp-quote (path->bytes super)) (get-output-string o))))
+            (test #f 'path-in-code?4 (regexp-match? (regexp-quote (path->bytes super)) (get-output-string o)))))
         (loop super)))))
+
+;; ----------------------------------------
+;; make sure the minimum value (3) is ok for `error-print-width':
+(parameterize ([error-print-width 3])
+  (test "..." format "~.a" "abcd")
+  (test "abc" format "~.a" "abc")
+  (test "ab" format "~.a" "ab")
+  (test 3 error-print-width))
+
+(parameterize ([error-print-width 3])
+  (struct show-a ()
+    #:property prop:custom-write
+    (lambda (self port mode)
+      (fprintf port "a")))
+  (struct show-nothing ()
+    #:property prop:custom-write
+    (lambda (self port mode)
+      (void)))
+  (test "a" format "~e" (show-a))
+  (test "..." format "~e" (list (show-a)))
+  (test "" format "~e" (show-nothing))
+  (test "'()" format "~e" (list (show-nothing))))
 
 ;; ----------------------------------------
 ;; make sure +inf.0 is ok for `print-syntax-width':
@@ -303,5 +382,409 @@
   (test "ok" get-output-string o))
 
 ;; ----------------------------------------
+;; Check that some values are allowed in a srcloc source
+;; in printed compiled code, and some values are not
+
+(let ()
+  (define (try v [result-v v] #:ok? [ok? #t])
+    (define-values (i o) (make-pipe))
+    (define c (compile `,(srcloc v 1 2 3 4)))
+    (cond
+     [ok?
+      (parameterize ([current-write-relative-directory (current-directory)])
+        (write c o))
+      (test result-v
+            srcloc-source
+            (parameterize ([current-load-relative-directory (build-path (current-directory) "sub")])
+              (eval (parameterize ([read-accept-compiled #t])
+                      (read i)))))]
+     [else
+      (err/rt-test (write c o) (lambda (exn) (and (exn:fail? exn)
+                                                  (regexp-match? #rx"cannot marshal" (exn-message exn)))))]))
+
+  (try #f)
+  (try 'apple)
+  (try "apple")
+  (try #"apple")
+  (try (string->path "apple") "apple")
+  (try (build-path 'up) "..")
+  (try (build-path 'same) ".")
+  (try (build-path 'up "apple") ".../apple")
+  (try (build-path "x" 'up "apple") ".../apple")
+  (try (build-path "apple" 'up) ".../apple/..")
+  (try (build-path "apple" 'same) ".../apple/.")
+  (try (build-path "x" "apple" 'up) ".../apple/..")
+  (try (build-path "x" "apple" 'same) ".../apple/.")
+  (let ([d (car (filesystem-root-list))])
+    (try (build-path d 'up) (path->string (build-path d 'up))))
+  (try (build-path (current-directory) "apple")
+       (build-path (current-directory) "sub" "apple"))
+
+  (try 7 #:ok? #f)
+  (try (box 7) #:ok? #f))
+
+;; ----------------------------------------
+;; Test print parameters
+
+(let ()
+  (define (test-print/all x wri dis prn prx pr1)
+    (define (in-string f v)
+      (let ([o (open-output-bytes)])
+        (f v o)
+        (get-output-string o)))
+    (define (print/not-expr v [o (current-output-port)])
+      (parameterize ([print-as-expression #f])
+        (print v o)))
+    (define (pretty-print/not-expr v [o (current-output-port)])
+      (parameterize ([print-as-expression #f])
+        (pretty-print v o)))
+    (define (print/depth-1 v [o (current-output-port)])
+      (print v o 1))
+    (define (pretty-print/depth-1 v [o (current-output-port)])
+      (pretty-print v o 1))
+
+    (test wri in-string write x)
+    (test (string-append wri "\n") in-string pretty-write x)
+    (test dis in-string display x)
+    (test (string-append dis "\n") in-string pretty-display x)
+    (test prn in-string print/not-expr x)
+    (test (string-append prn "\n") in-string pretty-print/not-expr x)
+    (test prx in-string print x)
+    (test (string-append prx "\n") in-string pretty-print x)
+    (test pr1 in-string print/depth-1 x)
+    (test (string-append pr1 "\n") in-string pretty-print/depth-1 x))
+
+  (define-syntax (for*/parameterize stx)
+    (syntax-case stx ()
+      [(_ ([p cl] rest ...) body ...)
+       #'(for ([v cl])
+           (parameterize ([p v])
+             (for*/parameterize (rest ...) body ...)))]
+      [(_ () body ...)
+       #'(let () body ...)]))
+
+  (define-struct a (x y))
+  (define-struct b (x y) #:transparent #:mutable)
+  (define-struct c (x y) #:prefab)
+
+  (struct s () #:transparent)
+  (define x (s)) ; a shared value to use in the test
+
+  (struct s+ (v) #:transparent)
+  (struct sub s+ ())
+  (test-print/all (sub '(x))
+                  "#(struct:sub (x) ...)"
+                  "#(struct:sub (x) ...)"
+                  "#(struct:sub (x) ...)"
+                  "(sub '(x) ...)"
+                  "#(struct:sub (x) ...)")
+
+  (parameterize ([print-graph #t])
+  (for*/parameterize ([print-pair-curly-braces (in-list '(#t #f))]
+                      [print-mpair-curly-braces (in-list '(#t #f))])
+
+    (parameterize ([print-mpair-curly-braces #t])
+      (test-print/all (mcons 1 2)
+                      "{1 . 2}" "{1 . 2}" "{1 . 2}" "(mcons 1 2)" "{1 . 2}")
+      (test-print/all (mcons 1 (mcons 2 3))
+                      "{1 2 . 3}" "{1 2 . 3}" "{1 2 . 3}" "(mcons 1 (mcons 2 3))" "{1 2 . 3}")
+      (test-print/all (mcons 1 '())
+                      "{1}" "{1}" "{1}" "(mcons 1 '())" "{1}")
+      (test-print/all (mcons 1 (mcons 2 '()))
+                      "{1 2}" "{1 2}" "{1 2}" "(mcons 1 (mcons 2 '()))" "{1 2}"))
+    (parameterize ([print-mpair-curly-braces #f])
+      (test-print/all (mcons 1 2)
+                      "(1 . 2)" "(1 . 2)" "(1 . 2)" "(mcons 1 2)" "(1 . 2)")
+      (test-print/all (mcons 1 (mcons 2 3))
+                      "(1 2 . 3)" "(1 2 . 3)" "(1 2 . 3)" "(mcons 1 (mcons 2 3))" "(1 2 . 3)")
+      (test-print/all (mcons 1 '())
+                      "(1)" "(1)" "(1)" "(mcons 1 '())" "(1)")
+      (test-print/all (mcons 1 (mcons 2 '()))
+                      "(1 2)" "(1 2)" "(1 2)" "(mcons 1 (mcons 2 '()))" "(1 2)"))
+
+    (parameterize ([print-pair-curly-braces #t])
+      (test-print/all (cons 1 2)
+                      "{1 . 2}" "{1 . 2}" "{1 . 2}" "'{1 . 2}" "{1 . 2}")
+      (test-print/all (cons 1 (cons 2 3))
+                      "{1 2 . 3}" "{1 2 . 3}" "{1 2 . 3}" "'{1 2 . 3}" "{1 2 . 3}")
+      (test-print/all (list 1)
+                      "{1}" "{1}" "{1}" "'{1}" "{1}")
+      (test-print/all (list 1 2)
+                      "{1 2}" "{1 2}" "{1 2}" "'{1 2}" "{1 2}")
+      (test-print/all (cons x x)
+                      "{#0=#(struct:s) . #0#}" "{#0=#(struct:s) . #0#}" "{#0=#(struct:s) . #0#}" "(cons #0=(s) #0#)" "{#0=#(struct:s) . #0#}")
+      (test-print/all (cons 1 (cons x x))
+                      "{1 #0=#(struct:s) . #0#}" "{1 #0=#(struct:s) . #0#}" "{1 #0=#(struct:s) . #0#}" "(list* 1 #0=(s) #0#)" "{1 #0=#(struct:s) . #0#}")
+      (test-print/all (list (cons x x))
+                      "{{#0=#(struct:s) . #0#}}" "{{#0=#(struct:s) . #0#}}" "{{#0=#(struct:s) . #0#}}" "(list (cons #0=(s) #0#))" "{{#0=#(struct:s) . #0#}}")
+      (test-print/all (list x x)
+                      "{#0=#(struct:s) #0#}" "{#0=#(struct:s) #0#}" "{#0=#(struct:s) #0#}" "(list #0=(s) #0#)" "{#0=#(struct:s) #0#}"))
+    (parameterize ([print-pair-curly-braces #f])
+      (test-print/all (cons 1 2)
+                      "(1 . 2)" "(1 . 2)" "(1 . 2)" "'(1 . 2)" "(1 . 2)")
+      (test-print/all (cons 1 (cons 2 3))
+                      "(1 2 . 3)" "(1 2 . 3)" "(1 2 . 3)" "'(1 2 . 3)" "(1 2 . 3)")
+      (test-print/all (list 1)
+                      "(1)" "(1)" "(1)" "'(1)" "(1)")
+      (test-print/all (list 1 2)
+                      "(1 2)" "(1 2)" "(1 2)" "'(1 2)" "(1 2)")
+      (test-print/all (cons x x)
+                      "(#0=#(struct:s) . #0#)" "(#0=#(struct:s) . #0#)" "(#0=#(struct:s) . #0#)" "(cons #0=(s) #0#)" "(#0=#(struct:s) . #0#)")
+      (test-print/all (cons 1 (cons x x))
+                      "(1 #0=#(struct:s) . #0#)" "(1 #0=#(struct:s) . #0#)" "(1 #0=#(struct:s) . #0#)" "(list* 1 #0=(s) #0#)" "(1 #0=#(struct:s) . #0#)")
+      (test-print/all (list (cons x x))
+                      "((#0=#(struct:s) . #0#))" "((#0=#(struct:s) . #0#))" "((#0=#(struct:s) . #0#))" "(list (cons #0=(s) #0#))" "((#0=#(struct:s) . #0#))")
+      (test-print/all (list x x)
+                      "(#0=#(struct:s) #0#)" "(#0=#(struct:s) #0#)" "(#0=#(struct:s) #0#)" "(list #0=(s) #0#)" "(#0=#(struct:s) #0#)"))
+
+    (for*/parameterize ([print-vector-length (in-list '(#t #f))])
+      (test-print/all (a 1 2)
+                      "#<a>" "#<a>" "#<a>" "#<a>" "#<a>")
+      (test-print/all (c 1 1)
+                      "#s(c 1 1)" "#s(c 1 1)" "#s(c 1 1)" "'#s(c 1 1)" "#s(c 1 1)")
+      (test-print/all (c 1 2)
+                      "#s(c 1 2)" "#s(c 1 2)" "#s(c 1 2)" "'#s(c 1 2)" "#s(c 1 2)"))
+
+    (parameterize ([print-pair-curly-braces #f])
+      (let ([s (b 1 2)])
+        (test-print/all (list (cons s 0) (cons s 2))
+                        "((#0=#(struct:b 1 2) . 0) (#0# . 2))" "((#0=#(struct:b 1 2) . 0) (#0# . 2))" "((#0=#(struct:b 1 2) . 0) (#0# . 2))"
+                        "(list (cons #0=(b 1 2) 0) (cons #0# 2))" "((#0=#(struct:b 1 2) . 0) (#0# . 2))"))
+      (let ([s (b 1 2)])
+        (set-b-x! s s)
+        (test-print/all (list s)
+                        "(#0=#(struct:b #0# 2))" "(#0=#(struct:b #0# 2))" "(#0=#(struct:b #0# 2))"
+                        "(list #0=(b #0# 2))"
+                        "(#0=#(struct:b #0# 2))")))
+
+    (parameterize ([print-vector-length #t])
+      (test-print/all (b 1 1)
+                      "#3(struct:b 1)" "#(struct:b 1 1)" "#3(struct:b 1)" "(b 1 1)" "#3(struct:b 1)")
+      (test-print/all (b 1 2)
+                      "#3(struct:b 1 2)" "#(struct:b 1 2)" "#3(struct:b 1 2)" "(b 1 2)" "#3(struct:b 1 2)")
+      (test-print/all (b 'b 'b)
+                      "#3(struct:b b)" "#(struct:b b b)" "#3(struct:b b)" "(b 'b 'b)" "#3(struct:b b)")
+
+      (test-print/all (b 'struct:b 'struct:b)
+                      "#3(struct:b)" "#(struct:b struct:b struct:b)" "#3(struct:b)" "(b 'struct:b 'struct:b)" "#3(struct:b)")
+      (test-print/all (c x x)
+                      "#s(c #0=#1(struct:s) #0#)" "#s(c #0=#(struct:s) #0#)" "#s(c #0=#1(struct:s) #0#)" "(c #0=(s) #0#)" "#s(c #0=#1(struct:s) #0#)")
+      (test-print/all (vector 1 2 3 4 5)
+                      "#5(1 2 3 4 5)" "#(1 2 3 4 5)" "#5(1 2 3 4 5)" "'#5(1 2 3 4 5)" "#5(1 2 3 4 5)")
+      (test-print/all (vector 1 2 3 3 3)
+                      "#5(1 2 3)" "#(1 2 3 3 3)" "#5(1 2 3)" "'#5(1 2 3)" "#5(1 2 3)")
+      (test-print/all (vector (b 1 1) 2 3 3 3)
+                      "#5(#3(struct:b 1) 2 3)" "#(#(struct:b 1 1) 2 3 3 3)" "#5(#3(struct:b 1) 2 3)" "(vector (b 1 1) 2 3 3 3)" "#5(#3(struct:b 1) 2 3)")
+      (test-print/all (vector)
+                      "#0()" "#()" "#0()" "'#0()" "#0()")
+      (test-print/all (vector 1)
+                      "#1(1)" "#(1)" "#1(1)" "'#1(1)" "#1(1)")
+      (test-print/all (vector 1 1)
+                      "#2(1)" "#(1 1)" "#2(1)" "'#2(1)" "#2(1)")
+      (test-print/all (vector 1 1 1)
+                      "#3(1)" "#(1 1 1)" "#3(1)" "'#3(1)" "#3(1)")
+      (test-print/all (fxvector 1 2 3 4 5)
+                      "#fx5(1 2 3 4 5)" "#fx(1 2 3 4 5)" "#fx5(1 2 3 4 5)" "(fxvector 1 2 3 4 5)" "#fx5(1 2 3 4 5)")
+      (test-print/all (fxvector 1 2 3 3 3)
+                      "#fx5(1 2 3)" "#fx(1 2 3 3 3)" "#fx5(1 2 3)" "(fxvector 1 2 3 3 3)" "#fx5(1 2 3)")
+      (test-print/all (fxvector)
+                      "#fx0()" "#fx()" "#fx0()" "(fxvector)" "#fx0()")
+      (test-print/all (flvector 1.0 2.0 3.0 4.0 5.0)
+                      "#fl5(1.0 2.0 3.0 4.0 5.0)" "#fl(1.0 2.0 3.0 4.0 5.0)" "#fl5(1.0 2.0 3.0 4.0 5.0)" "(flvector 1.0 2.0 3.0 4.0 5.0)" "#fl5(1.0 2.0 3.0 4.0 5.0)")
+      (test-print/all (flvector 1.0 2.0 3.0 3.0 3.0)
+                      "#fl5(1.0 2.0 3.0)" "#fl(1.0 2.0 3.0 3.0 3.0)" "#fl5(1.0 2.0 3.0)" "(flvector 1.0 2.0 3.0 3.0 3.0)" "#fl5(1.0 2.0 3.0)")
+      (test-print/all (flvector)
+                      "#fl0()" "#fl()" "#fl0()" "(flvector)" "#fl0()"))
+    (parameterize ([print-vector-length #f])
+      (test-print/all (b 1 1)
+                      "#(struct:b 1 1)" "#(struct:b 1 1)" "#(struct:b 1 1)" "(b 1 1)" "#(struct:b 1 1)")
+      (test-print/all (b 1 2)
+                      "#(struct:b 1 2)" "#(struct:b 1 2)" "#(struct:b 1 2)" "(b 1 2)" "#(struct:b 1 2)")
+      (test-print/all (b 'b 'b)
+                      "#(struct:b b b)" "#(struct:b b b)" "#(struct:b b b)" "(b 'b 'b)" "#(struct:b b b)")
+      (test-print/all (b 'struct:b 'struct:b)
+                      "#(struct:b struct:b struct:b)" "#(struct:b struct:b struct:b)" "#(struct:b struct:b struct:b)" "(b 'struct:b 'struct:b)" "#(struct:b struct:b struct:b)")
+      (test-print/all (c x x)
+                      "#s(c #0=#(struct:s) #0#)" "#s(c #0=#(struct:s) #0#)" "#s(c #0=#(struct:s) #0#)" "(c #0=(s) #0#)" "#s(c #0=#(struct:s) #0#)")
+      (test-print/all (vector 1 2 3 4 5)
+                      "#(1 2 3 4 5)" "#(1 2 3 4 5)" "#(1 2 3 4 5)" "'#(1 2 3 4 5)" "#(1 2 3 4 5)")
+      (test-print/all (vector 1 2 3 3 3)
+                      "#(1 2 3 3 3)" "#(1 2 3 3 3)" "#(1 2 3 3 3)" "'#(1 2 3 3 3)" "#(1 2 3 3 3)")
+      (test-print/all (vector (b 1 1) 2 3 3 3)
+                      "#(#(struct:b 1 1) 2 3 3 3)" "#(#(struct:b 1 1) 2 3 3 3)" "#(#(struct:b 1 1) 2 3 3 3)" "(vector (b 1 1) 2 3 3 3)" "#(#(struct:b 1 1) 2 3 3 3)")
+      (test-print/all (vector)
+                      "#()" "#()" "#()" "'#()" "#()")
+      (test-print/all (vector 1)
+                      "#(1)" "#(1)" "#(1)" "'#(1)" "#(1)")
+      (test-print/all (vector 1 1)
+                      "#(1 1)" "#(1 1)" "#(1 1)" "'#(1 1)" "#(1 1)")
+      (test-print/all (vector 1 1 1)
+                      "#(1 1 1)" "#(1 1 1)" "#(1 1 1)" "'#(1 1 1)" "#(1 1 1)")
+      (test-print/all (fxvector 1 2 3 4 5)
+                      "#fx(1 2 3 4 5)" "#fx(1 2 3 4 5)" "#fx(1 2 3 4 5)" "(fxvector 1 2 3 4 5)" "#fx(1 2 3 4 5)")
+      (test-print/all (fxvector 1 2 3 3 3)
+                      "#fx(1 2 3 3 3)" "#fx(1 2 3 3 3)" "#fx(1 2 3 3 3)" "(fxvector 1 2 3 3 3)" "#fx(1 2 3 3 3)")
+      (test-print/all (fxvector)
+                      "#fx()" "#fx()" "#fx()" "(fxvector)" "#fx()")
+      (test-print/all (flvector 1.0 2.0 3.0 4.0 5.0)
+                      "#fl(1.0 2.0 3.0 4.0 5.0)" "#fl(1.0 2.0 3.0 4.0 5.0)" "#fl(1.0 2.0 3.0 4.0 5.0)" "(flvector 1.0 2.0 3.0 4.0 5.0)" "#fl(1.0 2.0 3.0 4.0 5.0)")
+      (test-print/all (flvector 1.0 2.0 3.0 3.0 3.0)
+                      "#fl(1.0 2.0 3.0 3.0 3.0)" "#fl(1.0 2.0 3.0 3.0 3.0)" "#fl(1.0 2.0 3.0 3.0 3.0)" "(flvector 1.0 2.0 3.0 3.0 3.0)" "#fl(1.0 2.0 3.0 3.0 3.0)")
+      (test-print/all (flvector)
+                      "#fl()" "#fl()" "#fl()" "(flvector)" "#fl()"))
+    (void))))
+
+;; ----------------------------------------
+;; More `prop:custom-write` and `prop:custom-print-quotable` checking.
+;; Make sure the `prop:custom-write` callback gets an approrpriate
+;; printing mode, even when looking for quoting modes and cycles, and
+;; check behavior when the callback synthesizes a new lists. The
+;; `ptest` tests above already do a lot of that, but this test covers
+;; some additional corners.
+;; Based on an example by Ryan Kramer.
+
+(let ()
+  (struct my-struct (item) #:transparent)
+
+  (define modes '())
+
+  (define (check-saw-mode . alts)
+    (define ms (reverse modes))
+    (set! modes '())
+    (test #t ms (and (member ms alts) #t)))
+
+  (define-syntax-rule (expect e output)
+    (let ([o (open-output-bytes)])
+      (parameterize ([current-output-port o])
+        e)
+      (test output get-output-string o)))
+
+  (define (go port mode val)
+    (set! modes (cons mode modes))
+    (case mode
+      [(#f #t 1)
+       (display "#<mine: " port)
+       (if mode
+           (write val port) 
+           (display val port))
+       (display ">" port)]
+      [else
+       (display "(mine " port)
+       (print val port mode)
+       (display ")" port)]))
+
+  (struct mine (content)
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (mine-content v))))
+
+  (struct mine/copy (content)
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (apply list (mine/copy-content v)))))
+
+  (struct mine/always (content)
+    #:property
+    prop:custom-print-quotable 'always
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (mine/always-content v))))
+
+  (struct mine/maybe (content)
+    #:property
+    prop:custom-print-quotable 'maybe
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (mine/maybe-content v))))
+
+  (struct mine/copy/always (content)
+    #:property
+    prop:custom-print-quotable 'always
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (apply list (mine/copy/always-content v)))))
+
+  (define (show println writeln displayln)
+    (define b (box 'CONTENT))
+    (define x (list b (my-struct '(1 a))))
+
+    (printf "List\n")
+    (expect (println x) "(list '#&CONTENT (my-struct '(1 a)))\n")
+    (expect (writeln x) "(#&CONTENT #(struct:my-struct (1 a)))\n")
+    (expect (displayln x) "(#&CONTENT #(struct:my-struct (1 a)))\n")
+
+    (printf "Wrapped list\n")
+    (define y (mine x))
+    (expect (println y) "(mine (list '#&CONTENT (my-struct '(1 a))))\n")
+    (check-saw-mode '(0 0))
+    (expect (writeln y) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln y) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f))
+
+    (printf "Wrapped list 'always\n")
+    (define z (mine/always x))
+    (expect (println z) "'#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(1 1))
+    (expect (writeln z) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln z) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f))
+
+    (printf "Wrapped list copied on print\n")
+    (define y/c (mine/copy x))
+    (expect (println y/c) "(mine '(#&CONTENT #(struct:my-struct (1 a))))\n")
+    (check-saw-mode '(0 0))
+    (expect (writeln y/c) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln y/c) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f))
+
+    (printf "Wrapped list copied on print 'always\n")
+    (define z/c (mine/copy/always x))
+    (expect (println z/c) "'#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(1 1))
+    (expect (writeln z/c) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln z/c) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f))
+    
+    (printf "Wrapped cycle list\n")
+    (set-box! b x)
+    ;; The printer may need two passes to sort out cycles
+    (expect (println y) "(mine #0=(list '#&#0# (my-struct '(1 a))))\n")
+    (check-saw-mode '(0 0) '(0 0 0))
+    (expect (writeln y) "#<mine: #0=(#&#0# #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t) '(#t #t #t))
+    (expect (displayln y) "#<mine: #0=(#&#0# #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f) '(#f #f #f))
+
+    (printf "Wrapped quotable list\n")
+    (define yq (mine '(#&CONTENT)))
+    (expect (println yq) "(mine '(#&CONTENT))\n")
+    (check-saw-mode '(0 0))
+    (expect (writeln yq) "#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln yq) "#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(#f #f))
+
+    (printf "Wrapped quotable list 'maybe\n")
+    (define yqm (mine/maybe '(#&CONTENT)))
+    (expect (println yqm) "'#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(0 1)) ; guess unquoted, discovered to be quoted
+    (expect (writeln yqm) "#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln yqm) "#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(#f #f))
+
+    (void))
+
+  (show println writeln displayln)
+  (show pretty-print pretty-write pretty-display))
 
 (report-errs)

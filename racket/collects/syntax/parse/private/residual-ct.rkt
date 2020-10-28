@@ -11,14 +11,18 @@
          (struct-out den:lit)
          (struct-out den:datum-lit)
          (struct-out den:delayed)
+         prop:syntax-class
+         has-stxclass-prop?
+         stxclass-prop-ref
+         alt-stxclass-mapping
          log-syntax-parse-error
          log-syntax-parse-warning
          log-syntax-parse-info
          log-syntax-parse-debug
+         syntax-parse-logger
          prop:pattern-expander
          pattern-expander?
          pattern-expander-proc
-         current-syntax-parse-pattern-introducer
          syntax-local-syntax-parse-pattern-introduce)
 
 (define-logger syntax-parse)
@@ -38,6 +42,14 @@
    opts         ;; scopts
    inline       ;; Id/#f, reference to a predicate
    ) #:prefab)
+
+(define-values [prop:syntax-class has-stxclass-prop? stxclass-prop-ref]
+  (make-struct-type-property 'syntax-class))
+
+;; alt-stxclass-mapping : (boxof (listof (pair Identifier Stxclass)))
+;; Maps existing bindings (can't use syntax-local-value mechanism) to stxclasses.
+;; Uses alist to avoid residual dependence on syntax/id-table.
+(define alt-stxclass-mapping (box null))
 
 ;; A scopts is #s(scopts Nat Bool Bool String/#f)
 ;; These are passed on to var patterns.
@@ -88,10 +100,5 @@ An EH-alternative is
   (define get-proc (get-proc-getter pat-expander))
   (get-proc pat-expander))
 
-(define current-syntax-parse-pattern-introducer
-  (make-parameter
-   (lambda (stx)
-     (error 'syntax-local-syntax-parse-pattern-introduce "not expanding syntax-parse pattern"))))
-
 (define (syntax-local-syntax-parse-pattern-introduce stx)
-  ((current-syntax-parse-pattern-introducer) stx))
+  (syntax-local-introduce stx))

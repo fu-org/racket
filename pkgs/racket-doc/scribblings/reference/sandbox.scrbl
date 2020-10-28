@@ -248,44 +248,30 @@ caller of the evaluation receives @|void-const|.
 
 Finally, the fact that a sandboxed evaluator accept syntax objects
 makes it usable as the value for @racket[current-eval], which means
-that you can easily start a sandboxed read-eval-print-loop.  For
-example, here is a quick implementation of a networked REPL:
+that you can easily start a sandboxed read-eval-print-loop:
 
 @racketblock[
 (define e (make-evaluator 'racket/base))
-(let-values ([(i o) (tcp-accept (tcp-listen 9999))])
-  (parameterize ([current-input-port  i]
-                 [current-output-port o]
-                 [current-error-port  o]
-                 [current-eval e])
-    (read-eval-print-loop)
-    (fprintf o "\nBye...\n")
-    (close-output-port o)))
+(parameterize ([current-eval e])
+  (read-eval-print-loop))
 ]
 
-Note that in this code it is only the REPL interactions that are going
-over the network connection; using I/O operations inside the REPL will
+Note that in this code only the REPL interactions will be printed to
+the current output ports; using I/O operations inside the REPL will
 still use the usual sandbox parameters (defaulting to no I/O).  In
 addition, the code works only from an existing toplevel REPL ---
 specifically, @racket[read-eval-print-loop] reads a syntax value and
 gives it the lexical context of the current namespace.  Here is a
-variation that uses the networked ports for user I/O, and works when
-used from a module (by using a new namespace):
+variation that also allows I/O over the current input and output
+ports, and works when used from a module (by using a new namespace):
 
 @racketblock[
-(let-values ([(i o) (tcp-accept (tcp-listen 9999))])
-  (parameterize ([current-input-port   i]
-                 [current-output-port  o]
-                 [current-error-port   o]
-                 [sandbox-input        i]
-                 [sandbox-output       o]
-                 [sandbox-error-output o]
-                 [current-namespace (make-empty-namespace)])
-    (parameterize ([current-eval
-                    (make-evaluator 'racket/base)])
-      (read-eval-print-loop))
-    (fprintf o "\nBye...\n")
-    (close-output-port o)))
+(parameterize ([sandbox-input        current-input-port]
+               [sandbox-output       current-output-port]
+               [sandbox-error-output current-error-port]
+               [current-namespace (make-empty-namespace)])
+  (parameterize ([current-eval (make-evaluator 'racket/base)])
+    (read-eval-print-loop)))
 ]
 
 }
@@ -300,6 +286,30 @@ is terminated.  Once a sandbox raises such an exception, it will
 continue to raise it on further evaluation attempts.
 }
 
+@; ----------------------------------------------------------------------
+
+@section{Security Considerations}
+
+Although the sandbox is designed to provide a safe environment for executing
+Racket programs with restricted access to system resources, executing untrusted
+programs in a sandbox still carries some risk. Because a malicious program can
+exercise arbitrary functionality from the Racket runtime and installed collections,
+an attacker who identifies a vulnerability in Racket or an installed collection
+may be able to escape the sandbox.
+
+To mitigate this risk, programs that use the sandbox should employ additional
+precautions when possible. Suggested measures include:
+@itemlist[
+@item{Supplying a custom module language to @racket[make-evaluator] or
+@racket[make-module-evaluator] that gives untrusted code access to only
+the language constructs it absolutely requires.}
+@item{If untrusted code needs access to installed collections, installing only
+the collections required by your program.}
+@item{Using operating-system-level security features to provide defense-in-depth
+in case the process running the sandbox is compromised.}
+@item{Making sure your Racket installation and installed packages are up-to-date
+with the latest release.}
+]
 
 @; ----------------------------------------------------------------------
 
@@ -705,7 +715,7 @@ The memory limit that is specified by this parameter applies to each
 individual evaluation, but not to the whole sandbox --- that limit is
 specified via @racket[sandbox-memory-limit].  When the global limit is
 exceeded, the sandbox is terminated, but when the per-evaluation limit
-is exceeded the @exnraise[exn:fail:resource].  For example, say that
+is exceeded, an exception recognizable by @racket[exn:fail:resource?] is raised.  For example, say that
 you evaluate an expression like
 @racketblock[
   (for ([i (in-range 1000)])
@@ -1030,7 +1040,7 @@ checked at the time that a sandbox evaluator is created.}
 Executes the given @racket[thunk] with memory and time restrictions:
 if execution consumes more than @racket[mb] megabytes or more than
 @racket[secs] @tech{shallow time} seconds, then the computation is
-aborted and the @exnraise[exn:fail:resource].  Otherwise the result of
+aborted and an exception recognizable by @racket[exn:fail:resource?] is raised.  Otherwise, the result of
 the thunk is returned as usual (a value, multiple values, or an
 exception).  Each of the two limits can be @racket[#f] to indicate the
 absence of a limit. See also @racket[custodian-limit-memory] for
@@ -1049,8 +1059,15 @@ A macro version of @racket[call-with-limits].}
 @defproc[(call-with-deep-time-limit [secs exact-nonnegative-integer?]
                                     [thunk (-> any)])
          any]{
- Executes the given @racket[thunk] with @tech{deep time} restrictions.
-}
+Executes the given @racket[thunk] with @tech{deep time} restrictions,
+and returns the values produced by @racket[thunk].
+
+The given @racket[thunk] is run in a new thread. If it errors or if
+the thread terminates returning a value, then @racket[(values)] is
+returned.
+
+@history[#:changed "1.1" @elem{Changed to return @racket[thunk]'s result
+                               if it completes normally.}]}
 
 @defform[(with-deep-time-limit secs-expr body ...)]{
 

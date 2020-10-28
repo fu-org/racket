@@ -2,6 +2,7 @@
 
 (require '#%flfxnum
          "private/vector-wraps.rkt"
+         "private/fixnum.rkt"
          "unsafe/ops.rkt"
          (for-syntax racket/base))
 
@@ -13,6 +14,7 @@
          fxnot fxrshift fxlshift
          fx>= fx> fx= fx< fx<=
          fxmin fxmax
+         fixnum-for-every-system?
          fxvector? fxvector make-fxvector 
          shared-fxvector make-shared-fxvector
          fxvector-length fxvector-ref fxvector-set!
@@ -28,4 +30,5 @@
   for/fxvector
   for*/fxvector
   fxvector-copy
-  0)
+  0
+  check-fxvector)

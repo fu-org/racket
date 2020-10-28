@@ -106,9 +106,9 @@ exception handler obtains control, and the handler itself is
 (eval:error (raise 'failed #t))
 ]}
 
-@defproc*[([(error [sym symbol?]) any]
-           [(error [msg string?] [v any/c] ...) any]
-           [(error [src symbol?] [format string?] [v any/c] ...) any])]{
+@defproc*[([(error [message-sym symbol?]) any]
+           [(error [message-str string?] [v any/c] ...) any]
+           [(error [who-sym symbol?] [format-str string?] [v any/c] ...) any])]{
 
 Raises the exception @racket[exn:fail], which contains an error
 string. The different forms produce the error string in different
@@ -116,23 +116,23 @@ ways:
 
 @itemize[
 
- @item{@racket[(error sym)] creates a message string by concatenating
-  @racket["error: "] with the string form of @racket[sym]. Use this
+ @item{@racket[(error message-sym)] creates a message string by concatenating
+  @racket["error: "] with the string form of @racket[message-sym]. Use this
   form sparingly.}
 
- @item{@racket[(error msg v ...)] creates a message string by
- concatenating @racket[msg] with string versions of the @racket[v]s
+ @item{@racket[(error message-str v ...)] creates a message string by
+ concatenating @racket[message-str] with string versions of the @racket[v]s
  (as produced by the current error value conversion handler; see
  @racket[error-value->string-handler]). A space is inserted before
  each @racket[v]. Use this form sparingly, because it does not conform
  well to Racket's @tech{error message conventions}; consider
  @racket[raise-arguments-error], instead. }
 
- @item{@racket[(error src frmat v ...)] creates a
+ @item{@racket[(error who-sym format-str v ...)] creates a
  message string equivalent to the string created by
 
   @racketblock[
-  (format (string-append "~s: " frmat) src v ...)
+  (format (string-append "~s: " format-str) who-sym v ...)
   ]
 
  When possible, use functions such as @racket[raise-argument-error],
@@ -151,9 +151,9 @@ In all cases, the constructed message string is passed to
 ]}
 
 
-@defproc*[([(raise-user-error [sym symbol?]) any]
-           [(raise-user-error [msg string?] [v any/c] ...) any]
-           [(raise-user-error [src symbol?] [format string?] [v any/c] ...) any])]{
+@defproc*[([(raise-user-error [message-sym symbol?]) any]
+           [(raise-user-error [message-str string?] [v any/c] ...) any]
+           [(raise-user-error [who-sym symbol?] [format-str string?] [v any/c] ...) any])]{
 
 Like @racket[error], but constructs an exception with
 @racket[make-exn:fail:user] instead of @racket[make-exn:fail]. The
@@ -219,9 +219,11 @@ message; if @racket[message] contains newline characters, each extra line should
 suitably indented (with one extra space at the start of each line), but it should not end with a newline character.
 Each @racket[field] must have a corresponding @racket[v],
 and the two are rendered on their own
-line in the error message, with each @racket[v] formatted 
+line in the error message; each @racket[v] is formatted 
 using the error value conversion handler (see
-@racket[error-value->string-handler]).
+@racket[error-value->string-handler]), unless @racket[v] is a
+@tech{unquoted-printing string}, in which case the string content is
+@racket[display]ed without using the error value conversion handler.
 
 @examples[
  (eval:error
@@ -235,7 +237,7 @@ using the error value conversion handler (see
 @defproc[(raise-range-error [name symbol?] [type-description string?] [index-prefix string?]
                             [index exact-integer?] [in-value any/c]
                             [lower-bound exact-integer?] [upper-bound exact-integer?]
-                            [alt-lower-bound (or/c #f exact-integer?)])
+                            [alt-lower-bound (or/c #f exact-integer?) #f])
          any]{
 
 Creates an @racket[exn:fail:contract] value and @racket[raise]s it as
@@ -307,13 +309,50 @@ The @racket[arg-v] arguments are the actual supplied
 arguments, which are shown in the error message (using the error value
 conversion handler; see @racket[error-value->string-handler]); also,
 the number of supplied @racket[arg-v]s is explicitly mentioned in the
-message.}
+message.
+
+@examples[
+(eval:error (raise-arity-error 'unite (arity-at-least 13) "Virginia" "Maryland"))
+]}
+
+
+@defproc[(raise-arity-mask-error [name (or/c symbol? procedure?)]
+                                 [mask exact-integer?]
+                                 [arg-v any/c] ...)
+         any]{
+
+The same as @racket[raise-arity-error], but using the arity representation
+described with @racket[procedure-arity-mask].
+
+@history[#:added "7.0.0.11"]}
+
+
+@defproc[(raise-result-arity-error [name (or/c symbol? #f)]
+                                   [arity-v exact-nonnegative-integer?]
+                                   [detail-str (or/c string? #f)]
+                                   [result-v any/c] ...)
+         any]{
+
+Like @racket[raise-arity-error], but reports a ``result'' mismatch
+instead of an ``argument'' mismatch. The @racket[name] argument can be
+@racket[#f] to omit an initial source for the error. The
+@racket[detail-str] argument, if non-@racket[#f], should be a string
+that starts with a newline, since it is added near the end of the
+generated error message.
+
+@examples[
+(eval:error (raise-result-arity-error 'let-values 2 "\n  in: example" 'a 2.0 "three"))
+]
+
+@history[#:added "6.90.0.26"]}
+
 
 @defproc[(raise-syntax-error [name (or/c symbol? #f)]
                              [message string?]
                              [expr any/c #f]
                              [sub-expr any/c #f]
-                             [extra-sources (listof syntax?) null])
+                             [extra-sources (listof syntax?) null]
+                             [message-suffix string? ""])
          any]{
 
 Creates an @racket[exn:fail:syntax] value and @racket[raise]s it as an
@@ -364,7 +403,37 @@ through a combination of the @racket[name], @racket[expr], and
  @item{When @racket[name] is a symbol, then the symbol
   is used as the form name in the generated error message.}
 
-]}
+]
+
+The @racket[message-suffix] string is appended to the end of the error
+message. If not @racket[""], it should normally start with a newline
+and two spaces to add extra fields to the message (see
+@secref["err-msg-conventions"]).
+
+@history[#:changed "6.90.0.18" @elem{Added the @racket[message-suffix] optional argument.}]}
+
+
+@deftogether[(
+@defproc[(unquoted-printing-string? [v any/c]) boolean?]
+@defproc[(unquoted-printing-string [s string?]) unquoted-printing-string?]
+@defproc[(unquoted-printing-string-value [ups unquoted-printing-string?]) string?]
+)]{
+
+An @deftech{unquoted-printing string} wraps a string and
+@racket[print]s, @racket[write]s, and @racket[display]s the same way
+that the string @racket[display]s. An @tech{unquoted-printing string}
+is especially useful with @racket[raise-arguments-error] to serve as a
+field ``value'' that causes literal text to be printed as the field
+content.
+
+The @racket[unquoted-printing-string?] procedure returns @racket[#t]
+if @racket[v] is a @tech{unquoted-printing string}, @racket[#f]
+otherwise. The @racket[unquoted-printing-string] creates a
+@tech{unquoted-printing string} value that encapsulates the string
+@racket[s], and @racket[unquoted-printing-string-value] returns the
+string within a @tech{unquoted-printing string}.
+
+@history[#:added "6.10.0.2"]}
 
 @;------------------------------------------------------------------------
 @section{Handling Exceptions}
@@ -930,7 +999,10 @@ The fields of a @racket[srcloc] instance are as follows:
  @item{@racket[span] --- The number of covered positions (counts from
  0) or @racket[#f] (unknown).}
 
-]}
+]
+
+See @secref["print-compiled"] for information about the treatment of
+@racket[srcloc] values that are embedded in compiled code.}
 
 
 @defproc[(srcloc->string [srcloc srcloc?]) (or/c string? #f)]{

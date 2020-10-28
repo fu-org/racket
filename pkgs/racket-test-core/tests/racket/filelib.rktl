@@ -56,6 +56,15 @@
 (err/rt-chk-test (display-lines-to-file '(y) "x" #:exists 'other))
 (err/rt-chk-test (display-lines-to-file '(y) "x" #:mode 'other))
 
+(define check-not-exists-msg
+  ;; for ops that expect 'open-input-file' to detect a missing file
+  (check-msg 'open-input-file))
+(err/rt-test (file->string tmp-name) check-not-exists-msg)
+(err/rt-test (file->bytes tmp-name) check-not-exists-msg)
+(err/rt-test (file->value tmp-name) check-not-exists-msg)
+(err/rt-test (file->lines tmp-name) check-not-exists-msg)
+(err/rt-test (file->bytes-lines tmp-name) check-not-exists-msg)
+
 ;; ----------------------------------------
 
 (parameterize ([current-directory (current-load-relative-directory)])
@@ -370,6 +379,23 @@
   
 
   (delete-directory/files dir))
+
+;; ----------------------------------------
+;; Check 'text mode conversion
+;; The content of "text.rktd" once triggered a bug in 'text
+;; mode conversion on Windows by having line breaks as just
+;; the right place
+
+(let ()
+  (define text (call-with-input-file (build-path (current-load-relative-directory)
+                                                 "text.rktd")
+                                     read))
+  (define tmp (make-temporary-file "tmp-data~a"))
+  (call-with-output-file tmp #:exists 'truncate (lambda (o) (write-string text o)))
+  (define str (file->string tmp #:mode 'text))
+  (test #t values (equal? str (if (eq? (system-type) 'windows)
+                                  (regexp-replace* #rx"\r\n" text "\n")
+                                  text))))
 
 ;; ----------------------------------------
 

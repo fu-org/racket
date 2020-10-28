@@ -37,9 +37,14 @@
                        (define (origin? pt)
                          (match pt
                            (($ point 0 0) #t)
-                           (else #f)))
+                           (_ #f)))
                        (check-true (origin? (make-point 0 0)))
                        (check-false (origin? (make-point 1 1)))))
+     (test-case "empty hash-table pattern bug"
+                (check string=? "non-empty"
+                       (match #hash((1 . 2))
+                         [(hash-table) "empty"]
+                         [_ "non-empty"])))
      ))
   
   (define nonlinear-tests

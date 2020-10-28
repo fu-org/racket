@@ -47,6 +47,7 @@
                                  (thunk))))])
          (make-evaluator 'racket/base
                          #:requires (let ([mods '(racket/promise
+                                                  racket/pretty
                                                   syntax/parse
                                                   syntax/parse/debug
                                                   syntax/parse/experimental/splicing
@@ -54,10 +55,14 @@
                                                   syntax/parse/experimental/reflect
                                                   syntax/parse/experimental/specialize
                                                   syntax/parse/experimental/template
-                                                  syntax/parse/experimental/eh)])
+                                                  syntax/parse/experimental/eh
+                                                  syntax/transformer)])
                                       `((for-syntax racket/base ,@mods)
                                         ,@mods)))))))
-  (when short? (the-eval '(error-print-source-location #f)))
+  (call-in-sandbox-context the-eval
+    (lambda ()
+      (current-print (dynamic-require 'racket/pretty 'pretty-print-handler))
+      (when short? (error-print-source-location #f))))
   the-eval)
 
 ;; ----
@@ -103,9 +108,13 @@
               (racket id)
               #|(superscript (symbol->string 'suffix)) ...|# )]))
 
+(define-syntax-rule (defsubthing . xs)
+  (nested #:style "leftindent" (defthing . xs)))
+
 (provide defhere
          ref
-         def)
+         def
+         defsubthing)
 
 ;; ----
 
@@ -120,6 +129,7 @@
                     syntax/parse/experimental/specialize
                     syntax/parse/experimental/template
                     syntax/parse/experimental/eh
+                    syntax/transformer
                     "parse-dummy-bindings.rkt"))
 (provide (for-label (all-from-out racket/base)
                     (all-from-out racket/contract)
@@ -132,4 +142,5 @@
                     (all-from-out syntax/parse/experimental/specialize)
                     (all-from-out syntax/parse/experimental/template)
                     (all-from-out syntax/parse/experimental/eh)
+                    (all-from-out syntax/transformer)
                     (all-from-out "parse-dummy-bindings.rkt")))

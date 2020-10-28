@@ -63,7 +63,8 @@ A literal or printed @tech{regexp value} starts with @litchar{#rx} or
 values produced by the default reader are @tech{interned} in 
 @racket[read-syntax] mode.
 
-The internal size of a @tech{regexp value} is limited to 32 kilobytes; this
+On the @tech[#:doc '(lib "scribblings/guide/guide.scrbl")]{BC} variant of Racket,
+the internal size of a @tech{regexp value} is limited to 32 kilobytes; this
 limit roughly corresponds to a source string with 32,000 literal
 characters or 5,000 operators.
 
@@ -94,6 +95,10 @@ The following completes the grammar for @racket[pregexp], which uses
 @litchar{\} for meta-characters both inside and outside of ranges.
 
 @px-table
+
+In case-insensitive mode, a backreference of the form
+@litchar{\}@nonterm{n} matches case-insensitively only with respect to
+ASCII characters.
 
 The Unicode categories follow.
 
@@ -508,10 +513,7 @@ return @emph{only} the separators, making such uses equivalent to
                            [end-pos (or/c exact-nonnegative-integer? #f) #f]
                            [output-port (or/c output-port? #f) #f]
                            [input-prefix bytes? #""])
-         (if (and (or (string? pattern) (regexp? pattern))
-                  (string? input))
-             (or/c #f (cons/c string? (listof (or/c string? #f))))
-             (or/c #f (cons/c bytes?  (listof (or/c bytes?  #f)))))]{
+         (or/c #f (cons/c bytes? (listof (or/c bytes? #f))))]{
 
 Like @racket[regexp-match] on input ports, except that if the match
 fails, no characters are read and discarded from @racket[in].

@@ -628,19 +628,39 @@
 		    [s (apply bytes (caddr p))])
 		(if (and (positive? (vector-length code-points))
 			 (vector-ref code-points 0))
-		    (begin
-		      (test (vector-length code-points) bytes-utf-8-length s)
+		    (let ([len (vector-length code-points)]
+                          [c0 (integer->char (vector-ref code-points 0))])
+		      (test len bytes-utf-8-length s)
+		      (test len bytes-utf-8-length s #f)
+		      (test len bytes-utf-8-length s #\x)
+		      (test len bytes-utf-8-length s #f 0)
+		      (test len bytes-utf-8-length s #f 0 (bytes-length s))
+		      (test (sub1 len) bytes-utf-8-length s #f (char-utf-8-length c0) (bytes-length s))
+		      (test (sub1 len) bytes-utf-8-length s #f 0 (- (bytes-length s)
+                                                                    (char-utf-8-length
+                                                                     (integer->char
+                                                                      (vector-ref code-points (sub1 len))))))
 		      (test code-points bytes->unicode-vector s)
 		      (test code-points bytes-any->unicode-vector s #f)
 		      (test s unicode-vector->bytes code-points)
 		      (test 0 bytes-utf-8-index s 0)
-		      (test (bytes-length s) bytes-utf-8-index 
-			    (bytes-append s #"x")
-			    (vector-length code-points))
-		      (if ((vector-length code-points) . > . 1)
+		      (test 0 bytes-utf-8-index s 0 #f)
+		      (test 0 bytes-utf-8-index s 0 #\x)
+		      (test 0 bytes-utf-8-index s 0 #f 0)
+                      (when (len . > . 1)
+                        (test (char-utf-8-length c0) bytes-utf-8-index s 1 #f 0)
+                        (test (char-utf-8-length c0) bytes-utf-8-index s 0 #f (char-utf-8-length c0)))
+                      (test (char-utf-8-length c0) bytes-utf-8-index (bytes-append s #"x") 1 #f 0)
+                      (test (char-utf-8-length c0) bytes-utf-8-index (bytes-append s #"x") 0 #f (char-utf-8-length c0))
+		      (test 0 bytes-utf-8-index s 0 #f 0 (bytes-length s))
+		      (test #f bytes-utf-8-index s 0 #f (bytes-length s))
+		      (test (bytes-length s) bytes-utf-8-index (bytes-append s #"x") len)
+		      (if (len . > . 1)
 			  (begin
-			    (test (integer->char (vector-ref code-points 0))
-				  bytes-utf-8-ref s 0)
+			    (test c0 bytes-utf-8-ref s 0)
+			    (test c0 bytes-utf-8-ref s 0 #f)
+			    (test c0 bytes-utf-8-ref s 0 #f 0)
+			    (test c0 bytes-utf-8-ref s 0 #f 0 (bytes-length s))
 			    (test (integer->char (vector-ref code-points
 							     (sub1 (vector-length code-points))))
 				  bytes-utf-8-ref s (sub1 (vector-length code-points)))
@@ -996,6 +1016,17 @@
       (let-values ([(s2 n2 status2) (bytes-convert c2 s)])
         (bytes->string/utf-8 s2)))))
 
+;; Check that `bytes-convert-end` does nothing for UTF-8 and UTF-16 conversion:
+(let ([c (bytes-open-converter "platform-UTF-16" "platform-UTF-8")])
+  (test-values '(#"" complete)
+               (lambda () (bytes-convert-end c))))
+(let ([c (bytes-open-converter "platform-UTF-8" "platform-UTF-16")])
+  (test-values '(#"" complete)
+               (lambda () (bytes-convert-end c))))
+(let ([c (bytes-open-converter "UTF-8-permissive" "UTF-8")])
+  (test-values '(#"" complete)
+               (lambda () (bytes-convert-end c))))
+
 (when (eq? (system-type) 'windows)
   (let ([c (bytes-open-converter "platform-UTF-8-permissive" "platform-UTF-16")])
     ;; Check that we use all 6 bytes of #"\355\240\200\355\260\200" or none
@@ -1106,6 +1137,19 @@
 (test '("\u1F39") regexp-match #rx"[^\u1F79-\u3F79]" "\u1F39")
 (test '("\u1F78") regexp-match #rx"[^\u1F79-\u3F79]" "\u1F78")
 
+(test '("\u3BB") regexp-match #px"\\D" "\u3BB")
+(test '("\u3BB") regexp-match #px"[\\D]" "\u3BB")
+(test '("a") regexp-match #px"[\\D]" "a")
+(test #f regexp-match #px"\\D" "0")
+(test #f regexp-match #px"\\D" "9")
+(test '("\u3BB") regexp-match #px"\\S" "\u3BB")
+(test '("\u3BB") regexp-match #px"[\\S]" "\u3BB")
+(test '("a") regexp-match #px"\\S" "a")
+(test #f regexp-match #px"\\S" " ")
+(test '("\u3BB") regexp-match #px"\\W" "\u3BB")
+(test '("\u3BB") regexp-match #px"[\\W]" "\u3BB")
+(test '("+") regexp-match #px"\\W" "+")
+(test #f regexp-match #px"\\W" "a")
 
 ;; Regexps that shouldn't parse:
 (err/rt-test (regexp "[a--b\u1F78]") exn:fail?)
@@ -1113,11 +1157,9 @@
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; Let Matthew perform some basic sanity checks for locale-sensitive
-;; comparisons:
-(define known-locale? (and (regexp-match "mflatt|matthewf" (path->string (find-system-path 'home-dir)))
-			   (or (regexp-match "linux" (path->string (system-library-subpath)))
-			       (eq? 'macosx (system-type)))))
+;; Enable unreliable to run some basic sanity checks for locale-sensitive
+;; comparisons that need a locale wirth various properties:
+(define known-locale? (run-unreliable-tests? 'locale))
 
 (printf "Known locale?: ~a\n" known-locale?)
 
@@ -1575,11 +1617,12 @@
 	    (char-symbolic? c))))
  null)
 
-;; Letter, digit, punct, and symbol are distinct
+;; Letter+numeric, punct, and symbol are mostly distinct
 (check-all-unicode
  (lambda (c)
-   (> (+ (if (char-alphabetic? c) 1 0)
-	 (if (char-numeric? c) 1 0)
+   (> (+ (if (or (char-alphabetic? c)
+                 (char-numeric? c))
+             1 0)
 	 (if (char-punctuation? c) 1 0)
 	 (if (char-symbolic? c) 
              (if (or (char<=? #\u24B6 c #\u24E9)
@@ -1651,5 +1694,38 @@
 (test "\u039A\u03b1\u03BF\u03C3\u03C2" string-titlecase "\u039A\u0391\u039F\u03A3\u03A3")
 (test "\u039A\u03b1\u03BF\u03C2 X" string-titlecase "\u039A\u0391\u039F\u03A3 x")
 
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Bytes converters and custodians - check that built-in conversions are
+;; not registered
+
+(let ([c (make-custodian)])
+  (parameterize ([current-custodian c])
+    (define converters
+      (append
+       (list
+        (bytes-open-converter "UTF-8" "UTF-8")
+        (bytes-open-converter "UTF-8-permissive" "UTF-8"))
+       (if (eq? 'unix (system-type))
+           null
+           (list
+            (bytes-open-converter "" "UTF-8")
+            (bytes-open-converter "UTF-8" "")))
+       (list
+        (bytes-open-converter "platform-UTF-8" "platform-UTF-16")
+        (bytes-open-converter "platform-UTF-8-permissive" "platform-UTF-16")
+        (bytes-open-converter "platform-UTF-16" "platform-UTF-8") )))
+    (custodian-shutdown-all c)
+    ;; Make sure the convertes all still work --- not shut down by
+    ;; the custodian
+    (for ([cvt (in-list converters)])
+      (bytes-convert cvt #"hello"))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(test #\uFFFF bytes-utf-8-ref #"\357\277\277" 0)
+(test #f bytes-utf-8-ref #"\357\277" 0)
+(test #\nul bytes-utf-8-ref #"\357\277" 0 #\nul)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (report-errs)

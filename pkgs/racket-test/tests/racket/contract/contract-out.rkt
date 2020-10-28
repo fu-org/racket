@@ -1212,6 +1212,107 @@
       (eval '(dynamic-require ''provide/contract65-m2 #f)))
    "provide/contract65-m2")
 
+  (test/spec-failed
+   'provide/contract66
+   '(let ()
+      (eval '(module provide/contract66-m1 racket/base
+               (require racket/contract)
+               (provide f
+                        (contract-out
+                         (struct base ([f (-> number? boolean?)])
+                           #:omit-constructor)))
+               (struct base (f) #:transparent)
+               (define (f x) ((base-f x) #f))))
+      (eval '(module provide/contract66-m2 racket/base
+               (require 'provide/contract66-m1)
+               (struct derived base () #:transparent)
+               (f (derived (λ (x) #f)))))
+      (eval '(dynamic-require ''provide/contract66-m2 #f)))
+   "provide/contract66-m1")
+
+  (test/spec-passed
+   'provide/contract67
+   ;; https://github.com/racket/racket/issues/2469
+   '(let ()
+      (eval '(module provide/contract67-a racket/base
+               (require racket/contract/base)
+               (struct stream (x [y #:mutable]))
+               (provide (contract-out (struct stream ([x any/c] [y any/c]))))))
+
+      (eval '(module provide/contract67-b racket/base
+               (require 'provide/contract67-a racket/contract/base)
+               (provide (contract-out (struct stream ([x any/c] [y any/c]))))))))
+
+  (test/spec-passed/result
+   'provide/contract68
+   '(let ()
+      (eval '(module provide/contract68-a racket/base
+               (require racket/contract/base)
+               (provide (contract-out
+                         #:unprotected-submodule unsafe
+                         [f (-> integer? (listof integer?))]))
+               (define (f x) (list x))))
+
+      (eval '(module provide/contract68-b racket/base
+               (require (submod 'provide/contract68-a unsafe))
+               (define answer (f #f))
+               (provide answer)))
+
+      (eval '(dynamic-require ''provide/contract68-b 'answer)))
+   '(#f))
+
+  (test/spec-passed/result
+   'provide/contract69
+   '(let ()
+      (eval '(module provide/contract69-a racket/base
+               (require racket/contract/base)
+               (provide (contract-out
+                         #:unprotected-submodule no-contract
+                         (struct s ([x integer?]))))
+               (struct s (x))))
+
+      (eval '(module provide/contract69-b racket/base
+               (require (submod 'provide/contract69-a no-contract))
+               (define answer (s-x (s #f)))
+               (provide answer)))
+
+      (eval '(dynamic-require ''provide/contract69-b 'answer)))
+   '#f)
+
+  (test/spec-passed
+   'provide/contract70
+   ;; https://github.com/racket/racket/issues/2572
+   '(let ()
+      (eval '(module provide/contract70-a racket/base
+               (require racket/contract/base)
+               (struct stream (x [y #:mutable]))
+               (provide (contract-out (struct stream ([x any/c] [y any/c]))))))
+
+      (eval '(module provide/contract70-b racket/base
+               (require 'provide/contract70-a racket/contract/base)
+               (provide (contract-out (struct stream ([x any/c] [y any/c]))))))
+
+      (eval '(module provide/contract70-c racket/base
+               (require 'provide/contract70-b racket/contract/base)
+               (void stream stream? stream-x stream-y set-stream-y!)))))
+
+  (test/spec-passed/result
+   'provide/contract-struct-out
+   #'(begin
+       (eval '(module test-ignore-super-position racket/base
+                (require racket/contract)
+                (provide
+                 (contract-out
+                  [struct (b not-a) ()]))
+
+                (struct a ())
+                (struct b a ())))
+       (eval '(require 'test-ignore-super-position))
+       (eval '(b? (b))))
+   #t)
+
+
+
   (contract-error-test
    'contract-error-test8
    #'(begin
@@ -1373,7 +1474,7 @@
                 make-point)))
    (λ (x)
      (and (exn:fail:syntax? x)
-          (regexp-match #rx"unbound identifier .* make-point" (exn-message x)))))
+          (regexp-match #rx"unbound identifier.* make-point" (exn-message x)))))
   
   (contract-error-test
    'contract-error-test20
@@ -1588,7 +1689,49 @@
    (λ (x)
      (and (exn:fail:contract:blame? x)
           (regexp-match? #rx"^my-favorite-name: " (exn-message x)))))
-  
+
+  (contract-error-test
+   'define-module-boundary-contract6
+   '(begin
+      (eval '(module define-module-boundary-contract6-m racket/base
+               (require racket/contract/base)
+               (define internal-name (list (λ (x) #f)))
+               (define-module-boundary-contract external-name
+                 internal-name (list/c (-> integer? integer?))
+                 #:pos-source 'pos
+                 #:name-for-blame my-favorite-name
+                 #:context-limit 0)
+               (provide external-name)))
+      (eval '(module define-module-boundary-contract6-n racket/base
+               (require 'define-module-boundary-contract6-m)
+               ((car external-name) #f)))
+      (eval '(require 'define-module-boundary-contract6-n)))
+   (λ (x)
+     (and (exn:fail:contract:blame? x)
+          ;; ensure there is no context information
+          (regexp-match? #rx"in: [(]list/c" (exn-message x))
+          (regexp-match? #rx"blaming: [^\n]*contract6-n" (exn-message x)))))
+
+  (contract-error-test
+   'define-module-boundary-contract7
+   '(begin
+      (eval '(module define-module-boundary-contract7-m racket/base
+               (require racket/contract/base)
+               (define internal-name (list (λ (x) #f)))
+               (define-module-boundary-contract external-name
+                 internal-name (list/c (-> integer? integer?))
+                 #:pos-source 'pos
+                 #:name-for-blame my-favorite-name)
+               (provide external-name)))
+      (eval '(module define-module-boundary-contract7-n racket/base
+               (require 'define-module-boundary-contract7-m)
+               ((car external-name) #f)))
+      (eval '(require 'define-module-boundary-contract7-n)))
+   (λ (x)
+     (and (exn:fail:contract:blame? x)
+          ;; ensure there is context information
+          (regexp-match? #rx"in: the 1st argument of" (exn-message x))
+          (regexp-match? #rx"blaming: [^\n]*contract7-n" (exn-message x)))))  
   
   (contract-error-test
    're-providing
@@ -1646,5 +1789,76 @@
               [x (>/c 5)]))
             (define x 6)))))
    (list '(>/c 5)))
-  
+
+  (test/spec-passed/result
+   'struct-field-name-computed-correctly
+   '(begin
+      (eval '(module first racket
+               (provide (contract-out (struct foo ([x any/c])))
+                        (contract-out (struct (bar foo) ([x any/c]))))
+               (struct foo (x))
+               (struct bar foo ())))
+      (eval '(module second racket
+               (require 'first)
+               (provide (contract-out (struct foo ([x any/c])))
+                        (contract-out (struct (bar foo) ([x any/c]))))))
+      (eval '(module third racket
+               (require 'second)
+               (provide (contract-out (struct foo ([x any/c])))
+                        (contract-out (struct (bar foo) ([x any/c]))))))
+      (eval '(require 'third))
+      (eval '(foo-x (bar 1))))
+   1)
+
+  (test/spec-passed/result
+   'provide/contract-struct-out-id-generation
+   '(begin
+      (eval '(module provide/contract-struct-out-id-generation racket
+               (struct foo (x))
+               (struct bar foo (x))
+               (provide (contract-out (struct foo ([x any/c]))
+                                      (struct (bar foo) ([x any/c] [x any/c]))))))
+      (eval '(require 'provide/contract-struct-out-id-generation))
+      (eval '(let ([val (bar 1 2)])
+               (list (foo-x val) (bar-x val)))))
+   (list 1 2))
+
+  (contract-error-test
+   'provide/contract-struct-out-omit-constructor
+   #'(begin
+       (eval '(module provide/contract-struct-out-omit-constructor racket/base
+                (require racket/contract)
+                (provide
+                 (contract-out
+                  [struct a () #:omit-constructor #:omit-constructor]))
+
+                (struct a ()))))
+   (λ (x)
+     (and (exn:fail:syntax? x)
+          (regexp-match #rx"malformed struct option" (exn-message x)))))
+
+  (test/spec-passed/result
+   'provide/contract-struct-out-super-struct-omitted
+   '(begin
+      (eval '(module provide/contract-struct-out-super-struct-omitted racket
+               (struct foo (x))
+               (struct bar foo (y))
+               (provide (contract-out (struct bar ([x any/c] [y any/c]))))))
+      (eval '(require 'provide/contract-struct-out-super-struct-omitted))
+      (eval '(let ([val (bar 1 2)])
+               (bar-y val))))
+   2)
+
+  (test/spec-passed/result
+   'provide/contract-struct-out-static-field-name
+   '(begin
+      (eval '(module provide/contract-struct-out-static-field-name racket
+               (struct foo (x))
+               (provide (contract-out (struct foo ([x any/c]))))))
+      (eval '(require 'provide/contract-struct-out-static-field-name
+                      (for-syntax racket/struct-info racket/base)))
+      (eval '(define-syntax (extract-field-names stx)
+               #`'#,(struct-field-info-list (syntax-local-value #'foo))))
+      (eval '(extract-field-names)))
+   (list 'x))
   )

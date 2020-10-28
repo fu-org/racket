@@ -1,6 +1,6 @@
 #lang racket/base
 (require (prefix-in pl- '#%place)
-         (only-in '#%paramz parameterization-key make-custodian-from-main)
+         (only-in '#%paramz parameterization-key)
          (only-in '#%futures processor-count)
          '#%place-struct
          racket/fixnum
@@ -20,7 +20,6 @@
 
 (provide (protect-out dynamic-place
                       dynamic-place*)
-         place-sleep
          place-wait
          place-kill
          (rename-out [place-break/opt place-break])
@@ -58,7 +57,6 @@
 
 (define place-channel (if (pl-place-enabled?)  pl-place-channel th-place-channel))
 
-(define-pl-func place-sleep p)
 (define-pl-func place-wait p)
 (define-pl-func place-kill p)
 (define-pl-func place-break p kind)
@@ -168,17 +166,6 @@
                 (and (not in ) inw )
                 (and (not out) outr)
                 (and (not err) errr)))]))
-
-
-(define-for-syntax (modpath->string modpath)
-  (cond
-    [(equal? modpath #f)
-     (number->string (current-inexact-milliseconds))]
-    [else
-      (define name (resolved-module-path-name modpath))
-      (cond
-        [(symbol? name) (symbol->string name)]
-        [(path? name) (path->string name)])]))
 
 (define-for-syntax place-body-counter 0)
 

@@ -150,6 +150,14 @@
              [+ (void)]
              [_ (error 'wrong)]))
 
+(test-case "literal after colon"
+  (check-equal?
+   (convert-syntax-error
+    (syntax-parse #'else #:literals (else)
+      [e:else (syntax->datum #'e)]
+      [_ #f]))
+   'else))
+
 (test-case "datum literals"
   (syntax-parse #'one #:datum-literals (one)
     [one (void)]))
@@ -157,6 +165,14 @@
   (let ([one 1])
     (syntax-parse (let ([one 2]) #'one) #:datum-literals (one)
       [one (void)])))
+
+(test-case "datum literal after colon"
+  (check-equal?
+   (convert-syntax-error
+    (syntax-parse #'else #:datum-literals (else)
+      [e:else (syntax->datum #'e)]
+      [_ #f]))
+   'else))
 
 ;; compound patterns
 (tok (a b c) (x y z)
@@ -202,20 +218,20 @@
 ;; and scoping
 (tok 1 (~and a (~fail #:unless (equal? (syntax->datum #'a) 1))))
 
-;; or patterns
-(tok 1 (~or 1 2 3)
+;; or* patterns
+(tok 1 (~or* 1 2 3)
      'ok)
-(tok 3 (~or 1 2 3)
+(tok 3 (~or* 1 2 3)
      'ok)
-(tok (1) (~or (a) (a b) (a b c))
+(tok (1) (~or* (a) (a b) (a b c))
      (and (bound (a 0 #t) (b 0 #f) (c 0 #f)) (s= a 1) (a= b #f) (a= c #f)))
-(tok (1 2 3) (~or (a) (a b) (a b c))
+(tok (1 2 3) (~or* (a) (a b) (a b c))
      (and (bound (a 0 #t) (b 0 #f) (c 0 #f)) (s= a 1) (s= b 2) (s= c 3)))
-(tok 1 (~or 5 _)
+(tok 1 (~or* 5 _)
      'ok)
-(tok #t (~or #t #f)
+(tok #t (~or* #t #f)
      'ok)
-(tok #t (~or (~and #t x) (~and #f x))
+(tok #t (~or* (~and #t x) (~and #f x))
      (and (bound (x 0 #t))))
 
 ;; describe
@@ -236,7 +252,7 @@
      (and (bound (x 0) (x.a 0) (a 0)) (s= x '(1 2)) (s= x.a 1) (s= a 1)))
 
 ;; delimit-cut
-(tok (1 (2 3)) (1 (~or (~delimit-cut (2 ~! 4)) (2 3))))
+(tok (1 (2 3)) (1 (~or* (~delimit-cut (2 ~! 4)) (2 3))))
 (tok (1 2 3) (1 2 3)
      'ok
      #:pre [(~delimit-cut (1 2 ~! 4))] #:post [])
@@ -248,7 +264,7 @@
 
 (tok (define-values (a b c) 1) d:def
      'ok)
-(terx (define-values (a 2) 3) (~or d:def e:expr)
+(terx (define-values (a 2) 3) (~or* d:def e:expr)
       #rx"expected identifier")
 (terx* (define-values (a 2) 3) [d:def e:expr]
        #rx"expected identifier")
@@ -256,10 +272,10 @@
 ;; commit
 (define-syntax-class xyseq
   #:commit
-  (pattern ((~or x y) ...)))
+  (pattern ((~alt x y) ...)))
 
 (tok (1 2 3 4 5 6 7 8)
-     (~and ((~or s.x s.y) ...)
+     (~and ((~alt s.x s.y) ...)
            (~fail #:unless (= (apply + (syntax->datum #'(s.x ...)))
                               (apply + (syntax->datum #'(s.y ...))))
                   "nope"))
@@ -271,7 +287,7 @@
                    "nope"))
       #rx"nope")
 (terx (1 2 3 4 5 6 7 8)
-      (~and (~commit ((~or s.x s.y) ...))
+      (~and (~commit ((~alt s.x s.y) ...))
             (~fail #:unless (= (apply + (syntax->datum #'(s.x ...)))
                                (apply + (syntax->datum #'(s.y ...))))
                    "nope"))
@@ -284,12 +300,12 @@
 (tok (1 2 3) (1 (~seq 2) 3))
 (tok (1 2 3) ((~seq) 1 2 3))
 
-;; or
-(tok (1 2 3) ((~or (~seq 1 2) 1) 3))
-(tok (1 2 3) ((~or 1 (~seq 1 2)) 3))
-(tok (1 2 3) ((~or (~seq 1) (~seq 1 2)) 3))
-(tok (1 2 3) ((~or (~seq 1) (~seq)) 1 2 3))
-(tok (1 2 3) ((~or (~seq 1) (~seq)) 1 2 3 (~or (~seq 4) (~seq))))
+;; or*
+(tok (1 2 3) ((~or* (~seq 1 2) 1) 3))
+(tok (1 2 3) ((~or* 1 (~seq 1 2)) 3))
+(tok (1 2 3) ((~or* (~seq 1) (~seq 1 2)) 3))
+(tok (1 2 3) ((~or* (~seq 1) (~seq)) 1 2 3))
+(tok (1 2 3) ((~or* (~seq 1) (~seq)) 1 2 3 (~or (~seq 4) (~seq))))
 
 ;; describe
 (tok (1 2 3) ((~describe "one-two" (~seq 1 2)) 3))
@@ -314,7 +330,7 @@
 ;; bind patterns
 (tok 1 (~and x (~bind [y #'x]))
      (s= y '1))
-(tok 1 (~or x:id (~bind [x #'default]))
+(tok 1 (~or* x:id (~bind [x #'default]))
      (s= x 'default))
 
 ;; fail patterns
@@ -330,7 +346,7 @@
 (terx 1 (~fail "grr")
       #rx"grr")
 
-(tok (1 2 3) (x:nat y:nat (~parse (~or 2 3) (+ (syntax-e #'x) (syntax-e #'y))) z:nat))
+(tok (1 2 3) (x:nat y:nat (~parse (~or* 2 3) (+ (syntax-e #'x) (syntax-e #'y))) z:nat))
 (terx (1 2 3) (x:nat y:nat (~parse 4 (+ (syntax-e #'x) (syntax-e #'y))) z:nat)
       "expected the literal 4")
 (terx (1 2 3) (x:nat y:nat (~parse (2 4) #'(x y)))
@@ -503,7 +519,105 @@
                   #:post (~fail #:unless (> (syntax-e #'a) (syntax-e #'b)) "non-decreasing")
                   (void)]))))
 
+;; #:undo
+
+(let ()
+  (define lits (make-parameter null))
+  (define-syntax-class L
+    (pattern x:id
+             #:do [(lits (cons (syntax-e #'x) (lits)))]
+             #:undo [(lits (remq (syntax-e #'x) (lits)))]))
+
+  (test-case "#:undo 1"
+    (parameterize ((lits null))
+      (syntax-parse #'(a b c)
+        [(x:L y:L) (error "wrong")]
+        [(_   y:L z:L) 'ok])
+      (check-equal? (reverse (lits)) '(b c))))
+
+  (test-case "#:undo and #:commit"
+    (define-syntax-class LC (pattern (~commit :L)))
+    (parameterize ((lits null))
+      (syntax-parse #'(a b c)
+        [(x:LC y:LC) (error "wrong")]
+        [(_    y:LC z:LC) 'ok])
+      (check-equal? (reverse (lits)) '(b c))))
+
+  (test-case "#:undo and ~!"
+    (parameterize ((lits null))
+      (syntax-parse #'(a 2 c)
+        [(x:L 1 _) (error "wrong")]
+        [(x:L 2 ~! y:L) 'ok])
+      (check-equal? (reverse (lits)) '(a c))))
+  )
+
+;; #:cut
+
+(test-case "#:cut after pattern"
+  (check-exn #rx"correct exn"
+             (lambda ()
+               (syntax-parse #'#t
+                 [b #:cut
+                    #:fail-when (syntax-e #'b) "correct exn"
+                    (values)]
+                 [_ (error "wrong exn")]))))
+
+;; state unwinding
+
+(let ()
+  (define total
+    (case-lambda [() (syntax-parse-state-ref 'total 0)]
+                 [(n) (syntax-parse-state-set! 'total n)]))
+  (define-syntax-class nat/add
+    (pattern n:nat #:do [(total (+ (total) (syntax-e #'n)))]))
+  (test-case "state 1"
+    (syntax-parse #'(1 2 3)
+      [(n:nat/add ...) (check-equal? (total) (+ 1 2 3))]))
+  (test-case "state 2"
+    (syntax-parse #'(1 2 3 reset 5 6)
+      [((~or (~seq) (~seq _ ... (~not _:nat))) n:nat/add ...)
+       (check-equal? (total) (+ 5 6))])))
+
+(test-case "state and literals"
+  (check-equal?
+   (map syntax-e
+        (syntax-parse #'(define lambda)
+          #:literals (define lambda)
+          [(define define) (syntax-parse-state-ref 'literals null)]
+          [(_      lambda) (syntax-parse-state-ref 'literals null)]))
+   '(lambda)))
+
+(test-case "track disappeared uses (implicit)"
+  (check-equal?
+   (map syntax-e
+        (syntax-property (syntax-parse #'(define lambda)
+                           #:literals (define lambda)
+                           #:track-literals
+                           [(define define) #'#f]
+                           [(_      lambda) #'#f])
+                         'disappeared-use))
+   '(lambda)))
+
+(test-case "track disappeared uses (explicit)"
+  (check-equal?
+   (map syntax-e
+        (syntax-property (syntax-parse #'(define lambda)
+                           #:literals (define lambda)
+                           [(define define) (syntax-parse-track-literals #'#f)]
+                           [(_      lambda) (syntax-parse-track-literals #'#f)])
+                         'disappeared-use))
+   '(lambda)))
+
 ;; == Lib tests
+
+;; test string, bytes act as stxclasses
+
+(test-case "string, bytes act as stxclasses"
+  (check-equal? (syntax->datum
+                 (syntax-parse #'(#"a" #"b" "c" "d")
+                   [(b:bytes ... s:string ...)
+                    #'((b ...) (s ...))]))
+                '((#"a" #"b") ("c" "d"))))
 
 ;; static
 
@@ -519,7 +633,7 @@
        #rx"identifier bound to number")
 
 (test-case "static: works"
-  (check-equal? 
+  (check-equal?
    (convert-syntax-error
     (let ()
       (define-syntax zero 0)
@@ -651,28 +765,28 @@
   (let ()
     (define-splicing-syntax-class binding #:literals (=)
       [pattern (~seq name:id = expr:expr)])
-    
+
     (define-syntax ~separated
       (pattern-expander
        (lambda (stx)
          (syntax-case stx ()
            [(separated sep pat)
             (with-syntax ([ooo '...])
-              #'((~seq pat (~or (~peek-not _)
-                                (~seq sep (~peek _))))
+              #'((~seq pat (~or* (~peek-not _)
+                                 (~seq sep (~peek _))))
                  ooo))]))))
-    
+
     (define-splicing-syntax-class bindings
       [pattern (~separated (~datum /) b:binding)
                #:with (name ...) #'(b.name ...)
                #:with (expr ...) #'(b.expr ...)])
-    
+
     (define (parse-my-let stx)
       (syntax-parse stx
         [(_ bs:bindings body)
          #'(let ([bs.name bs.expr] ...)
              body)]))
-    
+
     (check-equal? (syntax->datum
                    (parse-my-let #'(my-let (x = 1 / y = 2 / z = 3)
                                      (+ x y z))))
@@ -685,8 +799,8 @@
          (syntax-case stx ()
            [(sep-comma pat)
             (with-syntax ([ooo '...])
-              #'((~seq (~or (~and pat (~not ((~datum unquote) _))) ((~datum unquote) pat))
-                       (~or (~peek-not _) (~peek ((~datum unquote) _))))
+              #'((~seq (~or* (~and pat (~not ((~datum unquote) _))) ((~datum unquote) pat))
+                       (~or* (~peek-not _) (~peek ((~datum unquote) _))))
                  ooo))]))))
 
     (define-splicing-syntax-class bindings2
@@ -718,7 +832,7 @@
             #'(~once (~seq (~and kw name) pat ...)
                      #:name (format "the ~a keyword" 'kw)))]))))
   (check-equal? (syntax-parse #'(m #:a #:b 1 #:a)
-                  [(_ (~or #:a (~oncekw #:b b)) ...)
+                  [(_ (~alt #:a (~oncekw #:b b)) ...)
                    (syntax->datum #'(b-kw b))])
                 '(#:b 1)))
 
@@ -741,6 +855,10 @@
       #:with stx (syntax/loc this-syntax (void))
       stx)
     (check-eq? (x) (void))
+    (define-simple-macro (~or . _)
+      #:with stx (syntax/loc this-syntax (void))
+      stx)
+    (check-eq? (~or) (void))
     ))
 
 ;; from Jay McCarthy (4/2016)
@@ -771,7 +889,7 @@
 
 ;; nullable but bounded EH pattern ok (thanks Alex Knauth) (7/2016)
 (tok (1 2 3) ((~once (~seq)) ... n:nat ...) 'ok)
-(tok (1 2 3) ((~once (~or (~seq a:id) (~seq))) ... x y z) 'ok)
+(tok (1 2 3) ((~once (~or* (~seq a:id) (~seq))) ... x y z) 'ok)
 
 (struct s-3d () #:transparent)
 (test-case "3D syntax checks"
@@ -830,3 +948,114 @@
 (terx #s(point 1)
       #s(point a b)
       #rx"expected more terms starting with any term")
+
+;; from Alex Knauth, issue #2164 (7/2018)
+(let ()
+  (define-syntax ~temp1
+    (pattern-expander
+     (lambda (stx)
+       (car (generate-temporaries '(tmp))))))
+  (define-syntax-class c1 (pattern (~temp1)))
+  (void))
+(let ()
+  (define-syntax ~temp2
+    (let ([counter 0])
+      (pattern-expander
+       (lambda (stx)
+         (begin0 (format-id #'here "tmp~a" counter)
+           (set! counter (add1 counter)))))))
+  (define-syntax-class c2 (pattern (~temp2)))
+  (void))
+(let ()
+  (define-splicing-syntax-class ids
+    (pattern (~and (~seq stuff ...) (~seq k:id ...))))
+  (check-equal? (syntax-parse #'(a b c)
+                  [(:ids) (syntax->datum #'(k ...))]
+                  [_ #f])
+                '(a b c)))
+
+;; from Sam TH and Alex Knauth (10/2018)
+(convert-syntax-error
+ (let ()
+   (define-syntax (object stx)
+     (define-syntax-class f
+       [pattern _ #:with x #'ths])
+     (syntax-parse stx
+       [(object f:f)
+        #:with x #'ths
+        #'(define (f.x) ths)]))
+   (object 1)
+   (void)))
+
+;; from William Hatch (2/2019) re honu macros
+(let ()
+  (define-syntax-class thing (pattern x #:with a #'okay))
+  (check-equal?
+   (syntax->datum
+    (syntax-parse #'bad
+      [(~var y thing #:attr-name-separator "_") #'y_a]))
+   'okay))
+
+;; prop:syntax-class with id
+(let ()
+  (define (is-id? stx)
+    (define-syntax indirect-id
+      (let ()
+        (struct indirect-stxclass ()
+          #:property prop:syntax-class #'id)
+        (indirect-stxclass)))
+    (syntax-parse stx
+      [_:indirect-id #t]
+      [_ #f]))
+  (check-true (is-id? #'x))
+  (check-false (is-id? #'42)))
+
+;; prop:syntax-class with procedure
+(let ()
+  (define (type-of stx)
+    (define-syntaxes [indirect-id indirect-string]
+      (let ()
+        (struct indirect-stxclass (id)
+          #:property prop:syntax-class (lambda (v) (indirect-stxclass-id v)))
+        (values (indirect-stxclass #'id) (indirect-stxclass #'string))))
+    (syntax-parse stx
+      [_:indirect-id 'id]
+      [_:indirect-string 'string]
+      [_ #f]))
+  (check-equal? (type-of #'x) 'id)
+  (check-equal? (type-of #'"hello") 'string)
+  (check-equal? (type-of #'42) #f))
+
+;; prop:syntax-class to non-stxclass
+(check-exn
+ (lambda (exn) (and (exn:fail:syntax? exn)
+                    (string=? (exn-message exn) "syntax-parse: not defined as syntax class")
+                    (equal? (map syntax-e (exn:fail:syntax-exprs exn))
+                            (list 'not-a-syntax-class 'indirect-bad))))
+ (lambda ()
+   (convert-syntax-error
+    (let ()
+      (define-syntax indirect-bad
+        (let ()
+          (struct indirect-stxclass ()
+            #:property prop:syntax-class #'not-a-syntax-class)
+          (indirect-stxclass)))
+      (syntax-parse #'#f
+        [_:indirect-bad #t]
+        [_ #f])))))
+
+;; from turnstile, action pattern in ~seq (6/2019)
+(let ()
+  ;; The regression required the following circumstances:
+  ;; - the action pattern must be able to fail, so subsequent pattern gets an ORD frame
+  ;; - the ~seq cannot be inlined away, like (a (~seq b c) d) => (a b c d), so use ~or
+  (convert-syntax-error
+   (syntax-parse #'(m 1 2 3)
+     [(_ (~or (~seq a b c (~parse (d e f) #'(a b c)))
+              (~seq x:id ...)))
+      (void)])))
+
+;; from @jjsimpso, ~between pattern (10/2019)
+(convert-compile-time-error
+ (syntax-parse #'(1 2 'bar 4 5 'bar 'foo)
+   [((~seq (~between x:nat 2 2) ... z) ...+ expr) (void)]))

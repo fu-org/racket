@@ -263,9 +263,13 @@
   (test/spec-passed/result
    'contract-marks29
    '(let ()
-      (eval '(define f (invariant-assertion (-> (λ _ (named-blame? 'top-level))
-                                                (λ _ (named-blame? 'top-level)))
-                                            (λ (x) 3))))
+      (eval '(define f
+               (let ([nb
+                      (λ _ (named-blame?
+                            (dynamic-require 'racket/contract/private/blame
+                                             'invariant-assertion-party)))])
+                 (invariant-assertion (-> nb nb)
+                                      (λ (x) 3)))))
       (eval '(f 2)))
    3)
 
@@ -392,7 +396,7 @@
    '(contract (vector/c pos-blame? #:flat? #t) #(1) 'pos 'neg))
 
   (test/spec-passed
-   'contract-marks42
+   'contract-marks42b
    '((vector-ref (contract (vector/c (-> pos-blame? neg-blame?)) (vector values)
                            'pos 'neg)
                  0)
@@ -573,15 +577,16 @@
    '(let ()
       (define marked? #f) ; check that we measure the cost of contract-stronger?
       (define (make/c) ; the two have to not be eq?, otherwise contract-stronger? is not called
-        (make-contract #:late-neg-projection
-                       (lambda (b)
-                         (lambda (val neg-party)
-                           (pos-blame? 'dummy)))
-                       #:stronger
-                       (lambda (c1 c2)
-                         (when (pos-blame? 'dummy)
-                           (set! marked? #t)
-                           #t))))
+        (make-chaperone-contract
+         #:late-neg-projection
+         (lambda (b)
+           (lambda (val neg-party)
+             val))
+         #:stronger
+         (lambda (c1 c2)
+           (when (pos-blame? 'dummy)
+             (set! marked? #t)
+             #t))))
       ((contract (-> pos-blame? (make/c))
                  (contract (-> pos-blame? (make/c)) values 'pos 'neg)
                  'pos 'neg)

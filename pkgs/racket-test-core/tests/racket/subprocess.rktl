@@ -17,6 +17,9 @@
 (define tmpfile (build-path (find-system-path 'temp-dir) "cattmp"))
 (define tmpfile2 (build-path (find-system-path 'temp-dir) "cattmp2"))
 
+(unless cat
+  (error "\"cat\" executable not found"))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; process* tests
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -258,7 +261,7 @@
              (test 'done-error (list-ref p 4) 'status)
              
              (let ([p (open-input-string (get-output-string f2))])
-               (test (expt 10 50000) read p)
+               (test #t '1e50001 (equal? (expt 10 50000) (read p)))
                (test "" read-line p)
                (let ([p (if (eq? f3 'stdout)
                             p
@@ -415,6 +418,20 @@
 (parameterize ([current-subprocess-custodian-mode #f])
   (test #f current-subprocess-custodian-mode))
 
+;; Check that a subprocess is removed from its custodian as
+;; soon as it's known to be done:
+(let* ([c (make-custodian)]
+       [c2 (make-custodian c)])
+  (define-values (sp i o e)
+    (parameterize ([current-custodian c2]
+                   [current-subprocess-custodian-mode 'kill])
+      (subprocess #f #f #f self "-e" "(read-byte)")))
+  (test #t pair? (member sp (custodian-managed-list c2 c)))
+  (close-output-port o)
+  (subprocess-wait sp)
+  (test #f pair? (member sp (custodian-managed-list c2 c)))
+  (custodian-shutdown-all c))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; process groups
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -446,13 +463,51 @@
                ((list-ref l 4) 'kill)
                ((list-ref l 4) 'wait)
                (test 'done-error (list-ref l 4) 'status)
+               (unless post-shutdown?
+                 ;; May need to wait for the init process to reap the
+                 ;; sub-pid process (since that's a sub-sub-process to
+                 ;; us)
+                 (let loop ()
+                   (when (running? sub-pid)
+                     (sleep 0.05)
+                     (loop))))
                (test post-shutdown? running? sub-pid)
                (when post-shutdown?
                  (parameterize ([current-input-port (open-input-string "")])
-                   (system (format "kill ~a" sub-pid)))))))])
+                   (system (format "kill ~a" sub-pid))))
+               (close-input-port (car l))
+               (close-output-port (cadr l))
+               (close-input-port (cadddr l)))))])
     (try #t)
-    (try #f)))
-  
+    (try #f))
+
+  (define (try-add-to-group kill-second?)
+    (define-values (p1 o1 i1 e1) (subprocess #f #f #f 'new "/bin/cat"))
+    (define-values (p2 o2 i2 e2) (subprocess #f #f #f p1 "/bin/cat"))
+    
+    (test 'running subprocess-status p1)
+    (test 'running subprocess-status p2)
+
+    (when kill-second?
+      (subprocess-kill p2 #t)
+      (test p2 sync p2)
+      (test 'running subprocess-status p1))
+
+    (subprocess-kill p1 #t)
+    (test p1 sync p1)
+    (test p2 sync p2)
+    
+    (test (subprocess-status p1) subprocess-status p2)
+
+    (close-input-port o1)
+    (close-input-port o2)
+    (close-input-port e1)
+    (close-input-port e2)
+    (close-output-port i1)
+    (close-output-port i2))
+
+  (try-add-to-group #f)
+  (try-add-to-group #t))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check status result
@@ -478,25 +533,136 @@
 ;; Check setting of PWD and initializing `current-directory' from
 ;; PWD, when it involves a soft link:
 (when (member (system-type) '(unix macosx))
-  (let ([dir (make-temporary-file "sub~a" 'directory)])
-    (make-directory (build-path dir "a"))
-    (make-file-or-directory-link "a" (build-path dir "b"))
-    (current-directory (build-path dir "b"))
-    
-    (define o (open-output-bytes))
-    (parameterize ([current-output-port o])
-      (system* self "-e" "(current-directory)"))
-    (test (format "~s\n" (path->directory-path (build-path dir "b"))) get-output-string o)
+  (parameterize ([current-directory (current-directory)])
+    (let ([dir (make-temporary-file "sub~a" 'directory)])
+      (make-directory (build-path dir "a"))
+      (make-file-or-directory-link "a" (build-path dir "b"))
+      (current-directory (build-path dir "b"))
+      
+      (define o (open-output-bytes))
+      (parameterize ([current-output-port o])
+        (system* self "-e" "(current-directory)"))
+      (test (format "~s\n" (path->directory-path (build-path dir "b"))) get-output-string o)
 
-    (define o2 (open-output-bytes))
-    (parameterize ([current-output-port o2])
-      (system* self "-e" "(current-directory)" #:set-pwd? #f))
-    (test (format "~s\n" (path->directory-path (normalize-path (build-path dir "a")))) get-output-string o2)
-    
+      (define o2 (open-output-bytes))
+      (parameterize ([current-output-port o2])
+        (system* self "-e" "(current-directory)" #:set-pwd? #f))
+      (test (format "~s\n" (path->directory-path (normalize-path (build-path dir "a")))) get-output-string o2)
+      
+      (delete-directory/files dir))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that the reading from a file descriptor from `subprocess`
+;; doesn't fail to unregister it in the fd-semaphore table, which
+;; could cause this test to block waiting on a semaphore that
+;; won't get posted due to recycling a now-closed fd
+
+(for ([i 25])
+  (let ([p (process* cat)])
+    (define t
+      (thread (lambda ()
+                (read-bytes 100 (car p)))))
+    (sync (system-idle-evt))
+    (when (even? i) (kill-thread t))
+    (close-output-port (cadr p))
+    (thread-wait t)
+    ((list-ref p 4) 'wait)
+    (test 'done-ok (list-ref p 4) 'status)
+    (close-input-port (car p))
+    (close-input-port (cadddr p))))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check the process state for subprocesses to ensure that, for example,
+;; SIGCHLD is not blocked
+
+(unless (eq? (system-type) 'windows)
+  (let* ([dir (make-temporary-file "sub~a" 'directory)]
+         [exe (build-path dir "check")]
+         [cc-path (or (find-executable-path "cc")
+                      (find-executable-path "gcc"))])
+    (when (and cc-path
+               (system* cc-path
+                        "-o"
+                        exe
+                        (path->complete-path "unix_check.c" (or (current-load-relative-directory)
+                                                                (current-directory)))))
+      (test #t 'subprocess-state (system* exe)))
     (delete-directory/files dir)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that closing file descriptors in the parent process doesn't
+;; cause problems
+
+(let ()
+  (define out (open-output-string))
+  (define err (open-output-string))
+  (test #t 'subprocess-closed-stdin
+        (parameterize ([current-output-port out]
+                       [current-error-port err])
+          (system* self "-e"
+                   (format "~s" '(let ()
+                                   (define self (vector-ref (current-command-line-arguments) 0))
+                                   (close-input-port (current-input-port))
+                                   (define-values (subp out in err)
+                                     (subprocess #f #f #f self "-e"
+                                                 (format "~s" '(begin
+                                                                 (display (read-line))
+                                                                 (display (read-line)
+                                                                          (current-error-port))))))
+                                   (displayln "hello" in)
+                                   (displayln "goodbye" in)
+                                   (close-output-port in)
+                                   (copy-port out (current-output-port))
+                                   (copy-port err (current-error-port))
+                                   (subprocess-wait subp)
+                                   (exit (subprocess-status subp))))
+                   "--" self)))
+  (test "hello" get-output-string out)
+  (test "goodbye" get-output-string err))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check Windows command-line parsing
+
+(when (eq? 'windows (system-type))
+  (define (try-arg cmdline-str result-str)
+    (let ()
+      (define-values (sp i o no-e)
+	(subprocess #f #f (current-error-port) self 'exact
+		    (string-append (regexp-replace* #rx" " (path->string self) "\" \"")
+                                   " -l racket/base"
+                                   " -e \"(write (vector-ref (current-command-line-arguments) 0))\""
+                                   " " cmdline-str)))
+      (close-output-port o)
+      (test result-str read i)
+      (subprocess-wait sp) 
+      (close-input-port i))
+    ;; Check encoding by `subprocess`, too
+    (let ()
+      (define-values (sp i o no-e)
+	(subprocess #f #f (current-error-port) self
+		    "-l" "racket/base"
+                    "-e" "(write (vector-ref (current-command-line-arguments) 0))"
+		    result-str))
+      (close-output-port o)
+      (test result-str read i)
+      (subprocess-wait sp) 
+      (close-input-port i)))
+
+  (try-arg "x" "x")
+  (try-arg "\"x\"" "x")
+  (try-arg "\"a \"\"b\"\" c\"" "a \"b\" c")
+  (try-arg "\"a \"\"b\"\" c" "a \"b\" c")
+  (try-arg "\"a\\\"" "a\"")
+  (try-arg "a\\\"" "a\"")
+  (try-arg "a\\\"b" "a\"b")
+  (try-arg "a\\\\\"b" "a\\b")
+  (try-arg "a\\\\\\\"b" "a\\\"b")
+  (try-arg "a\\\\\\\\\"b" "a\\\\b")
+  (try-arg "a\\\\\\\\\\\"b" "a\\\\\"b"))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (for ([f (list tmpfile tmpfile2)] #:when (file-exists? f)) (delete-file f))
+
 
 (report-errs)

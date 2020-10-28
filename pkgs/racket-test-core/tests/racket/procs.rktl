@@ -42,6 +42,11 @@
 (define (f1:a?:b? x #:a [a 0] #:b [b 1]) (list x a b))
 (define (f1+:a:b? x #:a a #:b [b 1] . args) (list* x a b args))
 (define (f1+:a?:b? x #:a [a 0] #:b [b 1] . args) (list* x a b args))
+(define (f1+2:a:b x [y #f] #:a a #:b b) (if y
+                                            (if (number? x)
+                                                (list x y a b)
+                                                (list y a b))
+                                            (list x a b)))
 (define f_ (case-lambda))
 (define f_1_2 (case-lambda
                [(x) (list x)]
@@ -52,7 +57,8 @@
 (define f1:+ (make-keyword-procedure
               (lambda (kws kw-args x)
                 (cons x kw-args))
-              (lambda (x) (list x))))
+              (let ([f1:+ (lambda (x) (list x))])
+                f1:+)))
 (define f1:+/drop (make-keyword-procedure
                    (lambda (kws kw-args x)
                      kw-args)
@@ -89,6 +95,8 @@
     (,(wrap-m f1+:a/drop) ,(make-arity-at-least 0) (#:a) (#:a))
     (,(wrap-m f1+:a?/drop) ,(make-arity-at-least 0) () (#:a))
     (,(procedure->method (wrap f1+:a?)) ,(make-arity-at-least 1) () (#:a) #t)
+    (,f1+2:a:b (1 2) (#:a #:b) (#:a #:b))
+    (,(wrap-m f1+2:a:b) (0 1) (#:a #:b) (#:a #:b))
     (,f0:a:b 0 (#:a #:b) (#:a #:b))
     (,f0:a?:b 0 (#:b) (#:a #:b))
     (,f1:a:b 1 (#:a #:b) (#:a #:b))
@@ -132,7 +140,7 @@
                                           err-n)
                                   (exn-message exn))))]))
 
-(let ()
+(define (run-procedure-tests procedure-arity procedure-reduce-arity)
   (define (get-maybe p n)
     (and ((length p) . > . n) (list-ref p n)))
   (define (try-combos procs add-chaperone) 
@@ -145,7 +153,7 @@
                                     null))])
                   (test a procedure-arity (car p))
                   (when (number? a)
-                    (let ([rx (regexp (format " mismatch;.*(expected number(?!.*expected:)|expected: ~a)"
+                    (let ([rx (regexp (format " mismatch;.*(expected number(?!.*expected:)|expected: ~a|required keywords:)"
                                               (if (zero? a) "(0|no)" (if method? (sub1 a) a))))]
                           [bad-args (cons 'extra (for/list ([i (in-range a)]) 'a))])
                       (test #t regexp-match? rx
@@ -246,7 +254,10 @@
                              [(equal? allowed '(#:a #:b))
                               (err/rt-test ((car p) 1 #:a 1 #:b 1))]
                              [(equal? allowed #f)
-                              (err/rt-test ((car p) 1 #:a 1 #:b 1))])))))))
+                              (err/rt-test ((car p) 1 #:a 1 #:b 1))])))
+                      ;; Try supplying many arguments
+                      (when (procedure-arity-includes? (car p) 100)
+                        (test #t list? (apply (car p) (for/list ([i 100]) i))))))))
               (map
                add-chaperone
                (append procs
@@ -288,7 +299,7 @@
                                                  (list allowed)))
                                       (begin
                                         (when (procedure-arity-includes? p 1 #t)
-                                          (err/rt-test (procedure-reduce-arity p 1) #rx"has required keyword arguments"))
+                                          (err/rt-test (procedure-reduce-arity p 1) exn:fail? #rx"has required keyword arguments"))
                                         (list (procedure-reduce-arity p '()) '() '() '() method? p))))))
                             procs)
                        ;; reduce to arity 0 or nothing --- no keywords:
@@ -361,6 +372,93 @@
     (try-combos (map add-chaperone procs) values)
     (try-combos (map add-chaperone procs) add-chaperone)))
 
+(define (mask->arity mask)
+  (let loop ([mask mask] [pos 0])
+    (cond
+     [(= mask 0) null]
+     [(= mask -1) (arity-at-least pos)]
+     [(bitwise-bit-set? mask 0)
+      (let ([rest (loop (arithmetic-shift mask -1) (add1 pos))])
+        (cond
+         [(null? rest) pos]
+         [(pair? rest) (cons pos rest)]
+         [else (list pos rest)]))]
+     [else
+      (loop (arithmetic-shift mask -1) (add1 pos))])))
+
+(define (arity->mask a)
+  (cond
+   [(exact-nonnegative-integer? a)
+    (arithmetic-shift 1 a)]
+   [(arity-at-least? a)
+    (bitwise-xor -1 (sub1 (arithmetic-shift 1 (arity-at-least-value a))))]
+   [(list? a)
+    (let loop ([mask 0] [l a])
+      (cond
+       [(null? l) mask]
+       [else
+        (let ([a (car l)])
+          (cond
+           [(or (exact-nonnegative-integer? a)
+                (arity-at-least? a))
+            (loop (bitwise-ior mask (arity->mask a)) (cdr l))]
+           [else #f]))]))]
+   [else #f]))
+
+(run-procedure-tests procedure-arity procedure-reduce-arity)
+(run-procedure-tests (lambda (p) (mask->arity (procedure-arity-mask p)))
+                     (lambda (p a [name #f]) (procedure-reduce-arity-mask p (arity->mask a) name)))
+
+;; ------------------------------------------------------------
+;; Check arity reporting for methods.
+
+(map
+ (lambda (jit?)
+   (parameterize ([eval-jit-enabled jit?])
+     (let ([mk-f (lambda ()
+		   (eval (syntax-property #'(lambda (a b) a) 'method-arity-error #t)))]
+	   [check-arity-error
+	    (lambda (f cl?)
+	      (test (if cl? '("given: 0")  '("expected: 1\n"))
+                    regexp-match #rx"expected: 1\n|given: 0$"
+		    (exn-message (with-handlers ([values values])
+				   ;; Use `apply' to avoid triggering
+				   ;; compilation of f:
+				   (apply f '(1))))))])
+       (test 2 procedure-arity (mk-f))
+       (check-arity-error (mk-f) #f)
+       (test 1 (mk-f) 1 2)
+       (let ([f (mk-f)])
+	 (test 1 (mk-f) 1 2)
+	 (check-arity-error (mk-f) #f))
+       (let ([mk-f (lambda ()
+		     (eval (syntax-property #'(case-lambda [(a b) a] [(c d e) c]) 'method-arity-error #t)))])
+	 (test '(2 3) procedure-arity (mk-f))
+	 (check-arity-error (mk-f) #t)
+	 (test 1 (mk-f) 1 2)
+	 (let ([f (mk-f)])
+	   (test 1 (mk-f) 1 2)
+	   (check-arity-error (mk-f) #t))))
+     (let* ([f (lambda (a b) a)]
+            [meth (procedure->method f)]
+            [check-arity-error
+             (lambda (f cl?)
+               (test (if cl? '("given: 0")  '("expected: 1\n"))
+                    regexp-match #rx"expected: 1\n|given: 0$"
+                     (exn-message (with-handlers ([values values])
+                                    ;; Use `apply' to avoid triggering
+                                    ;; compilation of f:
+                                    (apply f '(1))))))])
+       (test 2 procedure-arity meth)
+       (check-arity-error meth #f)
+       (test 1 meth 1 2)
+       (let* ([f (case-lambda [(a b) a] [(c d e) c])]
+              [meth (procedure->method f)])
+	 (test '(2 3) procedure-arity meth)
+	 (check-arity-error meth #t)
+	 (test 1 meth 1 2)))))
+ '(#t #f))
+
 ;; ----------------------------------------
 ;; Check error for non-procedures
 (err/rt-test (1 2 3) (lambda (x) (regexp-match? "not a procedure" (exn-message x))))
@@ -373,6 +471,28 @@
              (lambda (exn) (regexp-match #rx"position: 3rd" (exn-message exn))))
 (err/rt-test (procedure-reduce-keyword-arity void 1 null '(#:b #:a))
              (lambda (exn) (regexp-match #rx"position: 4th" (exn-message exn))))
+
+
+;; ----------------------------------------
+;; Check `procedure-extract-target`
+
+(let ()
+  (struct p (v)
+    #:property prop:procedure 0)
+
+  (define (f x [y 0]) x)
+
+  (define pf (p f))
+  (define ppf (p pf))
+
+  (test #t eq? f (procedure-extract-target pf))
+  (test #t eq? pf (procedure-extract-target ppf))
+
+  (define r (procedure-reduce-arity f 1))
+  (test #t not (procedure-extract-target r))
+
+  (define rpf (procedure-reduce-arity pf 1))
+  (test #t not (procedure-extract-target rpf)))
 
 ;; ----------------------------------------
 ;; Check mutation of direct-called keyword procedure
@@ -388,7 +508,7 @@
   (set! f #f))
 
 ;; ----------------------------------------
-;; Check mutation of direct-called keyword procedure
+;; Check name of keyword procedure
 
 (let ()
   (define (f1 #:x x) (list x))
@@ -485,6 +605,183 @@
                (lambda (exn)
                  (regexp-match? #rx"expected: 4 plus an optional argument with keyword #:x"
                                 (exn-message exn)))))
+
+;; ----------------------------------------
+;; Make sure that optional-argument handling doesn't go wrong with literal gensyms
+
+(let ()
+  (eval (let ([s (gensym)])
+          `(module optional-argument-with-gensym-default racket/base
+             (define (f #:x [x ',s])
+               (eq? x ',s))
+             (provide f))))
+  (namespace-require ''optional-argument-with-gensym-default)
+  (let ([o (open-output-bytes)])
+    (write (compile '(f)) o)
+    (test #t 'same? (eval (parameterize ([read-accept-compiled #t])
+                            (read (open-input-bytes (get-output-bytes o))))))))
+
+;; ----------------------------------------
+;; Check prop:arity-string
+
+(err/rt-test (let ()
+               (struct a (x)
+                 #:property prop:arity-string 'bad)
+               (a 0)))
+
+(err/rt-test (let ()
+               (struct evens (proc)
+                 #:property prop:procedure (struct-field-index proc)
+                 #:property prop:arity-string
+                 (lambda (p)
+                   "an even number of arguments"))
+               ((evens (lambda (x y) x)) 100))
+             exn:fail:contract?
+             #rx"an even number of arguments")
+
+;; ----------------------------------------
+;; procedure-specialize
+
+(let ([make-f (lambda (x)
+                (procedure-specialize
+                 (lambda (y)
+                   (cons x y))))])
+  (set! make-f make-f)
+  (test '(5 . 6) (make-f 5) 6))
+
+(let ([make-f (lambda (x)
+                (lambda (y)
+                  (cons x y)))])
+  (set! make-f make-f)
+  (let ([f (make-f 5)])
+    (test '(5 . 6) (procedure-specialize f) 6)
+    (test '(5 . 6) f 6)
+    (test '(7 . 8) (make-f 7) 8)))
+
+(define top-level-variable-to-mutate-form-specialized 'no)
+
+(let ([f (procedure-specialize
+          (lambda (y)
+            (set! top-level-variable-to-mutate-form-specialized 'yes)
+            y))])
+  (set! f f)
+  (test 'done f 'done)
+  (test 'yes values top-level-variable-to-mutate-form-specialized))
+
+
+;; ----------------------------------------
+;; check some strange procedure names
+
+(define-syntax (as-unnamed stx)
+  (syntax-case stx ()
+    [(_ e)
+     (syntax-property #'e 'inferred-name (void))]))
+
+(test #f object-name (eval '(let ([x (as-unnamed (lambda (x) x))])
+                              x)))
+
+(test '|[| object-name (let ([|[| (lambda (x) x)])
+                          |[|))
+(test '|]| object-name (let ([|]| (lambda (x) x)])
+                          |]|))
+
+(eval '(define (return-a-function-that-returns-y)
+         (lambda () y)))
+(test #f object-name (return-a-function-that-returns-y))
+
+;; ----------------------------------------
+;; Check 'inferred-name property on `lambda` that supports keywords
+;; and optional arguments
+
+(let ([mk
+       (lambda (mod-name proc)
+         (define e
+           `(module ,mod-name racket/base
+              (require (for-syntax racket/base))
+              (provide check-all)
+
+              (define-for-syntax (add-name stx)
+                (syntax-property stx 'inferred-name 'new-name))
+
+              (define-for-syntax fun
+                #',proc)
+
+              (define-syntax (go1 stx)
+                (syntax-case stx ()
+                  [(_ id)
+                   #`(define id #,fun)]))
+              (define-syntax (go2 stx)
+                (syntax-case stx ()
+                  [(_ id)
+                   #`(define id #,(add-name fun))]))
+              (define-syntax (go3 stx)
+                (syntax-case stx ()
+                  [(_ id)
+                   #`(define id (#%expression #,(add-name fun)))]))
+              (define-syntax (go4 stx)
+                (syntax-case stx ()
+                  [(_ id)
+                   #`(define id (let () #,(add-name fun)))]))
+
+              (go1 f1)
+              (go2 f2)
+              (go3 f3)
+              (go4 f4)
+
+              (define (check-all check)
+                (go1 g1)
+                (go2 g2)
+                (go3 g3)
+                (go4 g4)
+
+                (check f1 'f1)
+                (check f2 'new-name)
+                (check f3 'new-name)
+                (check f4 'new-name)
+
+                (check g1 'g1)
+                (check g2 'new-name)
+                (check g3 'new-name)
+                (check g4 'new-name))))
+         (eval e)
+         ((dynamic-require `',mod-name 'check-all)
+          (lambda (proc name)
+            (test name mod-name (object-name proc)))))])
+  (mk 'checks-many-declared-inferred-names
+      '(lambda (x) x))
+  (mk 'checks-many-declared-inferred-names/opt
+      '(lambda (x [y 10]) x))
+  (mk 'checks-many-declared-inferred-names/keyword
+      '(lambda (x #:z z) x))
+  (mk 'checks-many-declared-inferred-names/opt-keyword
+      '(lambda (x #:z [z 11]) x)))
+
+;; ----------------------------------------
+
+(let ()
+  (struct a ()
+    #:property prop:procedure (lambda (a x)
+                                (list a x)))
+
+  (define the-a (a))
+
+  (struct b ()
+    #:property prop:procedure the-a)
+
+  (define the-b (b))
+
+  (test (list the-a the-b) the-b)
+  (test 0 procedure-arity the-b))
+
+;; ----------------------------------------
+;; Make sure wrong number with keywords is an arity exception:
+
+(let ()
+  (define (hello a b #:key key) (display a))
+  (test #t
+        exn:fail:contract:arity?
+        (with-handlers ([values values])
+          (hello 1 #:key 'hi))))
 
 ;; ----------------------------------------
 

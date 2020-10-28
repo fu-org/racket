@@ -11,6 +11,10 @@
          string-suffix?
          string-contains?)
 
+(module+ private
+  (provide build-kmp-table))
+           
+
 (define string-append*
   (case-lambda [(strs) (apply string-append strs)] ; optimize common cases
                [(s1 strs) (apply string-append s1 strs)]
@@ -19,9 +23,8 @@
                [(s1 s2 s3 s4 strs) (apply string-append s1 s2 s3 s4 strs)]
                [(str . strss) (apply apply string-append str strss)]))
 
-(require (only-in racket/list add-between))
-
-(define none (gensym))
+(require (only-in racket/list add-between)
+         (only-in racket/unsafe/undefined [unsafe-undefined none]))
 
 (define (string-join strs [sep " "]
                      #:before-first [before-first none]
@@ -29,14 +32,36 @@
                      #:after-last   [after-last none])
   (unless (and (list? strs) (andmap string? strs))
     (raise-argument-error 'string-join "(listof string?)" strs))
+  (unless (or (string? before-first) (eq? before-first none))
+    (raise-argument-error 'string-join "string?" before-first))
   (unless (string? sep)
     (raise-argument-error 'string-join "string?" sep))
+  (unless (or (string? after-last) (eq? after-last none))
+    (raise-argument-error 'string-join "string?" after-last))
   (let* ([r (if (or (null? strs) (null? (cdr strs)))
               strs
               (add-between strs sep #:before-last before-last))]
          [r (if (eq? after-last   none) r (append r (list after-last)))]
          [r (if (eq? before-first none) r (cons before-first r))])
     (apply string-append r)))
+
+;; Cache for string-replace and string-split and similar functions:
+;; A mutable string weakly holds a immutable copy until it is collected
+;; or modified (and used as a argument of string-replace, string-split, ...).
+;; The immutable copy weakly holds the regexp that is used in string-replace.
+;; Using string->immutable-string directly in string-replace is not a useful
+;; because the immutable copy could be immediately collected.
+ 
+(define immutable-cache (make-weak-hasheq))
+(define (string->immutable-string/cache str)
+  (if (immutable? str)
+    str
+    (let ([old (hash-ref immutable-cache str #f)])
+      (if (and old (string=? str old))
+        old
+        (let ([new (string->immutable-string str)])
+          (hash-set! immutable-cache str new)
+          new)))))    
 
 ;; Utility for the functions below: get a string or a regexp and return a list
 ;; of the regexp (strings are converted using `regexp-quote'), and versions
@@ -47,8 +72,11 @@
       (hash-set! t none spaces)
       (hash-set! t+ none spaces))
     (λ (who rx +?)
-      (hash-ref! (if +? t+ t) rx
-        (λ () (let* ([s (cond [(string? rx) (regexp-quote rx)]
+      (define rx* (if (string? rx)
+                     (string->immutable-string/cache rx)
+                     rx))
+      (hash-ref! (if +? t+ t) rx*
+        (λ () (let* ([s (cond [(string? rx) (regexp-quote rx*)]
                               [(regexp? rx) (string-append
                                              "(?:" (object-name rx) ")")]
                               [else (raise-argument-error
@@ -104,26 +132,7 @@
   (string-join (internal-split 'string-normalize-spaces str sep trim? +?)
                space))
 
-
-;; Caches for string-replace:
-;; A mutable string weakly holds a immutable copy until it is collected
-;; or modified (and used as a argument of string-replace).
-;; The immutable copy weakly holds the regexp that is used in string-replace.
-;; Using string->immutable-string directly in string-replace is not a useful
-;; because the immutable copy could be immediately collected.
- 
-(define immutable-cache (make-weak-hasheq))
-(define (string->immutable-string/cache str)
-  (if (immutable? str)
-    str
-    (let ([old (hash-ref immutable-cache str #f)])
-      (if (and old (string=? str old))
-        old
-        (let ([new (string->immutable-string str)])
-          (hash-set! immutable-cache str new)
-          new)))))    
-
-(define replace-cache (make-weak-hash))
+(define replace-cache (make-weak-hasheq))
 (define (string-replace str from to #:all? [all? #t])
   (unless (string? str) (raise-argument-error 'string-replace "string?" str))
   (unless (string? to)  (raise-argument-error 'string-replace "string?" to))
@@ -169,6 +178,71 @@
              (and (char=? (string-ref str i+o) (string-ref suffix i))
                   (loop (add1 i+o) (add1 i)))))))
 
+;; string-contains? uses a variant of the Knuth-Morris-Pratt string search
+;; algorithm. It start with a direct search without the KMP table, until
+;; it finds a partial match that long enough (currently 4 characters).
+;; The table is also skipped when there are only a few characters left
+;; to test (currently 4 characters).
+;; The first time a partial match is found, it buils a small partial table
+;; and if it is necesay it builds the complete table.
+;; The KMP table has one more element as usual, that is unused for now.
+;; The last coefficient can be used to continue the search in case a 
+;; match is found and we want to get all the matches or count them. 
+(define (build-kmp-table sub)
+  (define L (string-length sub))
+  (if (> L 0)
+     (build-kmp-table/partial sub L #f)
+     (make-vector 1 #f)))
+
+(define (build-kmp-table/partial/first sub pos)
+  (define L (string-length sub))
+  (if (> L 0)
+     (build-kmp-table/partial sub (min L (* 2 pos)) #f)
+     (make-vector 1 #f)))
+
+(define (build-kmp-table/partial/next sub pos prev)
+  (define L (string-length sub))
+  (if (> L 0)
+    (build-kmp-table/partial sub L prev)
+    (make-vector 1 #f)))
+
+(define (build-kmp-table/partial sub vL prev)
+  (define L (string-length sub))
+  (define pos (if prev
+                 (sub1 (vector-length prev))
+                 1))
+  (define cnd (if prev
+                 (unbox (vector-ref prev (sub1 (vector-length prev))))
+                 0))
+  (define t (make-vector (add1 vL) #f))
+  (when prev
+    (vector-copy! t 0 prev))
+  
+  (let loop ([pos pos] [cnd cnd])
+    (cond
+      [(= pos L)
+       (vector-set! t pos cnd)
+       t]
+      [(= pos vL)
+       (vector-set! t pos (box cnd))
+       t]
+      [(char=? (string-ref sub pos)
+               (string-ref sub cnd))
+       (vector-set! t pos (vector-ref t cnd))
+       (loop (add1 pos) (add1 cnd))]
+      [else
+       (vector-set! t pos cnd)
+       (let loop2 ([pos pos]
+                   [cnd (vector-ref t cnd)])
+         (cond
+           [(not cnd)
+            (loop (add1 pos) 0)]
+           [(char=? (string-ref sub pos)
+                    (string-ref sub cnd))
+            (loop (add1 pos) (add1 cnd))]
+           [else
+            (loop2 pos (vector-ref t cnd))]))])))
+
 (define (string-contains? str sub)
   (unless (string? str)
     (raise-argument-error 'string-contains? "string?" str))
@@ -177,12 +251,59 @@
   (define L1 (string-length str))
   (define L2 (string-length sub))
   (define d (- L1 L2))
-  (or (zero? L2)
-      (let loop ([start 0])
+  (define d-4 (- d 4))
+
+  (or (= L2 0)
+      (let loop ([start 0]
+                 [offset 0])
+        (define start+offset (+ start offset))
         (and (<= start d)
-             (or (let loop2 ([offset 0])
-                   (or (= offset L2)
-                       (and (char=? (string-ref str (+ start offset))
-                                    (string-ref sub offset))
-                            (loop2 (add1 offset)))))
-                 (loop (add1 start)))))))
+             (or (= offset L2)
+                 (cond
+                   [(char=? (string-ref sub offset)
+                            (string-ref str start+offset))
+                    (loop start (add1 offset))]
+                   [(or (<= offset 4) (>= start d-4))
+                    (loop (add1 start) 0)]
+                   [else
+                    (define t (build-kmp-table/partial/first sub offset))
+                    (define skip (vector-ref t offset))
+                    (cond
+                      [skip
+                       (string-contains?/table str sub (- start+offset skip) skip t)]
+                      [else
+                       (string-contains?/table str sub (add1 start+offset) 0 t)])]))))))
+
+(define (string-contains?/table str sub start offset t)
+  (define L1 (string-length str))
+  (define L2 (string-length sub))
+  (define d (- L1 L2))
+
+  (or (= L2 0)
+      (let loop ([start start]
+                 [offset offset]
+                 [t t]
+                 [tL (sub1 (vector-length t))])
+        (define start+offset (+ start offset))
+        (and (<= start d)
+             (or (= offset L2)
+                 (cond
+                   [(char=? (string-ref sub offset)
+                            (string-ref str start+offset))
+                    (loop start (add1 offset) t tL)]
+                   [(< offset tL)
+                    (define skip (vector-ref t offset))
+                    (cond
+                      [skip
+                       (loop (- start+offset skip) skip t tL)]
+                      [else
+                       (loop (add1 start+offset) 0 t tL)])]
+                   [else
+                    (let* ([t (build-kmp-table/partial/next sub offset t)]
+                           [tL (sub1 (vector-length t))]
+                           [skip (vector-ref t offset)])
+                      (cond
+                        [skip
+                         (loop (- start+offset skip) skip t tL)]
+                        [else
+                         (loop (add1 start+offset) 0 t tL)]))]))))))

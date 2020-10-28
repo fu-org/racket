@@ -80,20 +80,26 @@ submodule of the required module or the
 language is used before the module is instantiated; see
 @secref["configure-runtime"].
 
-After running all command-line expressions, files, and modules,
-Racket or GRacket then starts a read-eval-print loop for interactive
+After running all command-line expressions, files, and modules, Racket
+or GRacket then starts a read-eval-print loop for interactive
 evaluation if no command line flags are provided other than
-@tech{configuration options}.  If any command-line argument is
+@tech{configuration options}. For Racket, the read-eval-print loop is
+run by calling @racket[read-eval-print-loop] from
+@racketmodname[racket/repl]. For GRacket, the read-eval-print loop is
+run by calling @racket[graphical-read-eval-print-loop] from
+@racketmodname[racket/gui/base]. If any command-line argument is
 provided that is not a @tech{configuration option}, then the
 read-eval-print-loop is not started, unless the @Flag{i}/@DFlag{repl}
 flag is provided on the command line to
-specifically re-enable it. In addition, just before the command line
+specifically re-enable it.
+
+In addition, just before the read-eval-print loop
 is started, Racket runs @racketmodname[racket/interactive]
 and GRacket runs @racketmodname[racket/gui/interactive], unless a different
 interactive file is specified in the the installation's @filepath{config.rktd}
 file found in @racket[(find-config-dir)], or the file @filepath{interactive.rkt}
 is found in @racket[(find-system-path 'addon-dir)]. If the
-@Flag{q}/@DFlag{no-init-file} flag is specified on the command line
+@Flag{q}/@DFlag{no-init-file} flag is specified on the command line,
 then no interactive file is run.
 
 Finally, before Racket or GRacket exits, it calls the procedure that
@@ -103,7 +109,10 @@ specified. Requiring @racketmodname[racket/gui/base] sets this parameter call
 @racket[(racket 'yield)].
 
 @history[#:changed "6.7" @elem{Run @racketmodname[racket/interactive] file
-         rather than directly running @racket[(find-system-path 'init-file)].}]
+         rather than directly running @racket[(find-system-path 'init-file)].}
+         #:changed "6.90.0.30" @elem{Run a read-eval-print loop by
+         using @racketmodname[racket/repl] or @racketmodname[racket/gui/base]
+         instead of @racketmodname[racket/base] or @racketmodname[racket/gui/init].}]
 
 @; ----------------------------------------------------------------------
 
@@ -112,7 +121,9 @@ specified. Requiring @racketmodname[racket/gui/base] sets this parameter call
 The default exit status for a Racket or GRacket process is non-zero if
 an error occurs during a command-line @racket[eval] (via @Flag{e},
 etc.), @racket[load] (via @Flag{f}, @Flag{r}, etc.), or
-@racket[require] (via @Flag{-l}, @Flag{t}, etc.), but only when no
+@racket[require] (via @Flag{l}, @Flag{t}, etc.)---or, more generally,
+if the abort handler of the @tech{prompt} surrounding those evalutions
+is called---but only when no
 read-eval-print loop is started. Otherwise, the default exit status is
 @racket[0].
 
@@ -244,7 +255,7 @@ flags:
 
   @item{@FlagFirst{c} or @DFlagFirst{no-compiled} : Disables loading
         of compiled byte-code @filepath{.zo} files, by initializing
-        @racket[current-compiled-file-paths] to @racket[null].
+        @racket[use-compiled-file-paths] to @racket[null].
         Use judiciously: this effectively ignores the content of all
         @filepath{compiled} subdirectories, so that any used modules are
         compiled on the fly---even @racketmodname[racket/base] and
@@ -282,13 +293,6 @@ flags:
         the @Flag{S}/@DFlag{dir} flag is supplied multiple times, the
         search order is as supplied.}
 
-  @item{@FlagFirst{R} @nonterm{paths} or @DFlagFirst{compiled}
-        @nonterm{paths} : Sets the initial value of the
-        @racket[current-compiled-file-roots] parameter, overriding
-        any @envvar{PLTCOMPILEDROOTS} setting. The @nonterm{paths}
-        argument is parsed in the same way as @envvar{PLTCOMPILEDROOTS}
-        (see @racket[current-compiled-file-roots]).}
-
   @item{@FlagFirst{G} @nonterm{dir} or @DFlagFirst{config}
         @nonterm{dir} : Sets the directory that is returned by
         @racket[(find-system-path 'config-dir)].}
@@ -303,6 +307,27 @@ flags:
         @racket[use-user-specific-search-paths] parameter to
         @racket[#f].}
 
+  @item{@FlagFirst{A} @nonterm{dir} or @DFlagFirst{addon}
+        @nonterm{dir} : Sets the directory that is returned by
+        @racket[(find-system-path 'addon-dir)].}
+
+  @item{@FlagFirst{R} @nonterm{paths} or @DFlagFirst{compiled}
+        @nonterm{paths} : Sets the initial value of the
+        @racket[current-compiled-file-roots] parameter, overriding
+        any @envvar{PLTCOMPILEDROOTS} setting. The @nonterm{paths}
+        argument is parsed in the same way as @envvar{PLTCOMPILEDROOTS}
+        (see @racket[current-compiled-file-roots]).}
+
+  @item{@FlagFirst{C} or @DFlagFirst{cross} : Select cross-platform
+        build mode, causing @racket[(system-type 'cross)] to report
+        @racket['force], and sets the current configuration of
+        @racket[(find-system-path 'config-dir)] and
+        @racket[(find-system-path 'collects-dir)] to be the results of
+        @racket[(find-system-path 'host-config-dir)] and
+        @racket[(find-system-path 'host-collects-dir)], respectively.
+        If @FlagFirst{C} or @DFlagFirst{cross} is provided multiple
+        times, only the first instance has an effect.}
+  
   @item{@FlagFirst{N} @nonterm{file} or @DFlagFirst{name}
         @nonterm{file} : sets the name of the executable as reported
         by @racket[(find-system-path 'run-file)] to
@@ -317,6 +342,11 @@ flags:
   @item{@FlagFirst{j} or @DFlagFirst{no-jit} : Disables the
         native-code just-in-time compiler by setting the
         @racket[eval-jit-enabled] parameter to @racket[#f].}
+
+  @item{@FlagFirst{M} or @DFlagFirst{compile-any} : Enables
+        machine-independent bytecode by setting the
+        @racket[current-compile-target-machine] parameter to
+        @racket[#f].}
 
   @item{@FlagFirst{d} or @DFlagFirst{no-delay} : Disables on-demand
         parsing of compiled code and syntax objects by setting the
@@ -333,6 +363,12 @@ flags:
         are the same as for the @envvar{PLTSTDERR} environment
         variable. See @secref["logging"] for more information.}
 
+  @item{@FlagFirst{O} @nonterm{levels} or @DFlagFirst{stdout}
+        @nonterm{levels} : Sets the logging level for writing events to
+        the original output port. The possible @nonterm{level} values
+        are the same as for the @envvar{PLTSTDOUT} environment
+        variable. See @secref["logging"] for more information.}
+
   @item{@FlagFirst{L} @nonterm{levels} or @DFlagFirst{syslog}
         @nonterm{levels} : Sets the logging level for writing events to
         the system log. The possible @nonterm{level} values
@@ -345,6 +381,10 @@ flags:
 
  @itemize[
 
+  @item{@FlagFirst{Z} : The argument following this flag is ignored.
+        This flag can be handy in some impoverished scripting environments
+        to replace or cancel another command-line argument.}
+ 
   @item{@FlagFirst{-} : No argument following this flag is itself used
         as a flag.}
  
@@ -424,6 +464,10 @@ of the collapsed set.
 
 Extra arguments following the last option are available from the
 @indexed-racket[current-command-line-arguments] parameter.
+
+@history[#:changed "6.90.0.17" @elem{Added @Flag{O}/@DFlag{stdout}.}
+         #:changed "7.1.0.5" @elem{Added @Flag{M}/@DFlag{compile-any}.}
+         #:changed "7.8.0.6" @elem{Added @Flag{Z}.}]
 
 @; ----------------------------------------------------------------------
 

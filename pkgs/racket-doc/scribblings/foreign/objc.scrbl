@@ -24,7 +24,7 @@
 The library supports Objective-C interaction in two layers. The upper
 layer provides syntactic forms for sending messages and deriving
 subclasses. The lower layer is a thin wrapper on the
-@link["http://developer.apple.com/DOCUMENTATION/Cocoa/Reference/ObjCRuntimeRef/index.html"]{Objective-C
+@link["https://developer.apple.com/documentation/objectivec"]{Objective-C
 runtime library} functions. Even the upper layer is unsafe and
 relatively low-level compared to normal Racket libraries, because
 argument and result types must be declared in terms of FFI C types
@@ -160,7 +160,8 @@ FFI type @racket[_Class]). The @racket[superclass-expr] should produce
 an Objective-C class or @racket[#f] for the superclass. An optional
 @racket[#:mixins] clause can specify mixins defined with
 @racket[define-objc-mixin]. An optional @racket[#:protocols] clause
-can specify Objective-C protocols to be implemented by the class.
+can specify Objective-C protocols to be implemented by the class, where
+a @racket[#f] result for a @racket[protocol-expr] is ignored.
 
 Each @racket[field-id] is an instance field that holds a Racket value
 and that is initialized to @racket[#f] when the object is
@@ -203,7 +204,10 @@ space for each @racket[field-id] within the instance is deallocated.
    (- _void (dealloc)
       (when bm (done-with-bm bm))))
  (void))
-]}
+]
+
+@history[#:changed "6.90.0.26" @elem{Changed @racket[#:protocols] handling to
+                                     ignore @racket[#f] expression results.}]}
 
 @defform[(define-objc-mixin (class-id superclass-id)
            maybe-mixins
@@ -319,6 +323,16 @@ retained as long as the block remains in use.
 @history[#:added "6.3"]}
 
 
+@defform[(with-blocking-tell form ...+)]{
+
+Causes any @racket[tell], @racket[tellv], or @racket[super-tell]
+expression syntactically within the @racket[form]s to be blocking in
+the sense of the @racket[#:blocking?] argument to
+@racket[_cprocedure]. Otherwise, @racket[(with-blocking-tell form
+...+)] is equivalent to @racket[(let () form ...+)].
+
+@history[#:added "7.0.0.19"]}
+
 @; ----------------------------------------------------------------------
 
 @section{Raw Runtime Functions}
@@ -415,7 +429,25 @@ Like @racket[objc_msgSend/typed], but for a super call.}
 
 Constructor and FFI C type use for super calls.}
 
-@table-of-contents[]
+@deftogether[(
+@defproc[((objc_msgSend/typed/blocking [types (vector/c result-ctype arg-ctype ...)])
+          [obj _id]
+          [sel _SEL]
+          [arg any/c])
+         any/c]
+@defproc[((objc_msgSendSuper/typed/blocking [types (vector/c result-ctype arg-ctype ...)])
+          [super _objc_super]
+          [sel _SEL]
+          [arg any/c])
+         any/c]
+)]{
+
+The same as @racket[objc_msgSend/typed] and
+@racket[objc_msgSendSuper/typed], but specifying that the send should
+be blocking in the sense of the @racket[#:blocking?] argument to
+@racket[_cprocedure].
+
+@history[#:added "7.0.0.19"]}
 
 @; ----------------------------------------------------------------------
 

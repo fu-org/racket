@@ -52,21 +52,33 @@ by @racket[kind], which must be one of the following:
  the current executable is used as the home directory.}
 
  @item{@indexed-racket['pref-dir] --- the standard directory for
- storing the current user's preferences. On Unix, the directory is
- @filepath{.racket} in the @tech{user's home directory}.  On Windows,
- it is @filepath{Racket} in the @tech{user's home directory} if
- determined by @envvar{PLTUSERHOME}, otherwise in the user's
- application-data folder as specified by the Windows registry; the
- application-data folder is usually @filepath{Application Data} in the
- user's profile directory. On Mac OS, the preferences directory
- is @filepath{Library/Preferences} in the
- @tech{user's home directory}. The preferences directory might not exist.}
+ storing the current user's preferences. The preferences directory
+ might not exist.
+
+ On Unix, the preferences directory is normally the @filepath{racket}
+ subdirectory of the path specified by
+ @indexed-envvar{XDG_CONFIG_HOME}, or @filepath{.config/racket} in the
+ @tech{user's home directory} if @envvar{XDG_CONFIG_HOME} is not set
+ to an absolute path or if @envvar{PLTUSERHOME} is set. Either way, if
+ that directory does not exist but a @filepath{.racket} directory
+ exists in the @tech{user's home directory}, then that directory is
+ the preference directory, instead.
+
+ On Windows, the preferences directory is @filepath{Racket} in the
+ @tech{user's home directory} if determined by @envvar{PLTUSERHOME},
+ otherwise in the user's application-data folder as specified by the
+ Windows registry; the application-data folder is usually
+ @filepath{Application Data} in the user's profile directory.
+
+ On Mac OS, the preferences directory is
+ @filepath{Library/Preferences} in the @tech{user's home directory}.}
 
  @item{@indexed-racket['pref-file] --- a file that contains a
  symbol-keyed association list of preference values. The file's
  directory path always matches the result returned for
  @racket['pref-dir]. The file name is @filepath{racket-prefs.rktd} on Unix
- and Windows, and it is @filepath{org.racket-lang.prefs.rktd} on Mac OS. The file's directory might not exist. See also
+ and Windows, and it is @filepath{org.racket-lang.prefs.rktd} on Mac OS.
+ The file's directory might not exist. See also
  @racket[get-preference].}
 
  @item{@indexed-racket['temp-dir] --- the standard directory for
@@ -80,20 +92,33 @@ by @racket[kind], which must be one of the following:
 
  @item{@indexed-racket['init-dir] --- the directory containing the
  initialization file used by the Racket executable.
- It is the same as the @tech{user's home directory}.}
+
+ On Unix, the initialization directory is the same as the result
+ returned for @racket['pref-dir]---unless that directory does not
+ exist and a @filepath{.racketrc} file exists in the @tech{user's home
+ directory}, in which case the home directory is the initialization
+ directory.
+
+ On Windows, the initialization directory is the same as the
+ @tech{user's home directory}.
+
+ On Mac OS, the initialization directory is @filepath{Library/Racket}
+ in the @tech{user's home directory}---unless no
+ @filepath{racketrc.rktl} exists there and a @filepath{.racketrc} file
+ does exist in the home directory, in which case the home directory is
+ the initialization directory.}
 
  @item{@indexed-racket['init-file] --- the file loaded at start-up by
  the Racket executable. The directory part of the
- path is the same path as returned for @racket['init-dir].  The file
- name is platform-specific:
+ path is the same path as returned for @racket['init-dir].
 
-  @itemize[
+ On Windows, the file part of the name is
+ @indexed-file{racketrc.rktl}.
 
-  @item{@|AllUnix|: @indexed-file{.racketrc}}
-
-  @item{Windows: @indexed-file{racketrc.rktl}}
-
-  ]}
+ On Unix and Mac OS, the file part of the name is
+ @indexed-file{racketrc.rktl}---unless the path returned for
+ @racket['init-dir] is the @tech{user's home directory}, in which case
+ the file part of the name is @indexed-file{.racketrc}.}
 
  @item{@indexed-racket['config-dir] --- a directory for
  the installation's configuration. This directory is specified by the
@@ -106,16 +131,52 @@ by @racket[kind], which must be one of the following:
  relative path, it is relative to the current executable.
  The directory might not exist.}
 
+ @item{@indexed-racket['host-config-dir] --- like
+ @racket['config-dir], but when cross-platform build mode has been
+ selected (through the @Flag{C} or @DFlag{cross} argument to
+ @exec{racket}; see @secref["mz-cmdline"]), the result refers to a
+ directory for the current system's installation, instead of for the
+ target system.}
+ 
  @item{@indexed-racket['addon-dir] --- a directory for
  user-specific Racket configuration, packages, and extension.
  This directory is specified by the
  @indexed-envvar{PLTADDONDIR} environment variable, and it can be
  overridden by the @DFlag{addon} or @Flag{A} command-line flag.  If no
  environment variable or flag is specified, or if the value is not a
- legal path name, then this directory defaults to
- @filepath{Library/Racket} in the @tech{user's home directory} on Mac
- OS and @racket['pref-dir] otherwise.  The directory might not
- exist.}
+ legal path name, then this directory defaults to a platform-specific
+ locations. The directory might not exist.
+
+ On Unix, the default is normally the @filepath{racket} subdirectory
+ of the path specified by @indexed-envvar{XDG_DATA_HOME}, or
+ @filepath{.local/share/racket} in the @tech{user's home directory} if
+ @envvar{XDG_CONFIG_HOME} is not set to an absolute path or if
+ @envvar{PLTUSERHOME} is set. If that directory does not exists but a
+ @filepath{.racket} directory exists in the user's home directory,
+ that the @filepath{.racket} directory path is the default, instead.
+
+ On Windows, the default is the same as the @racket['pref-dir] directory.
+
+ On Mac OS, the default is @filepath{Library/Racket} within the
+ @tech{user's home directory}.}
+
+ @item{@indexed-racket['cache-dir] --- a directory for storing
+ user-specific caches. The directory might not exist.
+
+ On Unix, the cache directory is normally the @filepath{racket}
+ subdirectory of the path specified by
+ @indexed-envvar{XDG_CACHE_HOME}, or @filepath{.cache/racket} in the
+ @tech{user's home directory} if @envvar{XDG_CACHE_HOME} is not set to
+ an absolute path or if @envvar{PLTUSERHOME} is set. If that directory
+ does not exist but a @filepath{.racket} directory exists in the home
+ directory, then the @filepath{.racket} directory is the cache
+ directory, instead.
+
+ On Windows, the cache directory is the same as the result returned
+ for @racket['addon-dir].
+
+ On Mac OS, the cache directory is @filepath{Library/Caches/Racket}
+ within the @tech{user's home directory}.}
 
  @item{@indexed-racket['doc-dir] --- the standard directory for
  storing the current user's documents. On Unix, it's
@@ -164,6 +225,17 @@ by @racket[kind], which must be one of the following:
  normally embedded in the Racket executable, but it can be
  overridden by the @DFlag{collects} or @Flag{X} command-line flag.}
 
+ @item{@indexed-racket['host-collects-dir] --- like
+ @racket['collects-dir], but when cross-platform build mode has been
+ selected (through the @Flag{C} or @DFlag{cross} argument to
+ @exec{racket}; see @secref["mz-cmdline"]), the result refers to a
+ directory for the current system's installation, instead of for the
+ target system. In cross-platform build mode, collection
+ files are normally read from the target system's installation,
+ but some tasks require current-system directories (such as
+ the one that holds foreign libraries) that are configured relative
+ to the main library-collection path.}
+ 
  @item{@indexed-racket['orig-dir] --- the current directory at
  start-up, which can be useful in converting a relative-path result
  from @racket[(find-system-path 'exec-file)] or
@@ -171,7 +243,13 @@ by @racket[kind], which must be one of the following:
 
  ]
 
-@history[#:changed "6.0.0.3" @elem{Added @envvar{PLTUSERHOME}.}]}
+@history[#:changed "6.0.0.3" @elem{Added @envvar{PLTUSERHOME}.}
+         #:changed "6.9.0.1" @elem{Added @racket['host-config-dir]
+                                   and @racket['host-collects-dir].}
+         #:changed "7.8.0.9" @elem{Added @racket['cache-dir], and changed
+                                   to use XDG directories as preferred on Unix
+                                   with the previous paths as a fallback, and
+                                   with similar adjustments for Mac OS.}]}
 
 @defproc[(path-list-string->path-list [str (or/c string? bytes?)]
                                       [default-path-list (listof path?)])
@@ -266,6 +344,21 @@ symbolic links and junctions.
 @history[#:changed "6.0.1.12" @elem{Added support for links on Windows.}]}
 
 
+@defproc[(file-or-directory-type [path path-string?] [must-exist? any/c #f])
+         (or/c 'file 'directory 'link 'directory-link #f)]{
+
+Reports whether @racket[path] refers to a file, directory, link, or
+directory link (in the case of Windows; see also
+@racket[make-file-or-directory-link]), assuming that @racket[path] can
+be accessed.
+
+If @racket[path] cannot be accessed, the result is @racket[#f] if
+@racket[must-exist?] is @racket[#f], otherwise the
+@exnraise[exn:fail:filesystem].
+
+@history[#:added "7.8.0.5"]}
+
+
 @defproc[(delete-file [path path-string?]) void?]{
 
 Deletes the file with path @racket[path] if it exists, otherwise the
@@ -282,6 +375,16 @@ permission change if the deletion fails.
 
 On Windows, @racket[delete-file] can delete a symbolic link, but not
 a junction. Use @racket[delete-directory] to delete a junction.
+
+On Windows, beware that if a file is deleted while it remains in use
+by some process (e.g., a background search indexer), then the file's
+content will eventually go away, but the file's name remains occupied
+until the file is no longer used. As long as the name remains
+occupied, attempts to open, delete, or replace the file will trigger a
+permission error (as opposed to a file-exists error). A common
+technique to avoid this pitfall is to move the file to a generated
+temporary name before deleting it. See also
+@racket[delete-directory/files].
 
 @history[#:changed "6.1.1.7" @elem{Changed Windows behavior to use
                                    @racket[current-force-delete-permissions].}]}
@@ -312,7 +415,16 @@ typically fail on Windows. See also @racket[call-with-atomic-output-file].
 
 If @racket[old] is a link, the link is renamed rather than the
 destination of the link, and it counts as a file for replacing any
-existing @racket[new].}
+existing @racket[new].
+
+On Windows, beware that a directory cannot be renamed if any file
+within the directory is open. That constraint is particularly
+problematic if a search indexer is running in the background (as in
+the default Windows configuration). A possible workaround is to
+combine @racket[copy-directory/files] and
+@racket[delete-directory/files], since the latter can deal with open
+files, although that sequence is obviously not atomic and temporarily
+duplicates files.}
 
 
 @defproc*[([(file-or-directory-modify-seconds [path path-string?]
@@ -363,15 +475,15 @@ portable, reflecting permissions for the file or directory's owner,
 members of the file or directory's group, or other users:
 
 @itemlist[
- @item{@racketvalfont{#o100} : owner has read permission}
+ @item{@racketvalfont{#o400} : owner has read permission}
  @item{@racketvalfont{#o200} : owner has write permission}
- @item{@racketvalfont{#o400} : owner has execute permission}
- @item{@racketvalfont{#o010} : group has read permission}
+ @item{@racketvalfont{#o100} : owner has execute permission}
+ @item{@racketvalfont{#o040} : group has read permission}
  @item{@racketvalfont{#o020} : group has write permission}
- @item{@racketvalfont{#o040} : group has execute permission}
- @item{@racketvalfont{#o001} : others have read permission}
+ @item{@racketvalfont{#o010} : group has execute permission}
+ @item{@racketvalfont{#o004} : others have read permission}
  @item{@racketvalfont{#o002} : others have write permission}
- @item{@racketvalfont{#o004} : others have execute permission}
+ @item{@racketvalfont{#o001} : others have execute permission}
 ]
 
 See also @racket[user-read-bit], etc. On Windows, permissions from
@@ -433,10 +545,15 @@ successfully,the @exnraise[exn:fail:filesystem].
 
 On Windows XP and earlier, the @exnraise[exn:fail:unsupported]. On
 later versions of Windows, the creation of links tends to be
-disallowed by security policies. Furthermore, a relative-path link is
-parsed specially; see @secref["windowspaths"] for more information.
-When @racket[make-file-or-directory-link] succeeds, it creates a symbolic
-link as opposed to a junction.
+disallowed by security policies. Windows distinguishes between file
+and directory links, and a directory link is created only if
+@racket[to] parses syntactically as a directory (see
+@racket[path->directory-path]). Furthermore, a relative-path link is
+parsed specially by the operating system; see @secref["windowspaths"]
+for more information. When @racket[make-file-or-directory-link]
+succeeds, it creates a symbolic link as opposed to a junction or hard
+link. Beware that directory links must be deleted using
+@racket[delete-directory] instead of @racket[delete-file].
 
 @history[#:changed "6.0.1.12" @elem{Added support for links on Windows.}]}
 
@@ -555,15 +672,13 @@ change events}.
 
 @defproc[(filesystem-change-evt? [v any/c]) boolean?]{
 
-Returns @racket[#f] if @racket[v] is a @tech{filesystem change
+Returns @racket[#t] if @racket[v] is a @tech{filesystem change
 event}, @racket[#f] otherwise.}
 
 
-@defproc*[([(filesystem-change-evt [path path-string?])
-            filesystem-change-evt?]
-           [(filesystem-change-evt [path path-string?]
-                                   [failure-thunk (-> any)])
-            any])]{
+@defproc[(filesystem-change-evt [path path-string?]
+                                [failure-thunk (or/c (-> any) #f) #f])
+         (or/c filesystem-change-evt? any)]{
 
 Creates a @deftech{filesystem change event}, which is a
 @tech{synchronizable event} that becomes @tech{ready for
@@ -596,29 +711,32 @@ event's @tech{synchronization result} is the event itself.
 
 If the current platform does not support filesystem-change
 notifications, then the @exnraise[exn:fail:unsupported] if
-@racket[failure-thunk] is not provided, or @racket[failure-thunk] is
+@racket[failure-thunk] is not provided as a procedure, or @racket[failure-thunk] is
 called in tail position if provided. Similarly, if there is any
 operating-system error when creating the event (such as a non-existent
 file), then the @exnraise[exn:fail:filesystem] or @racket[failure-thunk]
 is called.
 
-Creation of a @tech{filesystem change event} alloates resources at the
+Creation of a filesystem change event allocates resources at the
 operating-system level. The resources are released at latest when the
-event is sychronized and @tech{ready for synchronization} or when the
-event is canceled with @racket[filesystem-change-evt-cancel].
-See also @racket[system-type] in @racket['fs-change] mode.
+event is sychronized and @tech{ready for synchronization}, when the
+event is canceled with @racket[filesystem-change-evt-cancel], or when
+the garbage collector determine that the filesystem change event is
+unreachable. See also @racket[system-type] in @racket['fs-change] mode.
 
-A @tech{filesystem change event} is placed under the management of the
+A filesystem change event is placed under the management of the
 @tech{current custodian} when it is created. If the @tech{custodian}
 is shut down, @racket[filesystem-change-evt-cancel] is applied to the
-event.}
+event.
+
+@history[#:changed "7.3.0.8" @elem{Allow @racket[#f] for @racket[failure-thunk].}]}
 
 
 @defproc[(filesystem-change-evt-cancel [evt filesystem-change-evt?])
          void?]{
 
 Causes @racket[evt] to become immediately @tech{ready for
-synchronization}, whether it was ready or before not, and releases and
+synchronization}, whether it was ready or not before, and releases the
 resources (at the operating-system level) for tracking filesystem
 changes.}
 
@@ -688,6 +806,14 @@ a platform-specific shared-library extension---as produced by
 @racket[(system-type 'so-suffix)]. A @racket[_vers]
 can be a string, or it can be a list of strings and @racket[#f].
 
+If @racket[expr] produces a list of the form @racket[(list 'share
+_str)], the value bound to @racket[id] can be either @racket[_str] or
+an absolute path; it is an absolute path when searching in the
+directories reported by @racket[find-user-share-dir] and
+@racket[find-share-dir] (in that order) locates the path. In this way,
+files that are installed in Racket's @filepath{share} directory get
+carried along in distributions.
+
 If @racket[expr] produces a list of the form @racket[(list 'module
 _module-path _var-ref)] or @racket[(list 'so _str (list
 _str-or-false ...))], the value bound to @racket[id] is a
@@ -738,7 +864,9 @@ follows from the @racket[define-runtime-path] syntactic form:
        determined by preserving the original expression as a syntax
        object, extracting its source module path at run time (again
        using @racket[syntax-source-module]), and then resolving the
-       resulting module path index.}
+       resulting module path index. Note that @racket[syntax-source-module]
+       is based on a syntax object's @tech{lexical information}, not its
+       source location.}
 
  @item{If the expression has no source module, the
        @racket[syntax-source] location associated with the form is
@@ -756,7 +884,8 @@ In the latter two cases, the path is normally preserved in
 result of @racket[collection-file-path], then the path is record as
 relative to the corresponding module path.
 
-@history[#:changed "6.0.1.6" @elem{Preserve relative paths only within a package.}]
+@history[#:changed "6.0.1.6" @elem{Preserve relative paths only within a package.}
+         #:changed "7.5.0.7" @elem{Added support for @racket['share] in @racket[expr].}]
 
 Examples:
 
@@ -981,7 +1110,17 @@ raised if @racket[path] does not exist. If @racket[must-exist?] is
 false, then @racket[delete-directory/files] succeeds if @racket[path]
 does not exist (but a failure is possible if @racket[path] initially
 exists and is removed by another thread or process before 
-@racket[delete-directory/files] deletes it).}
+@racket[delete-directory/files] deletes it).
+
+On Windows, @racket[delete-directory/files] attempts to move a file
+into the temporary-file directory before deleting it, which avoids
+problems caused by deleting a file that is currently open (e.g., by a
+search indexer running as a background process). If the move attempt
+fails (e.g., because the temporary directory is on a different drive
+than the file), then the file is deleted directly with
+@racket[delete-file].
+
+@history[#:changed "7.0" @elem{Added Windows-specific file deletion.}]}
 
 
 @defproc[(find-files [predicate (path? . -> . any/c)]
@@ -1191,14 +1330,17 @@ needed.}
 
 @defproc[(call-with-atomic-output-file [file path-string?] 
                                        [proc ([port output-port?] [tmp-path path?]  . -> . any)]
-                                       [#:security-guard security-guard (or/c #f security-guard?) #f])
+                                       [#:security-guard security-guard (or/c #f security-guard?) #f]
+                                       [#:rename-fail-handler rename-fail-handler (or/c #f (exn:fail:filesystem? path> . -> . any)) #f])
          any]{
 
 Opens a temporary file for writing in the same directory as
 @racket[file], calls @racket[proc] to write to the temporary file, and
-then atomically moves the temporary file in place of @racket[file].
-The atomic move simply uses @racket[rename-file-or-directory] on Unix
-and Mac OS, but it uses an extra rename step (see below) on Windows
+then atomically (except on Windows) moves the temporary file in place of @racket[file].
+The move simply uses @racket[rename-file-or-directory] on Unix
+and Mac OS, and it uses @racket[rename-file-or-directory] on Windows
+if @racket[rename-fail-handler] is provided; otherwise, on Windows,
+the moves uses an extra rename step (see below) on Windows
 to avoid problems due to concurrent readers of @racket[file].
 
 The @racket[proc] function is called with an output port for the
@@ -1210,11 +1352,24 @@ temporary files on exceptions.
 
 Windows prevents programs from deleting or replacing files that are
 open, but it allows renaming of open files. Therefore, on Windows,
-@racket[call-with-atomic-output-file] creates a second temporary file
-@racket[_extra-tmp-file], renames @racket[file] to
+@racket[call-with-atomic-output-file] by default creates a second
+temporary file @racket[_extra-tmp-file], renames @racket[file] to
 @racket[_extra-tmp-file], renames the temporary file written by
 @racket[proc] to @racket[file], and finally deletes
-@racket[_extra-tmp-file].}
+@racket[_extra-tmp-file]. Since that process is not atomic, however,
+@racket[rename-file-or-directory] is used if
+@racket[rename-fail-handler] is provided, where
+@racket[rename-file-or-directory] has some chance of being atomic,
+since that the source and destination of the moves will be in the same
+directory; any filesystem exception while attempting to rename the
+file is send to @racket[rename-fail-handler], which can
+re-@racket[raise] the exception or simply return to try again, perhaps
+after a delay. In addition to a filesystem exception, the
+@racket[rename-fail-handler] procedure also receives the temporary
+file path to be moved to @racket[path]. The
+@racket[rename-fail-handler] argument is used only on Windows.
+
+@history[#:changed "7.1.0.6" @elem{Added the @racket[#:rename-fail-handler] argument.}]}
 
 
 @defproc[(get-preference [name symbol?]

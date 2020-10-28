@@ -1,5 +1,6 @@
 #lang scribble/doc
 @(require "mz.rkt" (for-label racket/extflonum
+                              racket/fixnum ; for fl->fx and fx->fl
                               racket/flonum))
 
 @title[#:tag "extflonums"]{Extflonums}
@@ -7,7 +8,7 @@
 @defmodule[racket/extflonum]
 
 An @deftech{extflonum} is an extended-precision (80-bit)
-floating-point number. extflonum arithmetic is supported on
+floating-point number. Extflonum arithmetic is supported on
 platforms with extended-precision hardware and where the
 extflonum implementation does not conflict with normal
 double-precision arithmetic (i.e., on x86 and x86_64 platforms when
@@ -22,9 +23,9 @@ A extflonum is @bold{not} a @tech{number} in the sense of
 A literal extflonum is written like an @tech{inexact number},
 but using an explicit @litchar{t} or @litchar{T} exponent marker (see
 @secref["parse-extflonum"]). For example, @racket[3.5t0] is an
-extflonum. The extflonum infinities and non-a-number values are
-@as-index{@racket[+inf.t]}, @as-index{@racket[-inf.t]}, 
-and @as-index{@racket[+nan.t]}.
+extflonum. The extflonum values for infinity are 
+@as-index{@racket[+inf.t]} and @as-index{@racket[-inf.t]}. The
+extflonum value for not-a-number is @as-index{@racket[+nan.t]}.
 
 If @racket[(extflonum-available?)] produces @racket[#f], then all
 operations exported by @racketmodname[racket/extflonum] raise
@@ -110,13 +111,18 @@ Like @racket[flsin], @racket[flcos], @racket[fltan], @racket[flasin],
 @defproc[(extfl->exact-integer [a extflonum?]) exact-integer?]
 @defproc[(real->extfl [a real?]) extflonum?]
 @defproc[(extfl->exact [a extflonum?]) (and/c real? exact?)]
+@defproc[(extfl->fx [a extflonum?]) fixnum?]
+@defproc[(fx->extfl [a fixnum?]) extflonum?]
 @defproc[(extfl->inexact [a extflonum?]) flonum?]
 )]{
 
-The first four are like @racket[->fl], @racket[fl->exact],
-@racket[fl->real], @racket[inexact->exact], but for @tech{extflonums}.
+The first six are like @racket[->fl], @racket[fl->exact-integer],
+@racket[real->double-flonum], @racket[inexact->exact], @racket[fl->fx],
+and @racket[fx->fl], but for @tech{extflonums}.
 The @racket[extfl->inexact] function converts a @tech{extflonum} to
-its closest @tech{flonum} approximation.}
+its closest @tech{flonum} approximation.
+
+@history[#:changed "7.7.0.8" @elem{Changed @racket[extfl->fx] to truncate.}]}
 
 @; ------------------------------------------------------------------------
 
@@ -140,7 +146,7 @@ and if the values in corresponding slots of the @tech{extflvectors} are
 @defproc[(extflvector? [v any/c]) boolean?]
 @defproc[(extflvector [x extflonum?] ...) extflvector?]
 @defproc[(make-extflvector [size exact-nonnegative-integer?]
-                           [x extflonum? 0.0l0])
+                           [x extflonum? 0.0t0])
          extflvector?]
 @defproc[(extflvector-length [vec extflvector?]) exact-nonnegative-integer?]
 @defproc[(extflvector-ref [vec extflvector?] [pos exact-nonnegative-integer?])
@@ -176,11 +182,15 @@ and @racket[flvector-copy], but for @tech{extflvectors}.}
 Like @racket[in-flvector], @racket[for/flvector], and @racket[for*/flvector],
 but for @tech{extflvectors}.}
 
+@deftogether[(
+@defproc[(shared-extflvector [x extflonum?] ...) extflvector?]
 @defproc[(make-shared-extflvector [size exact-nonnegative-integer?]
-                                  [x extflonum? 0.0l0]) 
-         extflvector?]{
+                                  [x extflonum? 0.0t0])
+         extflvector?]
+)]{
 
-Like @racket[make-shared-flvector], but for @tech{extflvectors}.}
+Like @racket[shared-flvector] and @racket[make-shared-flvector],
+but for @tech{extflvectors}.}
 
 @; ------------------------------------------------------------
 

@@ -51,7 +51,7 @@
                       #:strict-links? [strict-links? #f]
                       #:username [username (current-git-username)]
                       #:password [password (current-git-password)])
-  (let retry-loop ([given-depth given-depth])
+  (let retry-loop ([given-depth given-depth] [try-limit-depth (and given-depth 8)] [try-only-master? #t])
     (define tmp-dir (or given-tmp-dir
                         (make-temporary-file "git~a" 'directory)))
     (define port (or given-port (case transport
@@ -91,7 +91,7 @@
           ;; Find the commits needed for `ref`:
           (define-values (ref-commit    ; #f or an ID string
                           want-commits) ; list of ID string
-            (select-commits ref refs status))
+            (select-commits ref refs status try-only-master? repo))
 
           (unless dest-dir
             (write-pkt o) ; clean termination
@@ -101,13 +101,16 @@
                     (or ref-commit ref)))))
 
           (define depth (and given-depth
-                             ref-commit
+                             (or ref-commit (and try-limit-depth
+                                                 (eq? given-depth 1)))
                              (cond
-                              [(member "shallow" server-capabilities)
-                               given-depth]
-                              [else
-                               (status "Server does not support `shallow`")
-                               #f])))
+                               [(member "shallow" server-capabilities)
+                                (if ref-commit
+                                    given-depth
+                                    try-limit-depth)]
+                               [else
+                                (status "Server does not support `shallow`")
+                                #f])))
 
           (unless dumb-protocol?
             ;; Tell the server which commits we need
@@ -171,19 +174,31 @@
                                        (lambda ()
                                          (esc (lambda ()
                                                 (status "Unexpected EOF; retrying without depth")
-                                                (retry-loop #f)))))))
-
+                                                (retry-loop #f #f #f)))))))
                  (maybe-save-objects objs "objs")
 
-                 ;; Convert deltas into full objects withing `tmp`:
+                 ;; Convert deltas into full objects within `tmp`:
                  (rewrite-deltas objs tmp status)]))
              
              (maybe-save-objects obj-ids "all-objs")
              
              (define commit
                (or ref-commit
-                   (find-commit-as-reference ref obj-ids)))
-             
+                   (find-commit-as-reference ref obj-ids
+                                             (and (or try-only-master?
+                                                      (and try-limit-depth
+                                                           (eqv? depth try-limit-depth)))
+                                                  (lambda ()
+                                                    (esc (lambda ()
+                                                           (cond
+                                                             [(and depth (eqv? depth try-limit-depth)
+                                                                   (try-limit-depth . < . 32))
+                                                              (status "no matching commit found; trying deeper search")
+                                                              (retry-loop given-depth (* try-limit-depth 2) try-only-master?)]
+                                                             [else
+                                                              (status "no matching commit found; trying broader search")
+                                                              (retry-loop given-depth #f #f)]))))))))
+
              ;; Extract the tree from the packfile objects:
              (status "Extracting tree to ~a" dest-dir)
              (extract-commit-tree (hex-string->bytes commit)
@@ -341,7 +356,7 @@
 ;;  initial response. If we can, the list of requested IDs will be
 ;;  just that one. Otherwise, we'll have to return a list of all
 ;;  IDs, and then we'll look for the reference later.
-(define (select-commits ref refs status)
+(define (select-commits ref refs status try-only-master? repo)
   (define ref-looks-like-id? (regexp-match? #rx"^[0-9a-f]+$" ref))
 
   (define ref-rx (byte-regexp (bytes-append
@@ -366,16 +381,23 @@
     (cond
      [ref-commit (list ref-commit)]
      [ref-looks-like-id?
-      (status "Requested reference looks like commit id; getting all commits")
-      (for/list ([ref (in-list refs)])
-        (cadr ref))]
+      (cond
+        [try-only-master?
+         (status "Requested reference looks like commit id; try within master")
+         (define-values (master-ref-commit want-commits)
+           (select-commits "master" refs status #f repo))
+         want-commits]
+        [else
+         (status "Requested reference looks like commit id; getting all commits")
+         (for/list ([ref (in-list refs)])
+           (cadr ref))])]
      [else
-      (raise-git-error 'git "could not find requested reference\n  reference: ~a" ref)]))
+      (raise-git-error 'git "could not find requested reference\n  reference: ~a\n  repo: ~a" ref repo)]))
   
   (values ref-commit want-commits))
 
 ;; ----------------------------------------
-;; A "pkt" is the basic unit of communiation in many parts
+;; A "pkt" is the basic unit of communication in many parts
 ;; of the git protocol. The first four bytes specify the
 ;; length of the package (including those bytes).
 
@@ -601,7 +623,7 @@
 ;; ----------------------------------------
 ;; Finding a commit id
 
-(define (find-commit-as-reference ref obj-ids)
+(define (find-commit-as-reference ref obj-ids fail-not-found)
   (define rx (id-ref->regexp ref))
   (define matches
     (for/list ([(id obj) (in-hash obj-ids)]
@@ -611,7 +633,9 @@
   (cond
    [(= 1 (length matches)) (car matches)]
    [(null? matches)
-    (raise-git-error 'git-checkout "no commit found matching id: ~a" ref)]
+    (if fail-not-found
+        (fail-not-found)
+        (raise-git-error 'git-checkout "no commit found matching id: ~a" ref))]
    [else
     (raise-git-error 'git-checkout "found multiple commits matching id: ~a" ref)]))
 
@@ -706,7 +730,7 @@
           [(#"120000")
            (define target (bytes->path (object->bytes tmp (this-object-location))))
            (when strict-links?
-             (check-unpack-path 'git-checkout target))
+             (check-unpack-path 'git-checkout target #:kind "link"))
            (make-file-or-directory-link target (build-path dest-dir fn))]
           [(#"160000")
            ;; submodule; just make a directory placeholder
@@ -1081,6 +1105,27 @@
        (arithmetic-shift (read-number-by-bits i (arithmetic-shift n -1))
                          8))]))
 
+;; ADLER32 implementation
+;; https://www.ietf.org/rfc/rfc1950.txt
+(define (adler32-through-ports in out)
+  (define ADLER 65521)
+  (define bstr (make-bytes 4096))
+  (let loop ([s1 1] [s2 0])
+    (define n (read-bytes! bstr in))
+    (cond
+      [(eof-object? n)
+       (bitwise-ior (arithmetic-shift s2 16) s1)]
+      [else
+       (write-bytes bstr out 0 n)
+       (define-values (new-s1 new-s2)
+         (for/fold ([s1 s1]
+                    [s2 s2])
+                   ([bits (in-bytes bstr 0 n)])
+           (define a (modulo (+ s1 bits) ADLER))
+           (define b (modulo (+ s2 a) ADLER))
+           (values a b)))
+       (loop new-s1 new-s2)])))
+
 ;; zlib-inflate : input-port output-port
 ;;  Reads compressed data from `i`, writes uncompressed to `o`
 (define (zlib-inflate i o)
@@ -1091,9 +1136,21 @@
   (when (bitwise-bit-set? flg 5)
     ;; read dictid
     (read-bytes-exactly 'dictid 4 i))
-  (inflate i o)
-  ;; Verify checksum?
-  (read-bytes-exactly 'adler-checksum 4 i)
+  ;; Include adler32 checksum in the pipeline, writing to `o`:
+  (define-values (checksum-in checksum-out) (make-pipe 4096))
+  (define uncompressed-adler #f)
+  (define checksum-thread
+    (thread
+     (lambda () (set! uncompressed-adler (adler32-through-ports checksum-in o)))))
+  ;; Inflate, sending output to checksum (and then to `o`):
+  (inflate i checksum-out)
+  (close-output-port checksum-out)
+  (sync checksum-thread)
+  ;; Verify checksum
+  (define adler (read-bytes-exactly 'adler-checksum 4 i))
+  (unless (= (integer-bytes->integer adler #f #t)
+             uncompressed-adler)
+    (raise-git-error 'git-checkout "adler32 checksum failed"))
   (void))
 
 ;; ----------------------------------------

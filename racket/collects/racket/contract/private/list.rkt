@@ -107,6 +107,28 @@
           (contract-struct-stronger? this-elem hd-ctc)
           (contract-struct-stronger? (ne->pe-ctc this) tl-ctc))]
     [else #f]))
+
+(define (listof-equivalent this that)
+  (define this-elem (listof-ctc-elem-c this))
+  (cond
+    [(listof-ctc? that)
+     (define that-elem (listof-ctc-elem-c that))
+     (cond
+       [(pe-listof-ctc? this) (and (pe-listof-ctc? that)
+                                   (contract-struct-equivalent? this-elem that-elem))]
+       [(im-listof-ctc? this)
+        (and (im-listof-ctc? that)
+             (contract-struct-equivalent? this-elem that-elem)
+             (contract-struct-equivalent? (im-listof-ctc-last-c this)
+                                          (im-listof-ctc-last-c that)))]
+       [else (contract-struct-equivalent? this-elem that-elem)])]
+    [(the-cons/c? that)
+     (define hd-ctc (the-cons/c-hd-ctc that))
+     (define tl-ctc (the-cons/c-tl-ctc that))
+     (and (ne-listof-ctc? this)
+          (contract-struct-equivalent? this-elem hd-ctc)
+          (contract-struct-equivalent? (ne->pe-ctc this) tl-ctc))]
+    [else #f]))
            
 (define (raise-listof-blame-error blame val empty-ok? neg-party)
   (raise-blame-error blame #:missing-party neg-party val
@@ -213,30 +235,36 @@
 
 (define flat-prop
   (build-flat-contract-property
+   #:trusted trust-me
    #:name list-name
    #:first-order list-fo-check
    #:late-neg-projection listof-late-neg-projection
    #:generate listof-generate
    #:exercise listof-exercise
    #:stronger listof-stronger
+   #:equivalent listof-equivalent
    #:list-contract? (λ (c) (not (im-listof-ctc? c)))))
 (define chap-prop
   (build-chaperone-contract-property
+   #:trusted trust-me
    #:name list-name
    #:first-order list-fo-check
    #:late-neg-projection listof-late-neg-projection
    #:generate listof-generate
    #:exercise listof-exercise
    #:stronger listof-stronger
+   #:equivalent listof-equivalent
    #:list-contract? (λ (c) (not (im-listof-ctc? c)))))
 (define full-prop
   (build-contract-property
+   #:trusted trust-me
    #:name list-name
    #:first-order list-fo-check
    #:late-neg-projection listof-late-neg-projection
    #:generate listof-generate
    #:exercise listof-exercise
    #:stronger listof-stronger
+   #:equivalent listof-equivalent
    #:list-contract? (λ (c) (not (im-listof-ctc? c)))))
 
 (struct listof-ctc (elem-c))
@@ -382,6 +410,20 @@
           (contract-struct-stronger? this-tl that))]
     [else #f]))
 
+(define (cons/c-equivalent? this that)
+  (define this-hd (the-cons/c-hd-ctc this))
+  (define this-tl (the-cons/c-tl-ctc this))
+  (cond
+    [(the-cons/c? that)
+     (define that-hd (the-cons/c-hd-ctc that))
+     (define that-tl (the-cons/c-tl-ctc that))
+     (and (contract-struct-equivalent? this-hd that-hd)
+          (contract-struct-equivalent? this-tl that-tl))]
+    [(ne-listof-ctc? that)
+     (define elem-ctc (listof-ctc-elem-c that))
+     (and (contract-struct-equivalent? this-hd elem-ctc)
+          (contract-struct-equivalent? this-tl (ne->pe-ctc that)))]
+    [else #f]))
 
 (define (cons/c-generate ctc)
   (define ctc-car (the-cons/c-hd-ctc ctc))
@@ -401,30 +443,36 @@
   #:property prop:custom-write custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:late-neg-projection (cons/c-late-neg-ho-check (λ (v a d) v))
    #:name cons/c-name
    #:first-order cons/c-first-order
    #:stronger cons/c-stronger?
+   #:equivalent cons/c-equivalent?
    #:generate cons/c-generate
    #:list-contract? cons/c-list-contract?))
 (define-struct (chaperone-cons/c the-cons/c) ()
   #:property prop:custom-write custom-write-property-proc
   #:property prop:chaperone-contract
   (build-chaperone-contract-property
+   #:trusted trust-me
    #:late-neg-projection (cons/c-late-neg-ho-check (λ (v a d) (cons a d)))
    #:name cons/c-name
    #:first-order cons/c-first-order
    #:stronger cons/c-stronger?
+   #:equivalent cons/c-equivalent?
    #:generate cons/c-generate
    #:list-contract? cons/c-list-contract?))
 (define-struct (impersonator-cons/c the-cons/c) ()
   #:property prop:custom-write custom-write-property-proc
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:late-neg-projection (cons/c-late-neg-ho-check (λ (v a d) (cons a d)))
    #:name cons/c-name
    #:first-order cons/c-first-order
    #:stronger cons/c-stronger?
+   #:equivalent cons/c-equivalent?
    #:generate cons/c-generate
    #:list-contract? cons/c-list-contract?))
 
@@ -484,11 +532,19 @@
 (define (cons/dc-first-order ctc)
   (λ (val)
     (and (pair? val)
-         (contract-first-order-passes?
-          (the-cons/dc-undep ctc)
-          (if (the-cons/dc-forwards? ctc) (car val) (cdr val))))))
+         (let-values ([(undep-val dep-val)
+                       (if (the-cons/dc-forwards? ctc)
+                           (values (car val) (cdr val))
+                           (values (cdr val) (car val)))])
+           (and (contract-first-order-passes?
+                 (the-cons/dc-undep ctc)
+                 undep-val)
+                (contract-first-order-passes?
+                 ((the-cons/dc-dep ctc) undep-val)
+                 dep-val))))))
 
 (define (cons/dc-stronger? this that) #f)
+(define (cons/dc-equivalent? this that) #f)
 
 (define (cons/dc-generate ctc)
   (define undep-ctc (the-cons/dc-undep ctc))
@@ -515,30 +571,36 @@
   #:property prop:custom-write custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:late-neg-projection cons/dc-late-neg-projection
    #:name cons/dc-name
    #:first-order cons/dc-first-order
    #:stronger cons/dc-stronger?
+   #:equivalent cons/dc-equivalent?
    #:generate cons/dc-generate))
 
 (struct chaperone-cons/dc the-cons/dc ()
   #:property prop:custom-write custom-write-property-proc
   #:property prop:chaperone-contract
   (build-chaperone-contract-property
+   #:trusted trust-me
    #:late-neg-projection cons/dc-late-neg-projection
    #:name cons/dc-name
    #:first-order cons/dc-first-order
    #:stronger cons/dc-stronger?
+   #:equivalent cons/dc-equivalent?
    #:generate cons/dc-generate))
 
 (struct impersonator-cons/dc the-cons/dc ()
   #:property prop:custom-write custom-write-property-proc
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:late-neg-projection cons/dc-late-neg-projection
    #:name cons/dc-name
    #:first-order cons/dc-first-order
    #:stronger cons/dc-stronger?
+   #:equivalent cons/dc-equivalent?
    #:generate cons/dc-generate))
 
 (define-syntax (cons/dc stx)
@@ -662,17 +724,26 @@
             (contract-struct-stronger? this-s that-elem-ctc)))]
     [else #f]))
 
+(define (list/c-equivalent this that)
+  (cond
+    [(generic-list/c? that)
+     (pairwise-equivalent-contracts? (generic-list/c-args this)
+                                     (generic-list/c-args that))]
+    [else #f]))
+
 (struct generic-list/c (args))
 
 (struct flat-list/c generic-list/c ()
   #:property prop:custom-write custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:name list/c-name-proc
    #:first-order list/c-first-order
    #:generate list/c-generate
    #:exercise list/c-exercise
    #:stronger list/c-stronger
+   #:equivalent list/c-equivalent
    #:late-neg-projection
    (λ (c) 
      (λ (blame)
@@ -750,23 +821,19 @@
          (expected-a-list val blame #:missing-party neg-party)]))))
 
 (define (add-list-context blame i)
-  (blame-add-context blame (format "the ~a~a element of"
-                                   i
-                                   (case (modulo i 10)
-                                     [(1) "st"]
-                                     [(2) "nd"]
-                                     [(3) "rd"]
-                                     [else "th"]))))
+  (blame-add-context blame (nth-element-of i)))
 
 (struct chaperone-list/c generic-list/c ()
   #:property prop:custom-write custom-write-property-proc
   #:property prop:chaperone-contract
   (build-chaperone-contract-property
+   #:trusted trust-me
    #:name list/c-name-proc
    #:first-order list/c-first-order
    #:generate list/c-generate
    #:exercise list/c-exercise
    #:stronger list/c-stronger
+   #:equivalent list/c-equivalent
    #:late-neg-projection list/c-chaperone/other-late-neg-projection
    #:list-contract? (λ (c) #t)))
 
@@ -774,11 +841,13 @@
   #:property prop:custom-write custom-write-property-proc
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:name list/c-name-proc
    #:first-order list/c-first-order
    #:generate list/c-generate
    #:exercise list/c-exercise
    #:stronger list/c-stronger
+   #:equivalent list/c-equivalent
    #:late-neg-projection list/c-chaperone/other-late-neg-projection
    #:list-contract? (λ (c) #t)))
 
@@ -875,6 +944,17 @@
             (contract-struct-stronger? suf that-elem)))]
     [else #f]))
 
+(define (*list/c-equivalent this that)
+  (define this-prefix (*list-ctc-prefix this))
+  (define this-suffix (*list-ctc-suffix this))
+  (cond
+    [(*list-ctc? that)
+     (define that-prefix (*list-ctc-prefix that))
+     (define that-suffix (*list-ctc-suffix that))
+     (and (contract-struct-equivalent? this-prefix that-prefix)
+          (pairwise-equivalent-contracts? this-suffix that-suffix))]
+    [else #f]))
+
 (define (*list/c-late-neg-projection ctc start-index flat?)
   (define prefix-lnp (contract-late-neg-projection (*list-ctc-prefix ctc)))
   (define suffix-lnps (map contract-late-neg-projection (*list-ctc-suffix ctc)))
@@ -938,7 +1018,7 @@
                blame
                val
                '(expected: "list?" given: "~e") val)]))))
-  
+
 ;; prefix : contract
 ;; suffix : (listof contract)
 (struct *list-ctc (prefix suffix)
@@ -947,31 +1027,37 @@
 (struct flat-*list/c *list-ctc ()
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:name *list/c-name-proc
    #:first-order *list/c-first-order
    #:generate *list/c-generate
    #:exercise *list/c-exercise
    #:stronger *list/c-stronger
+   #:equivalent *list/c-equivalent
    #:late-neg-projection (λ (ctc) (*list/c-late-neg-projection ctc #f #t))
    #:list-contract? (λ (c) #t)))
 (struct chaperone-*list/c *list-ctc ()
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:name *list/c-name-proc
    #:first-order *list/c-first-order
    #:generate *list/c-generate
    #:exercise *list/c-exercise
    #:stronger *list/c-stronger
+   #:equivalent *list/c-equivalent
    #:late-neg-projection (λ (ctc) (*list/c-late-neg-projection ctc #f #f))
    #:list-contract? (λ (c) #t)))
 (struct impersonator-*list/c *list-ctc ()
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:name *list/c-name-proc
    #:first-order *list/c-first-order
    #:generate *list/c-generate
    #:exercise *list/c-exercise
    #:stronger *list/c-stronger
+   #:equivalent *list/c-equivalent
    #:late-neg-projection (λ (ctc) (*list/c-late-neg-projection ctc #f #f))
    #:list-contract? (λ (c) #t)))
 
@@ -1010,33 +1096,39 @@
 (struct flat-ellipsis-rest-arg ellipsis-rest-arg-ctc ()
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:name (λ (ctc) (error 'flat-ellipsis-rest-arg "the name property shouldn't be called!"))
    #:first-order *list/c-first-order
    #:generate *list/c-generate
    #:exercise *list/c-exercise
    #:stronger *list/c-stronger
+   #:equivalent *list/c-equivalent
    #:late-neg-projection
    (λ (ctc) (*list/c-late-neg-projection ctc (ellipsis-rest-arg-ctc-start-index ctc) #t))
    #:list-contract? (λ (c) #t)))
 (struct chaperone-ellipsis-rest-arg ellipsis-rest-arg-ctc ()
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:name (λ (ctc) (error 'flat-ellipsis-rest-arg "the name property shouldn't be called!"))
    #:first-order *list/c-first-order
    #:generate *list/c-generate
    #:exercise *list/c-exercise
    #:stronger *list/c-stronger
+   #:equivalent *list/c-equivalent
    #:late-neg-projection
    (λ (ctc) (*list/c-late-neg-projection ctc (ellipsis-rest-arg-ctc-start-index ctc) #f))
    #:list-contract? (λ (c) #t)))
 (struct impersonator-ellipsis-rest-arg ellipsis-rest-arg-ctc ()
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:name (λ (ctc) (error 'flat-ellipsis-rest-arg "the name property shouldn't be called!"))
    #:first-order *list/c-first-order
    #:generate *list/c-generate
    #:exercise *list/c-exercise
    #:stronger *list/c-stronger
+   #:equivalent *list/c-equivalent
    #:late-neg-projection
    (λ (ctc) (*list/c-late-neg-projection ctc (ellipsis-rest-arg-ctc-start-index ctc) #f))
    #:list-contract? (λ (c) #t)))

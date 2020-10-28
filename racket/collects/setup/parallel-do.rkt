@@ -4,7 +4,6 @@
          racket/future
          racket/place
          racket/port
-         racket/fasl
          racket/match
          racket/path
          racket/class
@@ -189,9 +188,8 @@
       (path->complete-path p (or (path-only (current-executable-path))
                                  (find-system-path 'orig-dir))))))
 
-(define (parallel-do-event-loop module-path funcname initialmsg work-queue nprocs [stopat #f])
-  (define use-places? (place-enabled?)) ; set to #f to use processes instead of places
-  
+(define (parallel-do-event-loop module-path funcname initialmsg work-queue nprocs [stopat #f]
+                                #:use-places? use-places?)
   (define (spawn id)
     ;; spawns a new worker
     (define wrkr (if use-places? (new place-worker%) (new worker%)))
@@ -295,7 +293,7 @@
                           (begin
                             (queue/work-done work-queue node wrkr (string-append msg (wrkr/read-all wrkr)))
                             (kill/remove-dead-worker node-worker wrkr))))))]
-               [else 
+               [_
                 (log-error (format "parallel-do-event-loop match node-worker failed trying to match: ~e" 
                                    node-worker))]))
            (DEBUG_COMM (printf "WAITING ON WORKERS TO RESPOND\n"))
@@ -352,8 +350,8 @@
     (define/public (jobs-cnt) (length queue))
     (super-new)))
 
-(define (list-queue list-of-work create-job-thunk job-success-thunk job-failure-thunk)
-  (make-object list-queue% list-of-work create-job-thunk job-success-thunk job-failure-thunk))
+(define (list-queue list-of-work create-job-thunk job-success-thunk job-failure-thunk [report-proc display])
+  (make-object list-queue% list-of-work create-job-thunk job-success-thunk job-failure-thunk report-proc))
 
 (define-syntax-rule (define-parallel-keyword-error d x)
   (d x (lambda (stx) (raise-syntax-error 'x "only allowed inside parallel worker definition" stx))))
@@ -400,11 +398,19 @@
   (define orig-err (current-error-port))
   (define orig-out (current-output-port))
   (define orig-in  (current-input-port))
+  (define send-lock (make-semaphore 1))
   (define (raw-send msg)
     (cond 
      [ch (place-channel-put ch msg)]
-     [else (write (convert-paths msg) orig-out)
-           (flush-output orig-out)]))
+     [else
+      (define c-msg (convert-paths msg))
+      ;; Multiple threads might try to write (e.g., for prefetching),
+      ;; so make sure the writes are not interleaved
+      (call-with-semaphore
+       send-lock
+       (lambda ()
+         (write c-msg orig-out)))
+      (flush-output orig-out)]))
   (define (raw-recv)
     (cond 
      [ch (place-channel-get ch)]
@@ -472,13 +478,14 @@
 
 (define-syntax (parallel-do stx)
   (syntax-case stx (define-worker)
-    [(_ worker-count initalmsg work-queue (define-worker (name args ...) body ...))
+    [(_ #:use-places? use-places?
+        worker-count initalmsg work-queue (define-worker (name args ...) body ...))
      (begin
        (with-syntax ([interal-def-name (syntax-local-lift-expression #'(lambda-worker (args ...) body ...))])
          (syntax-local-lift-provide #'(rename interal-def-name name)))
        #'(let ([wq work-queue])
            (define module-path (path->string (resolved-module-path-name (variable-reference->resolved-module-path (#%variable-reference)))))
-           (parallel-do-event-loop module-path 'name initalmsg wq worker-count)
+           (parallel-do-event-loop module-path 'name initalmsg wq worker-count #:use-places? use-places?)
            (queue/results wq)))]))
 
 

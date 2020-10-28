@@ -163,6 +163,16 @@ the cache only when the fourth argument to the module name resolver is
 true (indicating that a module should be loaded) and only when loading
 succeeds.
 
+Finally, the default module name resolver potentially treats a
+@racket[submod] path specially. If the module path as the first
+element of the @racket[submod] form refers to non-existent collection,
+then instead of raising an exception, the default module name resolver
+synthesizes an uninterned symbol module name for the resulting
+@tech{resolved module path}. This special treatment of submodule paths
+is consistent with the special treatment of nonexistent submodules by
+the @tech{compiled-load handler}, so that @racket[module-declared?]
+can be used more readily to check for the existence of a submodule.
+
 Module loading is suppressed (i.e., @racket[#f] is supplied as a fourth
 argument to the module name resolver) when resolving module paths in
 @tech{syntax objects} (see @secref["stxobj-model"]). When a
@@ -178,7 +188,11 @@ arguments will be removed in a future version.
 
 @history[#:changed "6.0.1.12" 
          @elem{Added error logging to the default module name resolver
-               when called with three arguments.}]}
+               when called with three arguments.}
+         #:changed "7.0.0.17"
+         @elem{Added special treatment of @racket[submod] forms with a
+               nonexistent collection by the default module name
+               resolver.}]}
 
 
 @defparam[current-module-declare-name name (or/c resolved-module-path? #f)]{
@@ -273,7 +287,8 @@ Returns @racket[#t] if @racket[v] is a @tech{module path index},
 @racket[#f] otherwise.}
 
 
-@defproc[(module-path-index-resolve [mpi module-path-index?])
+@defproc[(module-path-index-resolve [mpi module-path-index?]
+                                    [load? any/c #f])
          resolved-module-path?]{
 
 Returns a @tech{resolved module path} for the resolved module name,
@@ -285,9 +300,12 @@ name resolver} (see @racket[current-module-name-resolver]). Depending
 on the kind of module paths encapsulated by @racket[mpi], the computed
 resolved name can depend on the value of
 @racket[current-load-relative-directory] or
-@racket[current-directory].
+@racket[current-directory]. The @racket[load?] argument is propagated as
+the last argument to the @tech{module name resolver}.
 
-See @racket[resolve-module-path-index].}
+See @racket[resolve-module-path-index].
+
+@history[#:changed "6.90.0.16" @elem{Added the @racket[load?] optional argument.}]}
 
 
 @defproc[(module-path-index-split [mpi module-path-index?])
@@ -378,9 +396,10 @@ to a shift into the @tech{label phase level}) to module references for
 the module's explicit imports.}
 
 
-@defproc[(module-compiled-exports [compiled-module-code compiled-module-expression?])
+@defproc[(module-compiled-exports [compiled-module-code compiled-module-expression?]
+                                  [verbosity (or/c #f 'defined-names) #f])
          (values (listof (cons/c (or/c exact-integer? #f) list?))
-                 (listof (cons/c (or/c exact-integer? #f) list?)))]
+                 (listof (cons/c (or/c exact-integer? #f) list?)))]{
 
 Returns two association lists mapping @tech{phase level} values (where
 @racket[#f] corresponds to the @tech{label phase level}) to exports at
@@ -399,7 +418,9 @@ result contracts above, more precisely matches the contract
                        (list/c module-path-index?
                                (or/c exact-integer? #f)
                                symbol?
-                               (or/c exact-integer? #f))))))
+                               (or/c exact-integer? #f))))
+                (code:comment @#,elem{only if @racket[verbosity] is @racket['defined-names]:})
+                symbol?))
 ]
 
 For each element of the list, the leading symbol is the name of the
@@ -413,6 +434,11 @@ origin list provides information on the import that was re-exported.
 The origin list has more than one element if the binding was imported
 multiple times from (possibly) different sources.
 
+The last part, a symbol, is included only if @racket[verbosity] is
+@racket['defined-names]. In that case, the included symbol is the name
+of the definition within its defining module (which may be different
+than the name that is exported).
+
 For each origin, a @tech{module path index} by itself means that the
 binding was imported with a @tech{phase level} shift of @racket[0]
 (i.e., a plain @racket[require] without @racket[for-meta],
@@ -421,7 +447,26 @@ as the re-exported name. An origin represented with a list indicates
 explicitly the import, the import @tech{phase level} shift (where
 @racket[#f] corresponds to a @racket[for-label] import), the import
 name of the re-exported binding, and the @tech{phase level} of the
-import.}
+import.
+
+@examples[#:eval mod-eval
+          (module-compiled-exports
+           (compile
+            '(module banana racket/base
+               (require (only-in racket/math pi)
+                        (for-syntax racket/base))
+               (provide pi
+                        (rename-out [peel wrapper])
+                        bush
+                        cond
+                        (for-syntax compile-time))
+               (define peel pi)
+               (define bush (* 2 pi))
+               (begin-for-syntax
+                 (define compile-time (current-seconds)))))
+           'defined-names)]
+
+@history[#:changed "7.5.0.6" @elem{Added the @racket[verbosity] argument.}]}
 
 
 
@@ -476,6 +521,11 @@ Return @racket[#t] if @racket[compiled-module-code] represents a
                           [fail-thunk (-> any) (lambda () ....)])
          (or/c void? any/c)]{
 
+@margin-note{Because @racket[dynamic-require] is a procedure, giving a plain S-expression for
+@racket[mod] the same way as you would for a @racket[require] expression likely won't give you
+expected results. What you need instead is something that evaluates to an S-expression; using
+@racket[quote] is one way to do it.}
+
 Dynamically @tech{instantiates} the module specified by @racket[mod]
 in the current namespace's registry at the namespace's @tech{base
 phase}, if it is not yet @tech{instantiate}d. The current @tech{module
@@ -493,6 +543,17 @@ above the @tech{base phase}.
   (module a racket/base (displayln "hello"))
   (dynamic-require ''a #f)
 ]
+
+@margin-note{The double quoted @racket[''a] evaluates to the @racket[_root-module-path] @racket['a]
+(see the grammar for @racket[require]). Using @racket['a] for @racket[mod] won't work,
+because that evaluates to @racket[_root-module-path] @racket[a], and the example is
+not a module installed in a collection. Using @racket[a] won't work, because @racket[a]
+is an undefined variable.
+
+Declaring @racket[(module a ....)] within another module, instead of in
+the @racket[read-eval-print] loop, would create a submodule. In that case,
+@racket[(dynamic-require ''a #f)] would not access the module, because @racket[''a]
+does not refer to a submodule.}
 
 When @racket[provided] is a symbol, the value of the module's export
 with the given name is returned, and still the module is not
@@ -535,6 +596,31 @@ If @racket[provided] is @|void-const|, then the module is
 @tech{visit}ed but not @tech{instantiate}d (see @secref["mod-parse"]),
 and the result is @|void-const|.}
 
+More examples using different @racket[module-path] grammar expressions are given below:
+
+@examples[#:eval mod-eval
+  (dynamic-require 'racket/base #f)
+]
+
+@examples[#:eval mod-eval
+  (dynamic-require (list 'lib "racket/base") #f)
+]
+
+@examples[#:eval mod-eval
+  (module a racket/base
+    (module b racket/base
+      (provide inner-dessert)
+      (define inner-dessert "tiramisu")))
+  (dynamic-require '(submod 'a b) 'inner-dessert)
+]
+
+The last line in the above example could instead have been written as
+
+@examples[#:eval mod-eval
+  (dynamic-require ((lambda () (list 'submod ''a 'b))) 'inner-dessert)
+]
+
+which is equivalent.
 
 @defproc[(dynamic-require-for-syntax [mod module-path?]
                                      [provided (or/c symbol? #f)]
@@ -609,7 +695,9 @@ A module can be @tech{declare}d by using @racket[dynamic-require].
 
 
 @defproc[(module->exports
-          [mod (or/c module-path? resolved-module-path?)])
+          [mod (or/c module-path? module-path-index?
+                     resolved-module-path?)]
+          [verbosity (or/c #f 'defined-names) #f])
          (values (listof (cons/c (or/c exact-integer? #f) list?))
                  (listof (cons/c (or/c exact-integer? #f) list?)))]{
 
@@ -622,13 +710,17 @@ A module can be @tech{declare}d by using @racket[dynamic-require].
 @examples[#:eval mod-eval
           (module banana racket/base
             (require (only-in racket/math pi))
-            (provide peel)
+            (provide (rename-out [peel wrapper]))
             (define peel pi)
             (define bush (* 2 pi)))
-          (module->exports ''banana)]}
+          (module->exports ''banana)]
+
+@history[#:changed "7.5.0.6" @elem{Added the @racket[verbosity] argument.}]}
+
 
 @defproc[(module->indirect-exports
-          [mod (or/c module-path? resolved-module-path?)])
+          [mod (or/c module-path? module-path-index?
+                     resolved-module-path?)])
          (listof (cons/c exact-integer? (listof symbol?)))]{
 
  Like @racket[module-compiled-indirect-exports], but produces the
@@ -648,7 +740,8 @@ A module can be @tech{declare}d by using @racket[dynamic-require].
 @history[#:added "6.5.0.5"]}
 
 @defproc[(module-predefined?
-          [mod (or/c module-path? resolved-module-path?)])
+          [mod (or/c module-path? module-path-index?
+                     resolved-module-path?)])
          boolean?]{
 
 Reports whether @racket[mod] refers to a module that is predefined for

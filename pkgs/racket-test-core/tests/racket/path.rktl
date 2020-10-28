@@ -256,9 +256,11 @@
 (current-directory original-dir)
 (delete-directory work-dir)
 
+(define unix-roots (list "/"))
+
 ; Redefine these per-platform
 (define drives null)
-(define nondrive-roots (list "/"))
+(define nondrive-roots unix-roots)
 (define -a (list "a"))
 (define a/b (list "a/b" "a//b"))
 (define a/b/c (list "a/b/c" "a//b/c"))
@@ -278,26 +280,15 @@
 		(cons s rest)
 		(loop naya (cons s rest))))))))
 
+(define windows-roots (list "c:" "c:/" "//hello/start" "//hello/start/"))
+
 (when (eq? (system-type) 'windows)
-      (set! drives (list "c:" "c:/" "//hello/start" "//hello/start/"))
-      (set! nondrive-roots null)
-      (for-each
-       (lambda (var)
-	 (eval `(set! ,var (add-slashes ,var))))
-       '(-a a/b a/b/c /a/b a/../b a/./b a/../../b)))
-
-
-(when (eq? (system-type) 'macos)
-      (set! drives null)
-      (set! nondrive-roots (filesystem-root-list))
-      (set! -a (list ":a"))
-	  (set! a/b (list ":a:b"))
-	  (set! a/b/c (list ":a:b:c"))
-      (set! /a/b (list "a:b"))
-      (set! a/../b (list ":a::b"))
-      (set! a/./b null)
-	  (set! a/../../b (list ":a:::b"))
-	  (set! trail-sep ":"))
+  (set! drives windows-roots)
+  (set! nondrive-roots null)
+  (for-each
+   (lambda (var)
+     (eval `(set! ,var (add-slashes ,var))))
+   '(-a a/b a/b/c /a/b a/../b a/./b a/../../b)))
 
 (define roots (append drives nondrive-roots))
 
@@ -390,23 +381,28 @@
    (test (string->path drive) path->complete-path drive drive))
  drives)
 
-(unless (eq? (system-type) 'macos)
- (for-each
-  (lambda (abs1)
-    (for-each
-     (lambda (abs2)
-       (err/rt-test (build-path abs1 abs2) exn:fail:contract?))
-     absols))
-  nondrive-roots))
+(for-each
+ (lambda (abs1)
+   (for-each
+    (lambda (abs2)
+      (err/rt-test (build-path abs1 abs2) exn:fail:contract?))
+    absols))
+ nondrive-roots)
 
 (for-each
  (lambda (root)
    (let-values ([(base name dir?) (split-path root)])
-     (when (eq? (system-type) 'macos)
-       (test root 'split-path name))
      (test #f 'split-path base)
      (test #t 'split-path dir?)))
- roots)
+ (append roots
+         (let-values ([(other-roots other-convention)
+                       (cond
+                         [(eq? 'windows (system-path-convention-type))
+                          (values unix-roots 'unix)]
+                         [else
+                          (values windows-roots 'windows)])])
+           (map (lambda (s) (bytes->path (string->bytes/utf-8 s) other-convention))
+                other-roots))))
 
 (let ([check-a/b
        (lambda (a/b end/?)
@@ -457,9 +453,16 @@
 (test (path->directory-path (build-path 'same)) simplify-path (build-path 'same "a" 'same 'up 'same) #f)
 (arity-test simplify-path 1 2)
 
+(test (build-path "no-such-dir" "b") simplify-path "no-such-dir/b" #t)
+(test (path->complete-path (build-path "no-such-dir" "b")) simplify-path "no-such-dir//b" #t)
+
 (arity-test cleanse-path 1 1)
 (arity-test expand-user-path 1 1)
 (arity-test resolve-path 1 1)
+
+(when (eq? 'unix (system-path-convention-type))
+  (test #t complete-path? (expand-user-path "~/something"))
+  (test #t complete-path? (expand-user-path (string->path "~/something"))))
 
 (map
  (lambda (f)
@@ -477,6 +480,22 @@
 
 ; normal-case-path now checks for pathness:
 (err/rt-test (normal-case-path (string #\a #\nul #\b)))
+
+;; Check that `cleanse-path` and `resolve-path` keep relative paths
+;; and keep forward slashes on Windows
+(let ()
+  (define (check-cleanse cleanse-path)
+    (test (build-path "not-there" "file-also-not-there")
+          cleanse-path 
+          (build-path "not-there" "file-also-not-there"))
+    (test (string->path "not-there/b") cleanse-path "not-there///b")
+    (when (eq? 'windows (system-path-convention-type))
+      (test (string->path "not-there\\b") cleanse-path "not-there\\\\b")
+      (test (string->path "not-there\\b/c") cleanse-path "not-there\\\\b/c")
+      (test (string->path "not-there\\b/c") cleanse-path "not-there\\b//c")
+      (test (string->path "not-there\\b/c") cleanse-path "not-there\\\\b//c")))
+  (check-cleanse cleanse-path)
+  (check-cleanse resolve-path))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; \\?\ paths in Windows
@@ -615,6 +634,14 @@
                      (string->path "\\\\?\\REL\\\\a")
                      #f)
                (lambda () (split-path (coerce "\\\\?\\REL\\b\\a"))))
+  (test-values (list (string->path "\\\\?\\REL\\b\\")
+                     (string->path "\\\\?\\REL\\\\a")
+                     #t)
+               (lambda () (split-path (coerce "\\\\?\\REL\\b\\a\\"))))
+  (test-values (list (string->path "\\")
+                     (string->path "\\\\?\\REL\\\\..")
+                     #t)
+               (lambda () (split-path (string->path "\\\\?\\RED\\\\..\\"))))
 
   (test (string->path "\\\\?\\RED\\\\a\\") build-path (coerce "\\\\?\\RED\\a") 'same)
   (test (string->path "\\") build-path (coerce "\\\\?\\RED\\a") 'up)
@@ -622,9 +649,12 @@
   (test (string->path "\\") build-path (coerce "\\\\?\\RED\\a") 'up 'same)
 
   (test (string->path "\\") build-path (coerce "\\\\?\\RED\\..") 'up)
-  (test (string->path "\\\\?\\RED\\\\..\\") build-path (coerce "\\\\?\\RED\\\\..") (coerce "\\\\?\\RED\\\\..") 'up)
-  (test (string->path "\\\\?\\RED\\\\x\\y\\..") build-path (coerce "/x/y") (coerce "\\\\?\\RED\\.."))
-  (test (string->path "\\\\?\\c:\\x\\y\\..") build-path (coerce "c:x/y") (coerce "\\\\?\\RED\\.."))
+  (test (string->path "\\\\?\\RED\\\\..\\") build-path (coerce "\\\\?\\RED\\\\..") (coerce "\\\\?\\REL\\\\..") 'up)
+  (test (string->path "\\\\?\\RED\\\\x\\y\\..") build-path (coerce "/x/y") (coerce "\\\\?\\REL\\\\.."))
+  (test (string->path "\\\\?\\c:\\x\\y\\..") build-path (coerce "c:x/y") (coerce "\\\\?\\REL\\\\.."))
+
+  (err/rt-test (build-path (coerce "\\\\?\\RED\\\\..") (coerce "\\\\?\\RED\\\\..") 'up))
+  (err/rt-test (build-path (coerce "/x/y") (coerce "\\\\?\\RED\\..")))
 
   (test-values (list (string->path "\\\\?\\RED\\..\\")
                      (string->path "\\\\?\\REL\\\\a")
@@ -677,8 +707,10 @@
   (test (string->path "\\\\?\\UNC\\goo\\bar\\b") build-path (coerce "\\\\?\\UNC\\goo\\bar") (coerce "\\b"))
   (test (string->path "\\\\?\\\\\\b") build-path (coerce "\\\\?\\") (coerce "\\b"))
   (test (string->path "\\\\?\\\\\\b\\") build-path (coerce "\\\\?\\") (coerce "\\b\\"))
-  (err/rt-test (build-path "\\\\?\\c:" (coerce "\\b")) exn:fail:contract?)
-  
+  (err/rt-test (build-path (coerce "\\\\?\\c:") (coerce "\\b")) exn:fail:contract?)
+
+  (err/rt-test (build-path (coerce "a") (coerce "\\b")) exn:fail:contract?)
+
   ;; Don't allow path addition on bad \\?\ to change the root:
   (test (string->path "\\\\?\\\\\\c") build-path (coerce "\\\\?\\") (coerce "c"))
   (test (string->path "\\\\?\\\\\\c:") build-path (coerce "\\\\?\\") (coerce "\\\\?\\REL\\c:"))
@@ -724,14 +756,15 @@
   (test (list #f (string->path "\\\\?\\c:\\a\\\\\\")) get-base (coerce "\\\\?\\c:\\a\\\\\\"))
   (test (list (string->path "\\\\?\\UNC\\") (string->path "\\\\?\\REL\\\\x/y")) get-base (coerce "\\\\?\\UNC\\x/y"))
   (test (list #f (string->path "\\\\?\\UNC\\x\\y")) get-base (coerce "\\\\?\\UNC\\x\\y"))
-  (test (list (string->path "\\\\?\\REL\\\\x\\y ") (string->path "z")) get-base (coerce "x/y /z"))
-  (test (list (string->path "\\\\?\\REL\\\\y ") (string->path "z")) get-base (coerce "x/../y /z"))
-  (test (list (string->path "\\\\?\\REL\\..\\\\y ") (string->path "z")) get-base (coerce "../y /z"))
-  (test (list (string->path "\\\\?\\c:\\y ") (string->path "z")) get-base (coerce "c:/y /z"))
-  (test (list (string->path "\\\\?\\c:\\y ") (string->path "z")) get-base (coerce "c:/../y /z"))
+  (test (list (string->path "x/y /") (string->path "z")) get-base (coerce "x/y /z"))
+  (test (list (string->path "x/../y /") (string->path "z")) get-base (coerce "x/../y /z"))
+  (test (list (string->path "../y /") (string->path "z")) get-base (coerce "../y /z"))
+  (test (list (string->path "c:/y /") (string->path "z")) get-base (coerce "c:/y /z"))
+  (test (list (string->path "c:/../y /") (string->path "z")) get-base (coerce "c:/../y /z"))
   (test (list (string->path "../aux/") (string->path "z")) get-base (coerce "../aux/z"))
   (test (list (string->path "../aux.m/") (string->path "z")) get-base (coerce "../aux.m/z"))
   (test (list (string->path "../") (string->path "\\\\?\\REL\\\\aux.m")) get-base (coerce "../aux.m/"))
+  (test (list (string->path "../") (string->path "auxy.m")) get-base (coerce "../auxy.m/"))
   (test (list (string->path "c:/") (string->path "\\\\?\\REL\\\\aux.m")) get-base (coerce "c:/aux.m/"))
   (test (list (string->path "c:/") (string->path "\\\\?\\REL\\\\aux.m.p")) get-base (coerce "c:/aux.m.p/"))
   (test (list (string->path "c:/") (string->path "\\\\?\\REL\\\\aux:m")) get-base (coerce "c:/aux:m/"))
@@ -757,13 +790,23 @@
            (test (string->path "\\\\?\\c:\\a\\.") cleanse-path (coerce "\\\\?\\c:\\a\\\\."))
            (test (string->path "\\\\?\\UNC\\a\\b\\.") cleanse-path (coerce "\\\\?\\UNC\\\\a\\b\\."))
            (test (string->path "\\\\?\\UNC\\a\\b\\.") cleanse-path (coerce "\\\\?\\UNC\\\\a\\b\\\\."))
-           (test (string->path "\\\\?\\RED\\\\..") cleanse-path (coerce "\\\\?\\RED\\.."))
+           (test (string->path "\\\\?\\RED\\\\..") cleanse-path (coerce "\\\\?\\RED\\\\.."))
+           (test (string->path "\\\\?\\REL\\\\..") cleanse-path (coerce "\\\\?\\REL\\\\.."))
+           (test (string->path "\\\\?\\RED\\\\..\\") cleanse-path (coerce "\\\\?\\RED\\\\..\\"))
+           (test (string->path "\\\\?\\REL\\\\..\\") cleanse-path (coerce "\\\\?\\REL\\\\..\\"))
            (test (string->path "\\\\?\\") cleanse-path (coerce "\\\\?\\\\")))])
     (go cleanse-path)
     (test (string->path "\\\\?\\c:") cleanse-path (coerce "\\\\?\\c:"))
     (when (eq? 'windows (system-type))
       (go simplify-path))
     (go (lambda (p) (simplify-path p #f)))
+    (test (string->path "\\\\?\\RED\\\\..") cleanse-path (coerce "\\\\?\\RED\\.."))
+    (test (string->path "\\\\?\\RED\\\\..\\") cleanse-path (coerce "\\\\?\\RED\\..\\"))
+    (when (eq? 'windows (system-type))
+      (test (build-path (current-drive) "\\\\?\\REL\\\\..") simplify-path (coerce "\\\\?\\RED\\.."))
+      (test (build-path (simplify-path (build-path (current-directory) 'up)) "\\\\?\\REL\\\\..")
+            simplify-path
+            (coerce "\\\\?\\REL\\..\\\\..")))
     (test (string->path "a\\b") simplify-path (coerce "a/b") #f)
     (test (string->path "a\\b\\") simplify-path (coerce "a/b/") #f)
     (test (string->path "C:\\") simplify-path (coerce "C://") #f)
@@ -774,6 +817,10 @@
 
   (test (bytes->path #"\\\\f\\g\\") simplify-path (coerce "\\\\f\\g") #f)
   (test (bytes->path #"\\\\f\\g\\") simplify-path (coerce "//f/g") #f)
+  (when (eq? 'windows (system-type))
+    ;; just slash conversion: no path->complete-path
+    (test (bytes->path #"no-such-dir\\g") simplify-path (coerce "no-such-dir/g") #t)
+    (test (path->complete-path "no-such-dir\\g") simplify-path (coerce "no-such-dir//g") #t))
 
   (test (bytes->path #"\\\\?\\\\\\c:\\") simplify-path (coerce "\\\\?\\\\\\c:\\") #f)
   (test (bytes->path #"\\\\?\\\\\\c:") simplify-path (coerce "\\\\?\\\\\\c:") #f)
@@ -786,6 +833,10 @@
   (test (bytes->path #"\\\\?\\UNC\\a\\b/c\\") simplify-path (coerce "\\\\?\\UnC\\a\\b/c") #f)
   (test (bytes->path #"\\\\a\\b\\") simplify-path (coerce "\\\\?\\UnC\\a\\b") #f)
   (test (bytes->path #"\\\\?\\c:\\a/b") simplify-path (coerce "\\\\?\\c:\\a/b") #f)
+  (test (bytes->path #"\\\\?\\UNC\\a\\b \\") simplify-path (coerce "\\\\?\\UNC\\a\\b ") #f)
+  (test (bytes->path #"\\\\?\\UNC\\a\\b \\") simplify-path (coerce "\\\\?\\\\UNC\\a\\b ") #f)
+  (test (bytes->path #"\\\\?\\UNC\\a\\b.\\") simplify-path (coerce "\\\\?\\UNC\\a\\b.") #f)
+  (test (bytes->path #"\\\\?\\UNC\\a\\b.\\") simplify-path (coerce "\\\\?\\\\UNC\\a\\b.") #f)
 
   (test (bytes->path #"..\\") simplify-path (coerce "\\\\?\\REL\\..") #f)
   (test (bytes->path #"..\\") simplify-path (coerce "\\\\?\\REL\\..\\") #f)
@@ -804,6 +855,7 @@
   (test (bytes->path #"\\\\?\\REL\\\\..") simplify-path (coerce "\\\\?\\REL\\\\..") #F)
   (test (bytes->path #"\\\\?\\REL\\\\..\\") simplify-path (coerce "\\\\?\\REL\\\\..\\") #F)
   (test (bytes->path #"a \\b") simplify-path (coerce "\\\\?\\REL\\\\a \\b") #f)
+  (test (bytes->path #"\\\\?\\REL\\\\a \\b \\") simplify-path (coerce "\\\\?\\REL\\\\a \\b \\") #f)
   (test (bytes->path #"\\\\?\\REL\\\\aux.bad\\b") simplify-path (coerce "\\\\?\\REL\\aux.bad\\b") #f)
   (test (bytes->path #"\\\\?\\REL\\\\a\\b  ") simplify-path (coerce "\\\\?\\REL\\a\\b  ") #f)
   (test (bytes->path #"\\\\?\\REL\\\\.\\b") simplify-path (coerce "\\\\?\\REL\\.\\b") #f)
@@ -928,8 +980,17 @@
 (test "Apple" path-element->string (string->path-element "Apple"))
 (test "Apple" path-element->string (bytes->path-element #"Apple"))
 
+(test #"a" path-element->bytes (bytes->path #"\\\\?\\REL\\a" 'windows))
+(test #"a" path-element->bytes (bytes->path #"\\\\?\\REL\\\\a" 'windows))
+(test #".." path-element->bytes (bytes->path #"\\\\?\\REL\\\\.." 'windows))
+(test (bytes->path #"\\\\?\\REL\\\\.." 'windows) bytes->path-element #".." 'windows)
+(test (bytes->path #"\\\\?\\REL\\\\:" 'windows) bytes->path-element #":" 'windows)
+(test (bytes->path #"abc" 'windows) bytes->path-element #"abc" 'windows)
+
 (err/rt-test (path-element->bytes (string->path ".")))
 (err/rt-test (path-element->bytes (string->path "..")))
+(err/rt-test (path-element->bytes (bytes->path #"\\\\?\\REL\\.." 'windows)))
+(err/rt-test (path-element->bytes (bytes->path #"\\\\?\\RED\\a" 'windows)))
 (err/rt-test (bytes->path-element #"." 'unix))
 (err/rt-test (bytes->path-element #".." 'unix))
 (err/rt-test (bytes->path-element "a/b" 'unix))

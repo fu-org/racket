@@ -1,6 +1,10 @@
 #lang racket/base
 (require "test-util.rkt")
 
+(module+ test
+  (module config info
+    (define timeout 180)))
+
 (parameterize ([current-contract-namespace
                 (make-basic-contract-namespace 
                  'racket/class
@@ -1593,6 +1597,31 @@
                  (inherit-field f)
                  (define/public (m) f))])
       (send (new d%) m)))
+
+  (test/pos-blame
+   'inherit-field-lots-of-wrappers
+   '(let ()
+      (define N 40)
+
+      (define c
+        (for/fold ([c (-> integer? integer?)])
+                  ([i (in-range N)])
+          (class/c (inherit-field [fld c]))))
+
+      (define val
+        (for/fold ([val 5])
+                  ([i (in-range N)])
+          (class object% (field [fld val]) (super-new))))
+
+      (define cval (contract c val 'pos 'neg))
+
+      (for/fold ([val cval])
+                ([i (in-range N)])
+        (send (new (class val
+                     (super-new)
+                     (inherit-field fld)
+                     (define/public (m) fld)))
+              m))))
   
   (test/spec-passed
    'class/c-higher-order-override-1
@@ -2087,6 +2116,49 @@
                              'somethingelse1 'somethingelse2)
                    'pos 'neg)
          [x 2]))
+
+  (test/pos-blame
+   'class/c-deep.1
+   '(let ()
+      (define N 40)
+
+      (define c
+        (for/fold ([c (-> integer? integer?)])
+                  ([i (in-range N)])
+          (class/c (field [fld c]))))
+
+      (define v
+        (for/fold ([v 1])
+                  ([i (in-range N)])
+          (class object%
+            (field [fld v])
+            (super-new))))
+
+      (let loop ([v (contract c v 'pos 'neg)])
+        (loop (get-field fld (new v))))))
+
+  (test/neg-blame
+   'class/c-deep.2
+   '(let ()
+      (define N 40)
+
+      (define c
+        (for/fold ([c (-> integer? integer?)])
+                  ([i (in-range N)])
+          (class/c (field [fld c]))))
+
+      (define v
+        (for/fold ([v 1])
+                  ([i (in-range N)])
+          (class object%
+            (field [fld v])
+            (super-new))))
+
+      (let loop ([v (contract c v 'pos 'neg)]
+                 [i N])
+        (cond
+          [(= i 1) (set-field! fld (new v) 'not-a-proc)]
+          [else (loop (get-field fld (new v)) (- i 1))]))))
   
   (test/spec-passed/result
    'class-field-accessor1
@@ -2644,4 +2716,67 @@
    (lambda (e)
      (regexp-match? "a method that accepts the #:x keyword argument"
                     (exn-message e))))
+
+  (test/spec-passed
+   'multiple-init-args-1
+   '(let ([c% (contract (class/c (init [a (-> integer?)]
+                                       [b (-> symbol?)]))
+                        (class object%
+                          (init a b)
+                          (super-new)
+                          (void (a) (b)))
+                        'pos 'neg)])
+      (new c% [a (lambda () 1)]
+              [b (lambda () 'x)])))
+
+  (test/neg-blame
+   'multiple-init-args-2
+   '(let ([c% (contract (class/c (init [a (-> integer?)]
+                                       [b (-> symbol?)]))
+                        (class object%
+                          (init a b)
+                          (super-new)
+                          (void (a) (b)))
+                        'pos 'neg)])
+      (new c% [a (lambda () #f)]
+              [b (lambda () 'x)])))
+
+  (test/neg-blame
+   'multiple-init-args-3
+   '(let ([c% (contract (class/c (init [a (-> integer?)]
+                                       [b (-> symbol?)]))
+                        (class object%
+                          (init a b)
+                          (super-new)
+                          (void (a) (b)))
+                        'pos 'neg)])
+      (new c% [a (lambda () 1)]
+              [b (lambda () #f)])))
+
+  (test/neg-blame
+   'override-important
+   #:header-of-message "contract violation"
+   '(let* ([a% (contract (class/c (override [b (->m string?)]))
+                         (class object%
+                           (super-new)
+                           (abstract b)
+                           (define/public (a) (b)))
+                         'pos 'neg)]
+           [b% (class a%
+                 (super-new)
+                 (define/override (b) #f))])
+      (send (new b%) a)))
+
+  (test/neg-blame
+   'inner-important
+   #:header-of-message "contract violation"
+   '(let* ([a% (contract (class/c (inner [a (->m string?)]))
+                         (class object%
+                           (super-new)
+                           (define/pubment (a) (inner "" a)))
+                         'pos 'neg)]
+           [b% (class a%
+                 (super-new)
+                 (define/augment (a) #f))])
+      (send (new b%) a)))
   )

@@ -62,6 +62,11 @@
        (pairwise-stronger-contracts? (base-and/c-ctcs this)
                                      (base-and/c-ctcs that))))
 
+(define (and-equivalent? this that)
+  (and (base-and/c? that)
+       (pairwise-equivalent-contracts? (base-and/c-ctcs this)
+                                       (base-and/c-ctcs that))))
+
 (define (and/c-generate? ctc)
   (cond
     [(and/c-check-nonneg ctc real?) => values]
@@ -143,29 +148,35 @@
   #:property prop:custom-write custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:late-neg-projection first-order-late-neg-and-proj
    #:name and-name
    #:first-order and-first-order
    #:stronger and-stronger?
-   #:generate and/c-generate?))
+   #:generate and/c-generate?
+   #:equivalent and-equivalent?))
 (define-struct (chaperone-and/c base-and/c) ()
   #:property prop:custom-write custom-write-property-proc
   #:property prop:chaperone-contract
   (build-chaperone-contract-property
+   #:trusted trust-me
    #:late-neg-projection late-neg-and-proj
    #:name and-name
    #:first-order and-first-order
    #:stronger and-stronger?
-   #:generate and/c-generate?))
+   #:generate and/c-generate?
+   #:equivalent and-equivalent?))
 (define-struct (impersonator-and/c base-and/c) ()
   #:property prop:custom-write custom-write-property-proc
   #:property prop:contract
   (build-contract-property
+   #:trusted trust-me
    #:late-neg-projection late-neg-and-proj
    #:name and-name
    #:first-order and-first-order
    #:stronger and-stronger?
-   #:generate and/c-generate?))
+   #:generate and/c-generate?
+   #:equivalent and-equivalent?))
 
 (define-syntax (and/c stx)
   (syntax-case stx (pair? listof)
@@ -193,16 +204,16 @@
              (define second-pred (cadr preds))
              (cond
                [(chaperone-of? second-pred negative?)
-                (</c 0)]
+                (renamed-<-ctc 0 `(and/c real? negative?))]
                [(chaperone-of? second-pred positive?)
-                (>/c 0)]
+                (renamed->-ctc 0 `(and/c real? positive?))]
                [else
                 (define second-contract (cadr contracts))
                 (cond
                   [(equal? (contract-name second-contract) '(not/c positive?))
-                   (<=/c 0)]
+                   (renamed-between/c -inf.0 0 `(and/c real? (not/c positive?)))]
                   [(equal? (contract-name second-contract) '(not/c negative?))
-                   (>=/c 0)]
+                   (renamed-between/c 0 +inf.0 `(and/c real? (not/c negative?)))]
                   [else
                    (make-first-order-and/c contracts preds)])])]
             [(or (chaperone-of? (car preds) exact-nonnegative-integer?)
@@ -239,6 +250,36 @@
                [else (make-first-order-and/c contracts preds)])]
             [else
              (make-first-order-and/c contracts preds)])]
+         [(and (pair? (cdr preds))
+               (pair? (cddr preds))
+               (null? (cdddr preds)))
+          (cond
+            [(or (chaperone-of? (car preds) exact-integer?)
+                 (chaperone-of? (cadr preds) exact-integer?)
+                 (chaperone-of? (caddr preds) exact-integer?))
+             (define lb #f)
+             (define ub #f)
+             (for ([ctc (in-list contracts)])
+               (cond
+                 [(between/c-s? ctc)
+                  (define lo (between/c-s-low ctc))
+                  (define hi (between/c-s-high ctc))
+                  (cond
+                    [(and (= lo -inf.0) (integer? hi))
+                     (set! ub (inexact->exact hi))]
+                    [(and (= hi +inf.0) (integer? lo))
+                     (set! lb (inexact->exact lo))])]
+                 [(</>-ctc? ctc)
+                  (define x (</>-ctc-x ctc))
+                  (when (integer? x)
+                    (cond
+                      [(<-ctc? ctc) (set! ub (- (inexact->exact x) 1))]
+                      [(>-ctc? ctc) (set! lb (+ (inexact->exact x) 1))]))]))
+             (cond
+               [(and lb ub)
+                (integer-in lb ub)]
+               [else (make-first-order-and/c contracts preds)])]
+            [else (make-first-order-and/c contracts preds)])]
          [else
           (make-first-order-and/c contracts preds)])]
       [(andmap chaperone-contract? contracts)
@@ -274,13 +315,29 @@
     [else exact-integer?]))
 
 (define (integer-in-stronger this that)
-  (define this-start (or (integer-in-ctc-start this) -inf.0))
-  (define this-end (or (integer-in-ctc-end this) +inf.0))
   (cond
     [(integer-in-ctc? that)
+     (define this-start (or (integer-in-ctc-start this) -inf.0))
+     (define this-end (or (integer-in-ctc-end this) +inf.0))
      (define that-start (or (integer-in-ctc-start that) -inf.0))
      (define that-end (or (integer-in-ctc-end that) +inf.0))
      (<= that-start this-start this-end that-end)]
+    [(between/c-s? that)
+     (define that-low (between/c-s-low that))
+     (define that-high (between/c-s-high that))
+     (define this-start (or (integer-in-ctc-start this) -inf.0))
+     (define this-end (or (integer-in-ctc-end this) +inf.0))
+     (<= that-low this-start this-end that-high)]
+    [else #f]))
+
+(define (integer-in-equivalent this that)
+  (cond
+    [(integer-in-ctc? that)
+     (define this-start (or (integer-in-ctc-start this) -inf.0))
+     (define this-end (or (integer-in-ctc-end this) +inf.0))
+     (define that-start (or (integer-in-ctc-start that) -inf.0))
+     (define that-end (or (integer-in-ctc-end that) +inf.0))
+     (and (= that-start this-start) (= this-end that-end))]
     [else #f]))
 
 (define (integer-in-generate ctc)
@@ -308,17 +365,21 @@
   #:property prop:custom-write custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:name integer-in-name
    #:first-order integer-in-first-order
    #:stronger integer-in-stronger
-   #:generate integer-in-generate))
+   #:generate integer-in-generate
+   #:equivalent integer-in-equivalent))
 
 (struct renamed-integer-in integer-in-ctc (name)
   #:property prop:flat-contract
   (build-flat-contract-property
+   #:trusted trust-me
    #:name (λ (ctc) (renamed-integer-in-name ctc))
    #:first-order integer-in-first-order
    #:stronger integer-in-stronger
+   #:equivalent integer-in-equivalent
    #:generate integer-in-generate))
 
 (define (geo-dist p)

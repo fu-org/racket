@@ -4,18 +4,20 @@
          compiler/private/embed
          launcher/launcher
          dynext/file
-         setup/dirs)
+         setup/dirs
+         "../private/language.rkt")
 
 (define verbose (make-parameter #f))
 (define very-verbose (make-parameter #f))
 
 (define gui (make-parameter #f))
-(define 3m (make-parameter #t))
+(define variant (make-parameter (system-type 'gc)))
 (define launcher (make-parameter #f))
 
 (define exe-output (make-parameter #f))
 (define exe-embedded-flags (make-parameter '("-U" "--")))
-(define exe-embedded-libraries (make-parameter null))
+(define exe-embedded-modules (make-parameter null))
+(define exe-embedded-languages (make-parameter null))
 (define exe-aux (make-parameter null))
 (define exe-embedded-config-path (make-parameter "etc"))
 (define exe-embedded-collects-path (make-parameter null))
@@ -41,6 +43,8 @@
         (list "-A" (path->string (find-system-path 'addon-dir)))
         (remove "-U" (exe-embedded-flags)))))
     (launcher #t)]
+   [("--embed-dlls") "On Windows, embed DLLs in the executable"
+    (exe-aux (cons (cons 'embed-dlls? #t) (exe-aux)))]
    [("--config-path") path "Set <path> as configuration directory for executable"
     (exe-embedded-config-path path)]
    [("--collects-path") path "Set <path> as main collects for executable"
@@ -54,17 +58,28 @@
    [("--orig-exe") "Use original executable instead of stub"
     (exe-aux (cons (cons 'original-exe? #t) (exe-aux)))]
    [("--3m") "Generate using 3m variant"
-    (3m #t)]
+    (variant '3m)]
    [("--cgc") "Generate using CGC variant"
-    (3m #f)]
+    (variant 'cgc)]
+   [("--cs") "Generate using CS variant"
+    (variant 'cs)]
    #:multi
+   [("++lib") lib "Embed <lib> in executable"
+    (exe-embedded-modules (append (exe-embedded-modules)
+                                  (list `(#t (lib ,lib)))))]
+   [("++lang") lang "Embed support for `#lang <lang>` in executable"
+    (exe-embedded-languages (append (exe-embedded-languages) (list lang)))]
+   [("++named-lib") prefix lib "Embed <lib> with name using <prefix>"
+    (exe-embedded-modules (append (exe-embedded-modules)
+                                  (list `(,(string->symbol prefix) (lib ,lib)))))]
+   [("++named-file") prefix file "Embed <file> with name using <prefix>"
+    (exe-embedded-modules (append (exe-embedded-modules)
+                                  (list `(,(string->symbol prefix) (file ,file)))))]
    [("++aux") aux-file "Extra executable info (based on <aux-file> suffix)"
     (let ([auxes (extract-aux-from-path (path->complete-path aux-file))])
       (when (null? auxes)
         (printf " warning: no recognized information from ~s\n" aux-file))
       (exe-aux (append auxes (exe-aux))))]
-   [("++lib") lib "Embed <lib> in executable"
-    (exe-embedded-libraries (append (exe-embedded-libraries) (list lib)))]
    [("++exf") flag "Add flag to embed in executable"
     (exe-embedded-flags (append (exe-embedded-flags) (list flag)))]
    [("--exf") flag "Remove flag to embed in executable"
@@ -106,7 +121,7 @@
                                 dest)))))))
   (cond
    [(launcher)
-    (parameterize ([current-launcher-variant (if (3m) '3m 'cgc)])
+    (parameterize ([current-launcher-variant (variant)])
       ((if (gui) 
            make-gracket-launcher 
            make-racket-launcher)
@@ -115,19 +130,33 @@
        dest
        (exe-aux)))]
    [else
+    (define main-prefix
+      ;; Check for a specified prefix, but fall back to '#%mzc:
+      (let loop ([mods (exe-embedded-modules)])
+        (cond
+          [(null? mods) '#%mzc:]
+          [(equal? `(file ,source-file) (cadar mods)) (caar mods)]
+          [else (loop (cdr mods))])))
     (define mod-sym (string->symbol
-                     (format "#%mzc:~a"
+                     (format "~a~a"
+                             main-prefix
+                             ;; Get base file name:
                              (let-values ([(base name dir?)
                                            (split-path source-file)])
                                (path->bytes (path-replace-suffix name #""))))))
     (mzc:create-embedding-executable
      dest
      #:mred? (gui)
-     #:variant (if (3m) '3m 'cgc)
+     #:variant (variant)
      #:verbose? (very-verbose)
-     #:modules (cons `(#%mzc: (file ,source-file) (main configure-runtime))
-                     (map (lambda (l) `(#t (lib ,l)))
-                          (exe-embedded-libraries)))
+     #:expand-namespace (make-base-namespace)
+     #:modules (cons `(,main-prefix (file ,source-file) (main configure-runtime))
+                     (append
+                      (exe-embedded-modules)
+                      (map (lambda (mod) `(#t ,mod))
+                           (languages->libraries
+                            (exe-embedded-languages)
+                            #:who (string->symbol (short-program+command-name))))))
      #:configure-via-first-module? #t
      #:early-literal-expressions
      (parameterize ([current-namespace (make-base-namespace)])

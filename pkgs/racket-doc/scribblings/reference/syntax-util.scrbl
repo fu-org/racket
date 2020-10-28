@@ -19,7 +19,11 @@
                     [v (or/c string? symbol? identifier? keyword? char? number?)] ...
                     [#:source src (or/c syntax? #f) #f]
                     [#:props props (or/c syntax? #f) #f]
-                    [#:cert ignored (or/c syntax? #f) #f])
+                    [#:cert ignored (or/c syntax? #f) #f]
+                    [#:subs? subs? boolean? #f]
+                    [#:subs-intro subs-introducer
+                                  (-> syntax? syntax?)
+                                  (if (syntax-transforming?) syntax-local-introduce values)])
          identifier?]{
 
 Like @racket[format], but produces an identifier using @racket[lctx]
@@ -47,6 +51,21 @@ in the argument list are automatically converted to symbols.
 
 (Scribble doesn't show it, but the DrRacket pinpoints the location of
 the second error but not of the first.)
+
+If @racket[subs?] is @racket[#t], then a @racket['sub-range-binders]
+syntax property is added to the result that records the position of
+each identifier in the @racket[v]s. The @racket[subs-intro] procedure
+is applied to each identifier, and its result is included in the
+sub-range binder record. This property value overrides a
+@racket['sub-range-binders] property copied from @racket[props].
+
+@examples[#:eval the-eval
+(syntax-property (format-id #'here "~a/~a-~a" #'point 2 #'y #:subs? #t)
+                 'sub-range-binders)
+]
+
+@history[#:changed "7.4.0.5" @elem{Added the @racket[#:subs?] and
+@racket[#:subs-intro] arguments.}]
 }
 
 @defproc[(format-symbol [fmt string?]
@@ -71,7 +90,7 @@ are automatically converted to symbols.
          #:contracts ([stx-expr syntax?])]{
 
 Definition form of @racket[with-syntax]. That is, it matches the
-syntax object result of @racket[expr] against @racket[pattern] and
+syntax object result of @racket[stx-expr] against @racket[pattern] and
 creates pattern variable definitions for the pattern variables of
 @racket[pattern].
 
@@ -146,7 +165,7 @@ forms like @racket[with-disappeared-uses].
 
 Evaluates the @racket[body-expr]s and @racket[stx-expr], catching identifiers
 looked up using @racket[syntax-local-value/record]. Adds the caught identifiers
-to the @racket['disappeared-uses] syntax property of the syntax object produced
+to the @racket['disappeared-use] syntax property of the syntax object produced
 by @racket[stx-expr].
 
 @history[#:changed "6.5.0.7" @elem{Added the option to include @racket[body-expr]s.}]
@@ -164,19 +183,23 @@ does not satisfy the predicate, @racket[#f] is returned and the
 identifier is not recorded as a disappeared use.
 }
 
-@defproc[(record-disappeared-uses [id (or/c identifier? (listof identifier?))])
+@defproc[(record-disappeared-uses [id (or/c identifier? (listof identifier?))]
+                                  [intro? boolean? (syntax-transforming?)])
          void?]{
 
-Add @racket[id] to @racket[(current-recorded-disappeared-uses)] after calling
-@racket[syntax-local-introduce] on the identifier. If @racket[id] is a list,
-perform the same operation on all the identifiers.
+Add @racket[id] to @racket[(current-recorded-disappeared-uses)]. If
+@racket[id] is a list, perform the same operation on all the
+identifiers. If @racket[intro?] is true, then
+@racket[syntax-local-introduce] is first called on the identifiers.
 
 If not used within the extent of a @racket[with-disappeared-uses] 
 form or similar, has no effect.
 
 @history[#:changed "6.5.0.7"
          @elem{Added the option to pass a single identifier instead of
-               requiring a list.}]
+               requiring a list.}
+         #:changed "7.2.0.11"
+         @elem{Added the @racket[intro?] argument.}]
 }
 
 
@@ -195,16 +218,22 @@ is used as the basis for the identifier's name.
                                             [stx syntax?])
          syntax?]{
 
-Applies the renamings of @racket[intdef-ctx] to @racket[stx].
+Equivalent to @racket[(internal-definition-context-introduce intdef-ctx stx 'add)]. The
+@racket[internal-definition-context-apply] function is provided for backwards compatibility; the more
+general @racket[internal-definition-context-introduce] function is preferred.
 }
 
 @defproc[(syntax-local-eval [stx syntax?]
-                            [intdef-ctx (or/c internal-definition-context? #f) #f])
+                            [intdef-ctx (or/c internal-definition-context?
+                                              (listof internal-definition-context?)
+                                              #f)
+                             '()])
          any]{
 
-Evaluates @racket[stx] as an expression in the current transformer
-environment (that is, at phase level 1), optionally extended with
-@racket[intdef-ctx].
+Evaluates @racket[stx] as an expression in the current @tech{transformer environment} (that is, at
+@tech{phase level} 1). If @racket[intdef-ctx] is not @racket[#f], the value provided for
+@racket[intdef-ctx] is used to enrich @racket[stx]’s @tech{lexical information} and extend the
+@tech{local binding context} in the same way as the fourth argument to @racket[local-expand].
 
 @examples[#:eval the-eval
 (define-syntax (show-me stx)
@@ -220,6 +249,11 @@ environment (that is, at phase level 1), optionally extended with
 (define fruit 'pear)
 (show-me fruit)
 ]
+
+@history[
+ #:changed "6.90.0.27" @elem{Changed @racket[intdef-ctx] to accept a list of internal-definition
+                             contexts in addition to a single internal-definition context or
+                             @racket[#f].}]
 }
 
 @defform[(with-syntax* ([pattern stx-expr] ...)

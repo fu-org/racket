@@ -1,7 +1,8 @@
 #lang scribble/doc
 @(require "mz.rkt"
           racket/class
-          (for-syntax racket/base racket/serialize racket/trait))
+          (for-syntax racket/base racket/serialize racket/trait)
+          (for-label racket/serialize))
 
 @(begin
 
@@ -2188,20 +2189,23 @@ that the result of the function is a subclass of the input.}
 @defproc[(is-a?/c [type (or/c class? interface?)]) flat-contract?]{
 
 Accepts a class or interface and returns a flat contract that
-recognizes objects that instantiate the class/interface.}
+recognizes objects that instantiate the class/interface.
 
+See @racket[is-a?].}
 
 @defproc[(implementation?/c [interface interface?]) flat-contract?]{
 
 Returns a flat contract that recognizes classes that implement
-@racket[interface].}
+@racket[interface].
 
+See @racket[implementation?].}
 
 @defproc[(subclass?/c [class class?]) flat-contract?]{
 
 Returns a flat contract that recognizes classes that
-are subclasses of @racket[class].}
+are subclasses of @racket[class].
 
+See @racket[subclass?].}
 
 @; ------------------------------------------------------------------------
 
@@ -2506,6 +2510,11 @@ returns @racket[#t] if both arguments are @racket[#f].
 
 @history[#:added "6.1.1.8"]}
 
+@defproc[(object=-hash-code [o object?]) fixnum?]{
+ Returns the hash code for @racket[o] that corresponds to
+ the equality relation @racket[object=?].
+
+@history[#:added "7.1.0.6"]}
 
 @defproc[(object->vector [object object?] [opaque-v any/c #f]) vector?]{
 

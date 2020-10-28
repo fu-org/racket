@@ -70,9 +70,15 @@ Each @tech{package} has associated @deftech{package metadata}:
  @item{a @deftech{version} --- a string of the form @nonterm{maj}@litchar{.}@nonterm{min},
                      @nonterm{maj}@litchar{.}@nonterm{min}@litchar{.}@nonterm{sub}, or
                      @nonterm{maj}@litchar{.}@nonterm{min}@litchar{.}@nonterm{sub}@litchar{.}@nonterm{rel},
+                     @margin-note*{The constraints on version numbers are consistent with @racketmodname[version/utils]
+                     and force version numbers to be in a canonical form. For example, a would-be version
+                     string @racket["4.3.0"] must be written instead as @racket["4.3"], @racket["4.3.1.0"]
+                     must be written instead as @racket["4.3.1"], and @racket["4"] must be written as @racket["4.0"].}
                      where @nonterm{maj}, @nonterm{min}, @nonterm{sub}, and @nonterm{rel} are
-                     all canonical decimal representations of natural numbers, @nonterm{min} has no more
-                     than two digits, and @nonterm{sub} and @nonterm{rel} has no more than
+                     all canonical decimal representations of natural numbers, @nonterm{rel} is not @litchar{0},
+                     @nonterm{sub} is not @litchar{0} unless
+                     @nonterm{rel} is supplied, @nonterm{min} has no more
+                     than two digits, and @nonterm{sub} and @nonterm{rel} have no more than
                      three digits. A version is intended to reflect available features of
                      a package, and should not be confused with different releases of
                      a package as indicated by the @tech{checksum}.}
@@ -238,8 +244,8 @@ URLs is:
 @optional{@exec{#}@nonterm{rev}}}
 
 where @nonterm{scheme} is @litchar{git}, @litchar{http}, or
-@litchar{https}, and where @nonterm{host} is any address other than
-@litchar{github.com} (which is treated more specifically as a GitHub
+@litchar{https}, except when @nonterm{scheme} is @litchar{git} and
+@nonterm{host} is @litchar{github.com} (which is treated more specifically as a GitHub
 reference). The @nonterm{path} can contain multiple
 @litchar{/}-separated elements to form a path within the repository,
 and it defaults to the empty path. The @nonterm{rev} can be a branch,
@@ -367,7 +373,8 @@ of the base Racket implementation. For example, any package that
 contains @filepath{racket/list.rkt} is in conflict with Racket.
 
 For the purposes of conflicts, a module is a file that ends in
-@filepath{.rkt}, @filepath{.ss}, or @filepath{.scrbl}.
+@filepath{.rkt}, @filepath{.ss}, or @filepath{.scrbl}, with the
+exception of files named @filepath{info.rkt}.
 
 @subsection[#:tag "concept:updates"]{Package Updates}
 
@@ -397,9 +404,13 @@ all users of the Racket installation.
 
 A directory path can be used as a @tech{package scope}, in which case
 package operations affect the set of packages installations in the
-directory. An installation can be configured to include the
-directory in its search path for installed packages (see
-@secref["config-file" #:doc raco-doc]).
+directory. An installation can be configured to include the directory
+in its search path for installed packages (see @secref["config-file"
+#:doc raco-doc]). When a directory path is used as a @tech{package
+scope}, operations such as dependency checking will use all paths in
+the configured search path starting with the one that is designed as a
+@tech{package scope}; if the designated path is not in the configured
+search path, then the dierctory by itself is used as the search path.
 
 Conflict checking disallows installation of the same or conflicting
 package in different scopes, but if such a configuration is forced,
@@ -408,6 +419,11 @@ scope}. Search then proceeds in a configured order, where
 @exec{installation} @tech{package scope} typically precedes other
 directory @tech{package scopes}.
 
+The default package scope is determined by first checking the
+configuration at @racket['user] scope, and then checking for
+configuration in wider scopes like @racket['installation]. If the
+default package scope is not configured in any scope, then it defaults
+to @racket['user].
 
 @; ----------------------------------------
 
@@ -455,25 +471,34 @@ sub-commands.
    @item{@exec{fail} --- Cancels the installation if dependencies are uninstalled or version requirements are unmet. 
         This behavior is the default for non-@tech{interactive mode}.}
    @item{@exec{force} --- Installs the package(s) despite missing dependencies or version requirements.
-         Forcing an installation may leave package content in an inconsistent state.}
+         Forcing an installation may leave package content in an inconsistent state. Implied packages
+         via @racketidfont{implies} or @racketidfont{update-implies} (see @secref["metadata"]) are not updated,
+         even if @DFlag{ignore-implies} is not specified.}
    @item{@exec{search-ask} --- Looks for dependencies (when uninstalled) or updates (when version requirements are unmet)
          via the configured @tech{package catalogs},
          but asks the user whether packages should be installed or updated. This behavior is the default in @tech{interactive mode}.}
-   @item{@exec{search-auto} --- Like @exec{search-ask}, but does not ask for permission to install or update.}
-  ]}
+   @item{@exec{search-auto} --- Like @exec{search-ask}, but does not ask for permission to install or update a dependency.}
+  ]
+
+         Unless @DFlag{ignore-implies} is specified, when a package is updated or installed, any package that
+         it implies via @racketidfont{implies} or @racketidfont{update-implies} (see @secref["metadata"]) is automatically
+         updated independent of @exec{fail}, @exec{search-ask}, or @exec{search-auto}, but implied dependencies
+         are not updated for @exec{force} behavior.}
 
   @item{@DFlag{auto} --- Shorthand for @exec{@DFlag{deps} search-auto}.}
 
   @item{@DFlag{update-deps} --- With @exec{search-ask} or @exec{search-auto} dependency behavior, checks
         already-installed dependencies transitively for updates (even when
-        not forced by version requirements), asking or automatically updating a
-        package when an update is available. When a package is updated or installed,
-        unless @DFlag{skip-implies} is specified, any package that
-        it implies (see @secref["metadata"]) is automatically updated independent of the behavior
-        requested via @DFlag{update-deps} and @DFlag{deps}.}
+        not forced by version requirements, @racketidfont{implies}, or @racketidfont{update-implies}), asking or automatically updating a
+        package when an update is available.
 
-  @item{@DFlag{skip-implies} --- Disables special treatment of dependencies that are listed
-        in @racketidfont{implies} (see @secref["metadata"]) for an installed or updated package.}
+        Unless @DFlag{ignore-implies} or @exec{@DFlag{deps} force} is specified, when a package is updated or installed,
+        any package that it implies @racketidfont{implies} or @racketidfont{update-implies} (see @secref["metadata"]) is
+        automatically updated independent of the behavior requested via @DFlag{update-deps}.}
+
+  @item{@DFlag{ignore-implies} --- Disables special treatment of dependencies that are listed
+        in @racketidfont{implies} or @racketidfont{update-implies} (see @secref["metadata"])
+        for an installed or updated package.}
 
   @item{@DFlag{link} --- Implies @exec{--type dir}
         and links the existing directory as an installed package, instead of copying the
@@ -511,10 +536,13 @@ sub-commands.
         @tech{package name} must be mapped by the @tech{package catalog} to a
         Git or GitHub @tech{package source}.}
 
+  @item{@DFlag{source} --- Strips built elements of a package before installing, and implies @DFlag{copy}.
+                           See also @secref["strip"].}
+
   @item{@DFlag{binary} --- Strips source elements of a package before installing, and implies @DFlag{copy}.
                            See also @secref["strip"].}
 
-  @item{@DFlag{source} --- Strips built elements of a package before installing, and implies @DFlag{copy}.
+  @item{@DFlag{binary-lib} --- Strips source and documentation elements of a package before installing, and implies @DFlag{copy}.
                            See also @secref["strip"].}
 
  @item{@DFlag{scope} @nonterm{scope} --- Selects the @tech{package scope} for installation, where @nonterm{scope} is one of
@@ -530,8 +558,8 @@ sub-commands.
  @item{@Flag{u} or @DFlag{user} --- Shorthand for @exec{--scope user}.}
  @item{@DFlag{scope-dir} @nonterm{dir} --- Select @nonterm{dir} as the @tech{package scope}.}
  
- @item{@DFlag{catalog} @nonterm{catalog} --- Uses @nonterm{catalog} instead of of the currently configured 
-       @tech{package catalogs}.}
+ @item{@DFlag{catalog} @nonterm{catalog} --- Uses @nonterm{catalog}s instead of of the currently configured
+       @tech{package catalogs}. This flag can be provided multiple times. The catalogs are tried in the order provided.}
 
   @item{@DFlag{skip-installed} --- Ignores any @nonterm{pkg-source}
         whose name corresponds to an already-installed package, except for promoting @seclink["concept:auto"]{auto-installed}
@@ -602,6 +630,15 @@ sub-commands.
   @item{@DFlag{no-setup} --- Does not run @exec{raco setup} after installation. This behavior is also the case if the
         environment variable @envvar{PLT_PKG_NOSETUP} is set to any non-empty value.}
 
+  @item{@DFlag{no-docs} or @Flag{D} --- Does not render documentation during setup after installation. This flag has no effect 
+        with @DFlag{no-setup}.}
+
+  @item{@DFlag{recompile-only} ---Constrains @exec{raco setup} to at most recompile a module from
+        machine-independent form, reporting an error if compilation from source is needed. This
+        behavior is useful as a sanity check when installing built packages (to ensure that they
+        are properly built), but if a compilation error is reported, it will be after the package
+        is installed.}
+
   @item{@DFlag{jobs} @nonterm{n} or @Flag{j} @nonterm{n} --- Installs and runs @exec{raco setup} with @nonterm{n} parallel jobs.}
 
   @item{@DFlag{batch} --- Disables @deftech{interactive mode}, suppressing potential prompts for a user
@@ -617,7 +654,10 @@ sub-commands.
          #:changed "6.1.1.6" @elem{Added the @DFlag{no-trash} flag, and changed
                                    the @DFlag{deps} default to depend only on interactive mode.}
          #:changed "6.1.1.8" @elem{Added the @DFlag{pull} flag.}
-         #:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}]}
+         #:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}
+         #:changed "7.2.0.8" @elem{Added the @DFlag{recompile-only} flag.}
+         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}
+         #:changed "7.6.0.14" @elem{Allowed multiple @DFlag{catalog} flags.}]}
 
 
 @subcommand{@command/toc{update} @nonterm{option} ... @nonterm{pkg-source} ... 
@@ -688,7 +728,7 @@ the given @nonterm{pkg-source}s.
  @item{@DFlag{auto} --- Shorthand for @exec{@DFlag{deps} search-auto} plus @DFlag{update-deps}.}
  @item{@DFlag{update-deps} --- Same as for @command-ref{install}, but
        implied by @DFlag{auto} only for @command-ref{update}.}
- @item{@DFlag{skip-implies} --- Same as for @command-ref{install}.}
+ @item{@DFlag{ignore-implies} --- Same as for @command-ref{install}.}
  @item{@DFlag{link} --- Same as for @command-ref{install}, but a
        directory package source is treated as a link by default only
        when it does not correspond to a link or a Git repository
@@ -706,6 +746,9 @@ the given @nonterm{pkg-source}s.
     To convert a clone-linked package to a normal installation, use
     @command-ref{update} either with the @DFlag{lookup} flag or with
     a replacement @tech{package source} that is not a package name.}
+@item{@DFlag{unclone} --- An alias for @DFlag{lookup}, which (absent
+    @DFlag{clone}) has the effect of replacing a link to a repository
+    clone with a normal package installation.}    
  @item{@DFlag{binary} --- Same as for @command-ref{install}.}
  @item{@DFlag{source} --- Same as for @command-ref{install}.}
  @item{@DFlag{scope} @nonterm{scope} --- Selects a @tech{package scope}, the same as for @command-ref{install}.}
@@ -729,6 +772,8 @@ the given @nonterm{pkg-source}s.
 
  @item{@DFlag{dry-run} --- Same as for @command-ref{install}.}
  @item{@DFlag{no-setup} --- Same as for @command-ref{install}.}
+ @item{@DFlag{no-docs} or @Flag{D} --- Same as for @command-ref{install}.}
+ @item{@DFlag{recompile-only} --- Same as for @command-ref{install}.}
  @item{@DFlag{jobs} @nonterm{n} or @Flag{j} @nonterm{n} --- Same as for @command-ref{install}.}
  @item{@DFlag{batch} --- Same as for @command-ref{install}.}
  @item{@DFlag{no-trash} --- Same as for @command-ref{install}.}
@@ -740,8 +785,12 @@ the given @nonterm{pkg-source}s.
                                    when no arguments are provided.}
          #:changed "6.1.1.6" @elem{Added the @DFlag{no-trash} flag, and changed
                                    the @DFlag{deps} default to depend only on interactive mode.}
-         #:changed "6.1.1.8" @elem{Added the @DFlag{skip-uninstalled} and @DFlag{pull} flags.}]
-         #:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}}
+         #:changed "6.1.1.8" @elem{Added the @DFlag{skip-uninstalled} and @DFlag{pull} flags.}
+         #:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}
+         #:changed "6.90.0.27" @elem{Added the @DFlag{unclone} flag.}
+         #:changed "7.2.0.8" @elem{Added the @DFlag{recompile-only} flag.}
+         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}
+         #:changed "7.6.0.14" @elem{Allowed multiple @DFlag{catalog} flags.}]}
 
 @subcommand{@command/toc{remove} @nonterm{option} ... @nonterm{pkg} ... 
 --- Attempts to remove the given packages. By default, if a package is the dependency
@@ -769,6 +818,8 @@ the given @nonterm{pkg}s.
  @item{@DFlag{scope-dir} @nonterm{dir} --- Selects @nonterm{dir} as the @tech{package scope}, the same as for @command-ref{install}.}
  @item{@DFlag{dry-run} --- Same as for @command-ref{install}.}
  @item{@DFlag{no-setup} --- Same as for @command-ref{install}.}
+ @item{@DFlag{no-docs} or @Flag{D} --- Same as for @command-ref{install}.}
+ @item{@DFlag{recompile-only} --- Same as for @command-ref{install}.}
  @item{@DFlag{jobs} @nonterm{n} or @Flag{j} @nonterm{n} --- Same as for @command-ref{install}.}
  @item{@DFlag{batch} --- Same as for @command-ref{install}.}
  @item{@DFlag{no-trash} --- Same as for @command-ref{install}.}
@@ -776,7 +827,9 @@ the given @nonterm{pkg}s.
 
 @history[#:changed "6.1.1.5" @elem{Added the @DFlag{batch} flag.}
          #:changed "6.1.1.6" @elem{Added the @DFlag{no-trash} flag.}
-         #:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}]}
+         #:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}
+         #:changed "7.2.0.8" @elem{Added the @DFlag{recompile-only} flag.}
+         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}]}
 
 
 @subcommand{@command/toc{new} @nonterm{pkg} ---
@@ -844,8 +897,10 @@ package is created.
 
  @item{@DFlag{deps} @nonterm{behavior} --- Same as for @command-ref{install}, except that @exec{search-auto} is
        the default.}
-  @item{@DFlag{binary} --- Same as for @command-ref{install}.}
+  
   @item{@DFlag{source} --- Same as for @command-ref{install}.}
+  @item{@DFlag{binary} --- Same as for @command-ref{install}.}
+  @item{@DFlag{binary-lib} --- Same as for @command-ref{install}.}
   @item{@DFlag{scope} @nonterm{scope} --- Same as for @command-ref{install}.}
   @item{@Flag{i} or @DFlag{installation} --- Shorthand for @exec{--scope installation}.}
   @item{@Flag{u} or @DFlag{user} --- Shorthand for @exec{--scope user}.}
@@ -858,10 +913,15 @@ package is created.
   @item{@DFlag{no-cache} --- Same as for @command-ref{install}.}
   @item{@DFlag{dry-run} --- Same as for @command-ref{install}.}
   @item{@DFlag{no-setup} --- Same as for @command-ref{install}.}
+  @item{@DFlag{no-docs} or @Flag{D} --- Same as for @command-ref{install}.}
+  @item{@DFlag{recompile-only} --- Same as for @command-ref{install}.}
   @item{@DFlag{jobs} @nonterm{n} or @Flag{j} @nonterm{n} --- Same as for @command-ref{install}.}
  ]
 
-@history[#:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}]}
+@history[#:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}
+         #:changed "7.2.0.8" @elem{Added the @DFlag{recompile-only} flag.}
+         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}
+         #:changed "7.6.0.14" @elem{Allowed multiple @DFlag{catalog} flags.}]}
 
 @subcommand{@command/toc{create} @nonterm{option} ... @nonterm{directory-or-package}
 --- Bundles a package into an archive. Bundling
@@ -890,6 +950,7 @@ package is created.
  @item{@DFlag{source} --- Bundles only sources in the package directory; see @secref["strip"].}
  @item{@DFlag{binary} --- Bundles compiled bytecode and rendered
        documentation in the package directory; see @secref["strip"].}
+ @item{@DFlag{binary-lib} --- Bundles compiled bytecode only in the package directory; see @secref["strip"].}
  @item{@DFlag{built} --- Bundles compiled sources, bytecode, and rendered
        documentation in the package directory, filtering repository elements; see @secref["strip"].}
   @item{@DFlag{dest} @nonterm{dest-dir} --- Writes generated bundles to @nonterm{dest-dir}.}
@@ -975,17 +1036,18 @@ for @nonterm{key}.
 
  @itemlist[
  @item{@DFlag{all} --- Shows information for all available packages. When using this flag,
-                      supply no @nonterm{packaee-name}s.}
+                      supply no @nonterm{package-name}s.}
  @item{@DFlag{only-names} --- Shows only package names. This option is mainly useful with 
-                              @DFlag{all}, but when a @nonterm{packaee-name} is provided,
+                              @DFlag{all}, but when a @nonterm{package-name} is provided,
                               catalogs are consulted to ensure that he package is available.}
  @item{@DFlag{modules} --- Shows the modules that are implemented by a package.}
- @item{@DFlag{catalog} @nonterm{catalog} --- Queries @nonterm{catalog} instead of the currently configured 
-       @tech{package catalogs}.}
+ @item{@DFlag{catalog} @nonterm{catalog} --- Queries @nonterm{catalog}s instead of the currently configured
+       @tech{package catalogs}. This flag can be provided multiple times. The catalogs are tried in the order provided.}
  @item{@DFlag{version} @nonterm{version} or @Flag{v} @nonterm{version} --- Queries catalogs 
        for a result specific to @nonterm{version},
        instead of the installation's Racket version.}
  ]
+@history[#:changed "7.6.0.14" @elem{Allowed multiple @DFlag{catalog} flags.}]
 }
 
 @subcommand{@command/toc{catalog-copy} @nonterm{option} ... @nonterm{src-catalog} ... @nonterm{dest-catalog}
@@ -1052,9 +1114,33 @@ for @nonterm{key}.
          @item{@exec{continue} --- like @exec{skip}, but @exec{raco pkg catalog-archive}
                exits with a status code of @exec{5} if any package was skipped.}
        ]}
+
+ @item{@DFlag{include} @nonterm{pkg} --- Can be specified multiple times. If @DFlag{include} is
+       specified at least once, then the archive and generated catalog includes only
+       the @nonterm{pkg}s specified with @DFlag{include}, plus the dependencies
+       of each @nonterm{pkg} if @DFlag{include-deps} is specified, modulo packages
+       excluded via @DFlag{exclude}.}
+ @item{@DFlag{include-deps} --- Modifies the @DFlag{includes} @nonterm{pkg} flag to imply all
+       dependencies of @nonterm{pkg}.}
+ @item{@DFlag{include-deps-platform} @nonterm{sys} @nonterm{subpath} --- Modifies @DFlag{include-deps}
+       to imply only dependencies that match the platform @nonterm{sys}, which should be
+       a possible result of @racket[(system-type)], and @nonterm{subpath}, which should be
+       a possible result of @racket[(system-library-subpath #f)]}
+ @item{@DFlag{exclude} @nonterm{pkg} --- Can be specified multiple times. Removes @nonterm{pkg}
+       from the set of packages in the archive and generated catalog. If @DFlag{include} is
+       used for the same @nonterm{pkg}, then @DFlag{exclude} takes
+       precedence. If @DFlag{include} is used with
+       @DFlag{include-deps} for @nonterm{pkg} or a package that depends on @nonterm{pkg},
+       then @DFlag{exclude} stops the consideration of @nonterm{pkg}'s
+       dependencies (but does not necessarily exclude the dependencies, because they
+       may be dependencies of an included package).}
+ @item{@DFlag{fast-file-copy} --- Directly copies package files from the @nonterm{src-catalog}s
+       when available on the local filesystem, instead of extracting and repacking.}
  ]
 
- @history[#:added "6.0.17"]
+ @history[#:added "6.0.17"
+          #:changed "7.7.0.1" @elem{Added @DFlag{include}, @DFlag{include-deps}, @DFlag{include-deps-platform},
+                                    @DFlag{exclude}, and @DFlag{fast-file-copy}.}]
 }
 
 @subcommand{@command/toc{archive} @nonterm{option} ... @nonterm{dest-dir} @nonterm{pkg} ...
@@ -1208,7 +1294,7 @@ The following @filepath{info.rkt} fields are used by the package manager:
        See also @secref["setup-check-deps" #:doc raco-doc].}
 
  @item{@definfofield{build-deps} --- like @racketidfont{deps}, but for
-       dependencies that can be dropped in a @tech{binary package},
+       dependencies that can be omitted from a @tech{binary package},
        which does not include sources; see @secref["strip"] and
        @secref["setup-check-deps" #:doc raco-doc]. The
        @racketidfont{build-deps} and @racketidfont{deps} lists are

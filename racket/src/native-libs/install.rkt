@@ -13,11 +13,13 @@
     "libgthread-2.0.0"
     "libglib-2.0.0"
     "libgobject-2.0.0"
-    "libintl.8"
+    "libintl.9"
     "libharfbuzz.0"
+    "libfribidi.0"
     "libpango-1.0.0"
     "libpangocairo-1.0.0"
     "libpangoft2-1.0.0"
+    "libatk-1.0.0"
     "libexpat.1"
     "libfontconfig.1"
     "libfreetype.6"
@@ -39,9 +41,21 @@
     "zlib1"
     "libpangowin32-1.0.0"))
 
+(define mac-libs
+  '("libedit.0"
+    "PSMTabBarControl.framework"))
+
+(define mac64-libs
+  '("MMTabBarView.framework"))
+
 (define nonwin-libs
-  '("libcrypto.1.0.0"
-    "libssl.1.0.0"))
+  '("libcrypto.1.1"
+    "libssl.1.1"
+    "libuuid.1"))
+
+(define no-copy-libs
+  '("PSMTabBarControl.framework"
+    "MMTabBarView.framework"))
 
 (define linux-libs
   (append
@@ -57,18 +71,18 @@
      "libsqlite3.0")
    '("libgtk-x11-2.0.0"
      "libgdk-x11-2.0.0"
-     "libatk-1.0.0"
      "libgdk_pixbuf-2.0.0")))
 (define linux-remove-libs
-  '("libintl.8"))
+  '("libintl.9"))
 
 (define package-mapping
   `(["draw"        ; pkg name
-     "-2"          ; pkg suffix (increment after "-" when library versions change)
+     "-3"          ; pkg suffix (increment after "-" when library versions change)
      "racket/draw" ; subdir
      "" ; extra for "LICENSE.txt"
      #t ; dynamic libraries (as opposed to shared files)
      #f ; for-pkg name (e.g., "base"), of #f if the same as the pkg name
+     #f ; version
      (["libffi" "libffi - Copyright (c) 1996-2014  Anthony Green, Red Hat, Inc and others."]
       ["libglib" "GLib is released under the GNU Library General Public License (GNU LGPL)."]
       "libgio"
@@ -76,12 +90,14 @@
       "libgobject"
       "libgthread"
       ["libintl" "libintl is released under the GNU Library General Public License (GNU LGPL)."]
-      ["libharfbuzz" "HarfBuzz is relased under a MIT license."]
+      ["libharfbuzz" "HarfBuzz is released under a MIT license."]
+      ["libfribidi" "FriBidi is released under the GNU Library General Public License (GNU LGPL)."]
       ["libpango" "Pango is released under the GNU Library General Public License (GNU LGPL)."]
       "libpangocairo"
       "libpangoft2"
       "libpangowin32"
       "libexpat"
+      ["libuuid" "libuuid is released under a Modified BSD license."]
       ["libfontconfig" ,(~a "FontConfig:\n"
                             " Copyright © 2000,2001,2002,2003,2004,2006,2007 Keith Packard\n"
                             " Copyright © 2005 Patrick Lam\n"
@@ -89,18 +105,19 @@
                             " Copyright © 2008,2009 Red Hat, Inc.\n"
                             " Copyright © 2008 Danilo Šegan\n"
                             " Copyright © 2012 Google, Inc.")]
-      ["libfreetype" "Pixman is relased under the FreeType project license."]
+      ["libfreetype" "Pixman is released under the FreeType project license."]
       ["libcairo" "Cairo is released under the GNU Library General Public License (GNU LGPL)."]
-      ["libpixman" "Pixman is relased under a MIT license."]
+      ["libpixman" "Pixman is released under a MIT license."]
       ["libpng" "Libpng is released under the libpng license."]
       ["libjpeg" "This software is based in part on the work of the Independent JPEG Group."]
       ["zlib1" "zlib is by Jean-loup Gailly and Mark Adler."]
       ["libz" "zlib is by Jean-loup Gailly and Mark Adler."])]
     ["racket"
-     "-2"
+     "-3"
      "racket"
      ""
      #t
+     #f
      #f
      (["libeay32" ,(~a "This product includes software developed by the OpenSSL Project for\n"
                        "use in the OpenSSL Toolkit (http://www.openssl.org/).\n"
@@ -113,12 +130,16 @@
       ["libiconv-2" "libiconv is released under the GNU Lesser General Public License (GNU LGPL)."]
       ["longdouble" ,(~a "The source to longdouble is included with the Racket source code,\n"
                          "which is available from\n"
-                         "  http://www.racket-lang.org/")])]
+                         "  http://www.racket-lang.org/")]
+      ["libedit" ,(~a "This package includes libedit software developed for NetBSD under the\n"
+                      "NetBSD license.")])]
+
     ["math"
      ""
      "math"
      ""
      #t
+     #f
      #f
      (["libgmp" "GNU MP is released under the GNU Lesser General Public License (GNU LGPL)."]
       ["libmpfr" "MPFR is released under the GNU Lesser General Public License (GNU LGPL)."])]
@@ -129,6 +150,7 @@
      ""
      #t
      "draw"
+     #f
      (["libX11.6" "libX11 is released under the X.Org Foundation license."]
       ["libXau.6" "libXau - Copyright 1988, 1993, 1994, 1998  The Open Group"]
       ["libxcb-shm.0" "libxcb - Copyright (C) 2001-2006 Bart Massey, Jamey Sharp, and Josh Triplett."]
@@ -142,6 +164,7 @@
      ""
      #f
      "draw"
+     #f
      (["fonts" ,(~a "Fonts:\n"
                     " Copyright © 2000,2001,2002,2003,2004,2006,2007 Keith Packard\n"
                     " Copyright © 2005 Patrick Lam\n"
@@ -156,10 +179,13 @@
      ""
      #t
      #f
+     "1.3" ; version
      (["libgtk-x11-2.0.0" "GTK+ is released under the GNU Library General Public License (GNU LGPL)."]
-      ["libatk-1.0.0" "ATK is released under the GNU Library General Public License (GNU LGPL)."]
+      ["libatk" "ATK is released under the GNU Library General Public License (GNU LGPL)."]
       "libgdk-x11-2.0.0"
-      "libgdk_pixbuf-2.0.0")]
+      "libgdk_pixbuf-2.0.0"
+      ["PSMTabBarControl.framework" "PSMTabBarControl is BSD licensed.\nSee: http://www.positivespinmedia.com/dev/PSMTabBarControl.html"]
+      ["MMTabBarView.framework" "MMTabBarView is BSD licensed.\nSee: http://mimo42.github.io/MMTabBarView/"])]
 
     ["db"
      ""
@@ -167,6 +193,7 @@
      ""
      #t
      "base"
+     #f
      (["libsqlite3.0" "SQLite3 is in the public domain."]
       ["sqlite3" "SQLite3 is in the public domain."])]
     
@@ -176,14 +203,19 @@
      ""
      #t
      "racket-poppler"
+     #f
      (["libpoppler"
        ;; Note: Poppler is GPL and *not* in the main Racket distribution (which is LGPL)
        "Poppler is released under the GNU General Public License (GNU GPL)."])]))
 
-(define (libs-of-pkg p) (list-ref p 6))
+(define (libs-of-pkg p) (list-ref p 7))
+
+(define (framework? p)
+  (regexp-match? #rx"[.]framework" p))
 
 (define (plain-path? p)
-  (equal? p "fonts"))
+  (or (equal? p "fonts")
+      (framework? p)))
 
 (define dest-dir
   (build-command-line
@@ -212,7 +244,7 @@
     (error 'install "cannot find package for library: ~e" lib))
   (apply values pkg))
 
-(define (gen-info platform i-platform for-pkg pkg-name subdir libs lics lic-end lib?)
+(define (gen-info platform i-platform for-pkg pkg-name subdir libs lics lic-end lib? vers)
   (define dest (build-path dest-dir pkg-name))
   (define lib-path (build-path dest subdir "info.rkt"))
   (define top-path (build-path dest "info.rkt"))
@@ -227,7 +259,8 @@
                     (quote ,libs))
                   o)
     (define dirs (filter (lambda (lib)
-                           (directory-exists? (build-path dest subdir lib)))
+                           (or (framework? lib)
+                               (directory-exists? (build-path dest subdir lib))))
                          libs))
     (unless (null? dirs)
       (newline o)
@@ -239,7 +272,10 @@
     (newline o)
     (pretty-write `(define pkg-desc ,(format "native libraries for \"~a\" package" for-pkg)) o)
     (newline o)
-    (pretty-write `(define pkg-authors '(mflatt)) o))
+    (pretty-write `(define pkg-authors '(mflatt)) o)
+    (when vers
+      (newline o)
+      (pretty-write `(define version ,vers) o)))
   (unless same?
     (printf "Write ~a\n" lib-path)
     (call-with-output-file*
@@ -264,16 +300,11 @@
    #:exists 'truncate
    (lambda (o)
      (displayln pkg-name o)
-     (displayln "Copyright (c) 2010-2017 PLT Design Inc." o)
      (newline o)
-     (displayln "This package is distributed under the GNU Lesser General Public" o)
-     (displayln "License (LGPL).  This means that you can link this package into" o)
-     (displayln "proprietary applications, provided you follow the rules stated in the" o)
-     (displayln "LGPL.  You can also modify this package; if you distribute a modified" o)
-     (displayln "version, you must distribute it under the terms of the LGPL, which in" o)
-     (displayln "particular means that you must release the source code for the" o)
-     (displayln "modified software.  See http://www.gnu.org/copyleft/lesser.html" o)
-     (displayln "for more information." o)
+     (displayln "This package is distributed under the Apache 2.0 and MIT licenses. The" o)
+     (displayln "user can choose the license under which they will be using the" o)
+     (displayln "software. There may be other licenses within the distribution with" o)
+     (displayln "which the user must also comply." o)
      (for ([l (in-list lics)])
        (newline o)
        (displayln l o))
@@ -293,14 +324,16 @@
                             (~a pkg "-" platform suffix)
                             subdir))
     (define dest (build-path dir p))
-    (make-directory* dir)
-    (cond
-     [(file-exists? dest) (delete-file dest)]
-     [(directory-exists? dest) (delete-directory/files dest)])
-    (define src (build-path from p))
-    (if (directory-exists? src)
-        (copy-directory/files src dest)
-        (copy-file src dest))
+    (let-values ([(base name dir?) (split-path dest)])
+      (make-directory* base))
+    (unless (member p no-copy-libs)
+      (cond
+        [(file-exists? dest) (delete-file dest)]
+        [(directory-exists? dest) (delete-directory/files dest)])
+      (define src (build-path from p))
+      (if (directory-exists? src)
+          (copy-directory/files src dest)
+          (copy-file src dest)))
     (unless (plain-path? p)
       (fixup p dest))
 
@@ -320,28 +353,30 @@
               libs
               (reverse (hash-ref pkgs-lic pkg null))
               (list-ref a 3)
-              (list-ref a 4))))
+              (list-ref a 4)
+              (list-ref a 6))))
 
 (define (install-mac)
   (define (fixup p p-new)
-    (printf "Fixing ~s\n" p-new)
-    (unless (memq 'write (file-or-directory-permissions p-new))
-      (file-or-directory-permissions p-new #o744))
-    (system (format "install_name_tool -id ~a ~a" (file-name-from-path p-new) p-new))
-    (for-each (lambda (s)
-                (system (format "install_name_tool -change ~a @loader_path/~a ~a" 
-                                (format "~a/~a.dylib" from s)
-                                (format "~a.dylib" s)
-                                p-new)))
-              (append libs nonwin-libs))
-    (system (format "strip -S ~a" p-new)))
+    (unless (framework? p)
+      (printf "Fixing ~s\n" p-new)
+      (unless (memq 'write (file-or-directory-permissions p-new))
+        (file-or-directory-permissions p-new #o744))
+      (system (format "install_name_tool -id ~a ~a" (file-name-from-path p-new) p-new))
+      (for-each (lambda (s)
+                  (system (format "install_name_tool -change ~a @loader_path/~a ~a"
+                                  (format "~a/~a.dylib" from s)
+                                  (format "~a.dylib" s)
+                                  p-new)))
+                (append libs nonwin-libs))
+      (system (format "strip -S ~a" p-new))))
 
   (define platform (~a (if m32? 
                            (if ppc? "ppc" "i386")
                            "x86_64")
                        "-macosx"))
-  
-  (install platform platform "dylib" fixup (append libs nonwin-libs)))
+
+  (install platform platform "dylib" fixup (append libs mac-libs (if m32? '() mac64-libs) nonwin-libs)))
 
 (define (install-win)
   (define exe-prefix (if m32?
@@ -356,8 +391,8 @@
                   (environment-variables-copy
                    (current-environment-variables))])
     (putenv "PATH" (~a (if m32?
-                           "/usr/mw32/bin:"
-                           "/usr/mw64/bin:")
+                           "/usr/local/mw32/bin:/usr/mw32/bin:"
+                           "/usr/local/mw64/bin:/usr/mw64/bin:")
                        (getenv "PATH")))
 
     (install (~a "win32-" (if m32? "i386" "x86_64"))

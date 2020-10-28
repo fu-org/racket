@@ -1,5 +1,6 @@
 #lang racket/base
 (require "test-util.rkt")
+(require (only-in racket/contract/private/collapsible-common COLLAPSIBLE-LIMIT))
 (parameterize ([current-contract-namespace
                 (make-basic-contract-namespace
                  'racket/contract/combinator)])
@@ -86,6 +87,44 @@
    '(contract (vectorof integer? #:flat? #t)
               (vector-immutable 11)
               'pos 'neg))
+
+  (parameterize ([contract-rewrite-tests-to-skip '("double")])
+    (test/pos-blame
+     'vectorof13
+     '(let ()
+        (define N 40)
+        (define cv
+          (contract (for/fold ([c (-> integer? integer?)])
+                              ([i (in-range N)])
+                      (vectorof c))
+                    (for/fold ([v 'not-a-procedure])
+                              ([i (in-range N)])
+                      (vector v))
+                    'pos 'neg))
+        (let loop ([cv cv])
+          (loop (vector-ref cv 0))))))
+
+  (parameterize ([contract-rewrite-tests-to-skip '("double")])
+    (test/neg-blame
+     'vectorof14
+     '(let ()
+        (define N 40)
+        (define cv
+          (contract (for/fold ([c (-> integer? integer?)])
+                              ([i (in-range N)])
+                      (vectorof c))
+                    (for/fold ([v add1])
+                              ([i (in-range N)])
+                      (vector v))
+                    'pos 'neg))
+        (let loop ([cv cv]
+                   [i N])
+          (cond
+            [(= i 1)
+             (vector-set! cv 0 'not-a-procedure)]
+            [else
+             (loop (vector-ref cv 0)
+                   (- i 1))])))))
   
   (test/spec-passed
    'vector/c1
@@ -126,6 +165,60 @@
                                (λ (vec i v) v))])
       (vector-set! (contract (vector/c integer?) v 'pos 'neg)
                    0 #f)))
+
+  (parameterize ([contract-rewrite-tests-to-skip '("double")])
+    (test/pos-blame
+     'vector/c7
+     '(let ()
+        (define N 40)
+        (define cv
+          (contract (for/fold ([c (-> integer? integer?)])
+                              ([i (in-range N)])
+                      (vector/c c))
+                    (for/fold ([v 'not-a-procedure])
+                              ([i (in-range N)])
+                      (vector v))
+                    'pos 'neg))
+        (let loop ([cv cv])
+          (loop (vector-ref cv 0))))))
+
+  (parameterize ([contract-rewrite-tests-to-skip '("double")])
+    (test/pos-blame
+     'vector/c8
+     '(let ()
+        (define N 40)
+        (define cv
+          (contract (for/fold ([c (-> integer? integer?)])
+                              ([i (in-range N)])
+                      (vector/c c))
+                    (for/fold ([v 'not-a-procedure])
+                              ([i (in-range N)])
+                      (vector-immutable v))
+                    'pos 'neg))
+        (let loop ([cv cv])
+          (loop (vector-ref cv 0))))))
+
+  (parameterize ([contract-rewrite-tests-to-skip '("double")])
+    (test/neg-blame
+     'vector/c9
+     '(let ()
+        (define N 40)
+        (define cv
+          (contract (for/fold ([c (-> integer? integer?)])
+                              ([i (in-range N)])
+                      (vector/c c))
+                    (for/fold ([v add1])
+                              ([i (in-range N)])
+                      (vector v))
+                    'pos 'neg))
+        (let loop ([cv cv]
+                   [i N])
+          (cond
+            [(= i 1)
+             (vector-set! cv 0 'not-a-procedure)]
+            [else
+             (loop (vector-ref cv 0)
+                   (- i 1))])))))
   
   (test/pos-blame
    'vector/c7
@@ -147,7 +240,7 @@
                           'pos 'neg)
                 0)
    1
-   2)
+   (add1 COLLAPSIBLE-LIMIT))
 
   (test/spec-passed/result
    'vectorof-eager
@@ -167,5 +260,39 @@
   (test/pos-blame
    'vectorof-eager-fail
    '(contract (vectorof integer? #:eager 5) (vector-immutable 0 "") 'pos 'neg))
+  (test/pos-blame
+   'vectorof/mutable-flat
+   '(contract (vectorof integer? #:immutable #f #:flat? #t) (vector-immutable 3) 'pos 'neg))
+  (test/pos-blame
+   'vectorof/mutable-higher-order
+   '(contract (vectorof (-> integer? integer?) #:immutable #f) (vector-immutable add1) 'pos 'neg))
 
-  )
+  (test/pos-blame
+   'vectorof-or/c-first-order-fail
+   '(contract (or/c (vectorof integer?) (vectorof string?)) (vector 'bad) 'pos 'neg))
+
+  (test/spec-passed
+   'vectorof-or/c-first-order-pass
+   '(contract (or/c (vectorof integer?) (vectorof string?)) (vector 1) 'pos 'neg))
+
+  (test/spec-passed/result
+   'vector-error-message.1
+   '(with-handlers ([exn:fail? (λ (x) (regexp-match? #rx"promised a vector\n"
+                                                     (exn-message x)))])
+      (contract (vector/c any/c #:immutable #f) 5 'pos 'neg)
+      "no exn")
+   #t)
+
+  (test/spec-passed/result
+   'vector-error-message.2
+   '(with-handlers ([exn:fail? (λ (x) (regexp-match? #rx"promised an immutable vector\n"
+                                                     (exn-message x)))])
+      (contract (vector/c any/c #:immutable #t) (vector 1) 'pos 'neg))
+   #t)
+
+  (test/spec-passed/result
+   'vector-error-message.3
+   '(with-handlers ([exn:fail? (λ (x) (regexp-match? #rx"promised a mutable vector\n"
+                                                     (exn-message x)))])
+      (contract (vector/c any/c #:immutable #f) (vector-immutable 1) 'pos 'neg))
+   #t))
